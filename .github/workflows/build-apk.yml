@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
 
+# v0.2.3: branded hybrid Internet + Nearby build
 jobs:
   build:
     runs-on: ubuntu-latest
