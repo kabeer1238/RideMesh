@@ -24,7 +24,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="Phone ↔ phone offline voice • helmet optional"
+            android:text="Hands-free ride intercom • offline mesh • helmet optional"
             android:textColor="@color/accent"
             android:textSize="14sp"
             android:textStyle="bold" />
@@ -103,8 +103,9 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="Use phone volume buttons as PTT"
+                android:text="Bench only — use phone volume buttons as PTT"
                 android:textColor="@color/white"
+                android:visibility="gone"
                 app:useMaterialThemeColors="true" />
 
             <TextView
@@ -156,7 +157,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Lab: A↔B↔C only. Use one role per phone to prove relay while all phones are nearby."
+                android:text="Normal = hands-free riding. A/B/C = controlled PTT bench test for proving relay."
                 android:textColor="@color/muted"
                 android:textSize="12sp" />
 
@@ -206,14 +207,16 @@
         </LinearLayout>
 
         <TextView
+            android:id="@+id/pttLabel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
             android:gravity="center"
-            android:text="PRESS AND HOLD TO TALK"
+            android:text="BENCH TEST — PRESS AND HOLD TO TALK"
             android:textColor="@color/muted"
             android:textSize="13sp"
-            android:textStyle="bold" />
+            android:textStyle="bold"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/ptt"
@@ -222,10 +225,11 @@
             android:layout_marginTop="10dp"
             android:background="@drawable/ptt_bg"
             android:gravity="center"
-            android:text="TALK"
+            android:text="BENCH TALK"
             android:textColor="@color/black"
             android:textSize="34sp"
-            android:textStyle="bold" />
+            android:textStyle="bold"
+            android:visibility="gone" />
 
         <TextView
             android:layout_width="wrap_content"
@@ -244,7 +248,7 @@
             android:background="@drawable/panel_bg"
             android:minHeight="160dp"
             android:padding="14dp"
-            android:text="Ready. For the first test choose PHONE on A, B and C — no helmet needed.\n"
+            android:text="Ready. Normal mode is hands-free. Choose A/B/C only for the controlled relay bench test.\n"
             android:textColor="@color/white"
             android:textIsSelectable="true"
             android:textSize="12sp" />
