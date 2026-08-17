@@ -1,5 +1,5 @@
-RideMesh CI 2026-08-17T16:36:03Z
-Commit: e9743a889757d7cdf0d95b3f92f2c3c40b8461b6
+RideMesh CI 2026-08-17T17:03:08Z
+Commit: b113363d14781f1ebb5842d685db42f97d435247
 === BRANDING ===
 app/src/main/res/drawable-nodpi/ridemesh_logo.jpg: JPEG image data, JFIF standard 1.01, aspect ratio, density 1x1, segment length 16
 app/src/main/res/drawable-nodpi/ridemesh_icon.jpg: JPEG image data, JFIF standard 1.01, aspect ratio, density 1x1, segment length 16
@@ -15,17 +15,17 @@ Daemon will be stopped at the end of the build
 > Task :app:processDebugNavigationResources
 > Task :app:checkDebugAarMetadata
 > Task :app:mapDebugSourceSetPaths
-> Task :app:mergeDebugResources
 > Task :app:createDebugCompatibleScreenManifests
+> Task :app:extractDeepLinksDebug
+> Task :app:mergeDebugResources
+> Task :app:processDebugMainManifest
 > Task :app:packageDebugResources
 > Task :app:compileDebugNavigationResources
-> Task :app:extractDeepLinksDebug
 > Task :app:parseDebugLocalResources
-> Task :app:processDebugMainManifest
-> Task :app:dataBindingGenBaseClassesDebug
 > Task :app:processDebugManifest
-> Task :app:processDebugManifestForPackage
+> Task :app:dataBindingGenBaseClassesDebug
 > Task :app:javaPreCompileDebug
+> Task :app:processDebugManifestForPackage
 > Task :app:preDebugUnitTestBuild UP-TO-DATE
 > Task :app:javaPreCompileDebugUnitTest
 > Task :app:processDebugResources
@@ -38,9 +38,9 @@ Daemon will be stopped at the end of the build
 > Task :app:compileDebugUnitTestJavaWithJavac NO-SOURCE
 > Task :app:processDebugUnitTestJavaRes
 > Task :app:testDebugUnitTest
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786984567335.json
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786986194791.json
 
-BUILD SUCCESSFUL in 39s
+BUILD SUCCESSFUL in 59s
 27 actionable tasks: 27 executed
 === APK BUILD ===
 To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.13/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
@@ -84,19 +84,19 @@ Daemon will be stopped at the end of the build
 > Task :app:mergeLibDexDebug
 > Task :app:mergeExtDexDebug
 > Task :app:mergeDebugJniLibFolders
+> Task :app:mergeProjectDexDebug
 > Task :app:mergeDebugNativeLibs NO-SOURCE
 > Task :app:stripDebugDebugSymbols NO-SOURCE
-> Task :app:mergeProjectDexDebug
 > Task :app:validateSigningDebug
 > Task :app:writeDebugAppMetadata
 > Task :app:writeDebugSigningConfigVersions
 > Task :app:packageDebug
 > Task :app:createDebugApkListingFileRedirect
 > Task :app:assembleDebug
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786984607839.json
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786986254011.json
 
-BUILD SUCCESSFUL in 24s
+BUILD SUCCESSFUL in 34s
 39 actionable tasks: 18 executed, 21 up-to-date
 
 RESULT: APK_BUILT
-ARTIFACT_ID: 9293041713
+ARTIFACT_ID: 9293818669
