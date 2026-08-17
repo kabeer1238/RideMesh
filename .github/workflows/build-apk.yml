@@ -8,7 +8,7 @@ on:
 permissions:
   contents: write
 
-# v0.2.3: branded hybrid Internet + Nearby build
+# v0.2.3: branded hybrid Internet + Nearby build, lightweight TLS relay
 jobs:
   build:
     runs-on: ubuntu-latest
