@@ -5,8 +5,11 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" android:maxSdkVersion="31" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" android:maxSdkVersion="31" />
+    <!-- Nearby Connections requires these to be declared for its P2P strategies.
+         Keep them available on current Android versions too because current
+         Play services can return status 8032 when ACCESS_WIFI_STATE is absent. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="28" />
@@ -28,6 +31,11 @@
         android:label="RideMesh"
         android:supportsRtl="true"
         android:theme="@style/Theme.RideMesh">
+
+        <!-- Pre-download the Google Play services QR scanner UI when possible. -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="barcode_ui" />
 
         <activity
             android:name=".MainActivity"
