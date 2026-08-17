@@ -13,9 +13,13 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.os.Build
-import java.util.concurrent.Executors
+import java.util.ArrayDeque
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
+import kotlin.math.sqrt
 
 enum class AudioRoute {
     AUTO,
@@ -30,7 +34,17 @@ class AudioEngine(
 ) {
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val capturing = AtomicBoolean(false)
-    private val playbackExecutor = Executors.newSingleThreadExecutor()
+
+    // Never allow seconds of old voice to queue up. If the radio/network is slower than
+    // real time we discard the oldest pending frame rather than making riders hear stale audio.
+    private val playbackExecutor = ThreadPoolExecutor(
+        1,
+        1,
+        0L,
+        TimeUnit.MILLISECONDS,
+        ArrayBlockingQueue(PLAYBACK_QUEUE_FRAMES),
+        ThreadPoolExecutor.DiscardOldestPolicy(),
+    )
 
     @Volatile private var audioRecord: AudioRecord? = null
     @Volatile private var audioTrack: AudioTrack? = null
@@ -138,17 +152,46 @@ class AudioEngine(
 
             audioRecord = recorder
             recorder.startRecording()
-            onStatus("HANDS-FREE • ${effectsLabel(aec != null, ns != null, agc != null)}")
+            onStatus("HANDS-FREE • VAD • ${effectsLabel(aec != null, ns != null, agc != null)}")
 
             val activeRecorder = recorder
             Thread({
                 val frame = ByteArray(FRAME_BYTES)
+                val preRoll = ArrayDeque<ByteArray>(VAD_PREROLL_FRAMES)
+                var hangover = 0
+                var wasSending = false
+                var noiseFloor = VAD_INITIAL_NOISE_FLOOR
+
                 try {
                     while (capturing.get()) {
                         val read = activeRecorder.read(frame, 0, frame.size)
-                        if (read > 0) {
-                            onCapturedFrame(if (read == frame.size) frame.copyOf() else frame.copyOf(read))
+                        if (read <= 0) continue
+
+                        val current = if (read == frame.size) frame.copyOf() else frame.copyOf(read)
+                        val rms = pcmRms(current)
+
+                        // Slowly learn the background level only when the frame does not look like speech.
+                        val speechThreshold = max(VAD_MIN_RMS, noiseFloor * VAD_NOISE_MULTIPLIER)
+                        val speech = rms >= speechThreshold
+                        if (!speech) {
+                            noiseFloor = (noiseFloor * 0.985) + (rms * 0.015)
                         }
+
+                        if (speech) hangover = VAD_HANGOVER_FRAMES
+                        else if (hangover > 0) hangover--
+
+                        val sending = speech || hangover > 0
+                        if (sending) {
+                            if (!wasSending) {
+                                // Preserve the beginning of the first word instead of clipping it.
+                                while (preRoll.isNotEmpty()) onCapturedFrame(preRoll.removeFirst())
+                            }
+                            onCapturedFrame(current)
+                        } else {
+                            if (preRoll.size >= VAD_PREROLL_FRAMES) preRoll.removeFirst()
+                            preRoll.addLast(current)
+                        }
+                        wasSending = sending
                     }
                 } catch (t: Throwable) {
                     onStatus("Microphone stream error: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
@@ -226,7 +269,7 @@ class AudioEngine(
                         .setChannelMask(CHANNEL_OUT)
                         .build()
                 )
-                .setBufferSizeInBytes(max(min, FRAME_BYTES * 8))
+                .setBufferSizeInBytes(max(min, FRAME_BYTES * 6))
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
@@ -241,6 +284,22 @@ class AudioEngine(
         } catch (_: Throwable) {
             null
         }
+    }
+
+    private fun pcmRms(bytes: ByteArray): Double {
+        if (bytes.size < 2) return 0.0
+        var sum = 0.0
+        var samples = 0
+        var i = 0
+        while (i + 1 < bytes.size) {
+            val lo = bytes[i].toInt() and 0xff
+            val hi = bytes[i + 1].toInt()
+            val sample = ((hi shl 8) or lo).toShort().toInt()
+            sum += sample.toDouble() * sample.toDouble()
+            samples++
+            i += 2
+        }
+        return if (samples == 0) 0.0 else sqrt(sum / samples)
     }
 
     private fun createAec(sessionId: Int): AcousticEchoCanceler? = try {
@@ -296,5 +355,13 @@ class AudioEngine(
         private const val FRAME_MS = 20
         private const val SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_MS / 1000
         private const val FRAME_BYTES = SAMPLES_PER_FRAME * 2
+
+        private const val PLAYBACK_QUEUE_FRAMES = 8 // ~160 ms maximum pending audio
+
+        private const val VAD_PREROLL_FRAMES = 3    // 60 ms of audio before speech trigger
+        private const val VAD_HANGOVER_FRAMES = 12 // 240 ms after speech falls below threshold
+        private const val VAD_INITIAL_NOISE_FLOOR = 250.0
+        private const val VAD_MIN_RMS = 520.0
+        private const val VAD_NOISE_MULTIPLIER = 2.2
     }
 }
