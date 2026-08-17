@@ -18,6 +18,7 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.PI
 import kotlin.math.max
 import kotlin.math.sqrt
 
@@ -146,18 +147,21 @@ class AudioEngine(
                 return
             }
 
+            // VOICE_COMMUNICATION requests the platform's VoIP capture tuning. We also
+            // explicitly attach the available preprocessors to this AudioRecord session.
             val aec = createAec(recorder.audioSessionId)
             val ns = createNs(recorder.audioSessionId)
             val agc = createAgc(recorder.audioSessionId)
 
             audioRecord = recorder
             recorder.startRecording()
-            onStatus("HANDS-FREE • VAD • ${effectsLabel(aec != null, ns != null, agc != null)}")
+            onStatus("HANDS-FREE • NOISE REDUCTION • VAD • ${effectsLabel(aec != null, ns != null, agc != null)}")
 
             val activeRecorder = recorder
             Thread({
                 val frame = ByteArray(FRAME_BYTES)
                 val preRoll = ArrayDeque<ByteArray>(VAD_PREROLL_FRAMES)
+                val windFilter = WindRumbleFilter(SAMPLE_RATE, WIND_FILTER_CUTOFF_HZ)
                 var hangover = 0
                 var wasSending = false
                 var noiseFloor = VAD_INITIAL_NOISE_FLOOR
@@ -167,7 +171,10 @@ class AudioEngine(
                         val read = activeRecorder.read(frame, 0, frame.size)
                         if (read <= 0) continue
 
-                        val current = if (read == frame.size) frame.copyOf() else frame.copyOf(read)
+                        val raw = if (read == frame.size) frame.copyOf() else frame.copyOf(read)
+                        // Motorcycle wind noise is dominated by low-frequency rumble. Remove
+                        // that energy before VAD so wind is less likely to hold the mic open.
+                        val current = windFilter.process(raw)
                         val rms = pcmRms(current)
 
                         // Slowly learn the background level only when the frame does not look like speech.
@@ -326,7 +333,39 @@ class AudioEngine(
             if (ns) add("NS")
             if (agc) add("AGC")
         }
-        return if (enabled.isEmpty()) "voice processing unavailable" else enabled.joinToString("+")
+        return if (enabled.isEmpty()) "software wind filter" else enabled.joinToString("+") + "+WIND"
+    }
+
+    /** Very small first-order high-pass filter to reduce motorcycle wind/road rumble. */
+    private class WindRumbleFilter(sampleRate: Int, cutoffHz: Double) {
+        private val alpha: Double
+        private var previousInput = 0.0
+        private var previousOutput = 0.0
+
+        init {
+            val dt = 1.0 / sampleRate.toDouble()
+            val rc = 1.0 / (2.0 * PI * cutoffHz)
+            alpha = rc / (rc + dt)
+        }
+
+        fun process(bytes: ByteArray): ByteArray {
+            if (bytes.size < 2) return bytes
+            val out = bytes.copyOf()
+            var i = 0
+            while (i + 1 < bytes.size) {
+                val lo = bytes[i].toInt() and 0xff
+                val hi = bytes[i + 1].toInt()
+                val input = ((hi shl 8) or lo).toShort().toDouble()
+                val filtered = alpha * (previousOutput + input - previousInput)
+                previousInput = input
+                previousOutput = filtered
+                val sample = filtered.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                out[i] = (sample and 0xff).toByte()
+                out[i + 1] = ((sample shr 8) and 0xff).toByte()
+                i += 2
+            }
+            return out
+        }
     }
 
     private fun AudioDeviceInfo.isHelmetCandidate(): Boolean {
@@ -363,5 +402,6 @@ class AudioEngine(
         private const val VAD_INITIAL_NOISE_FLOOR = 250.0
         private const val VAD_MIN_RMS = 520.0
         private const val VAD_NOISE_MULTIPLIER = 2.2
+        private const val WIND_FILTER_CUTOFF_HZ = 110.0
     }
 }
