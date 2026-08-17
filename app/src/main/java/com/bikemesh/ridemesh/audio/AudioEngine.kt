@@ -42,60 +42,60 @@ class AudioEngine(
 
     @SuppressLint("MissingPermission")
     fun selectCommunicationDevice(): String {
-        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val available = audioManager.availableCommunicationDevices
-            val helmet = available.firstOrNull { it.isHelmetCandidate() }
-            val speaker = available.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-
-            val chosen = when (route) {
-                AudioRoute.HELMET -> helmet
-                AudioRoute.PHONE -> speaker
-                AudioRoute.AUTO -> helmet ?: speaker
-            }
-
-            if (chosen == null) {
-                val text = when (route) {
-                    AudioRoute.HELMET -> "Audio: no call-capable Bluetooth headset found"
-                    AudioRoute.PHONE -> "Audio: phone speaker unavailable"
-                    AudioRoute.AUTO -> "Audio: no communication device available"
-                }
-                onStatus(text)
-                return text
-            }
-
-            val ok = audioManager.setCommunicationDevice(chosen)
-            val label = chosen.routeLabel()
-            val text = if (ok) "Audio: $label" else "Audio routing failed: $label"
-            onStatus(text)
-            return text
-        }
-
-        val hasBluetoothSco = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-            .any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
-
         return try {
-            val useBluetooth = when (route) {
-                AudioRoute.HELMET -> true
-                AudioRoute.PHONE -> false
-                AudioRoute.AUTO -> hasBluetoothSco
-            }
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
 
-            @Suppress("DEPRECATION")
-            if (useBluetooth) {
-                audioManager.isSpeakerphoneOn = false
-                audioManager.startBluetoothSco()
-                audioManager.isBluetoothScoOn = true
-                "Audio: Bluetooth headset"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val available = audioManager.availableCommunicationDevices
+                val helmet = available.firstOrNull { it.isHelmetCandidate() }
+                val speaker = available.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+
+                val chosen = when (route) {
+                    AudioRoute.HELMET -> helmet
+                    AudioRoute.PHONE -> speaker
+                    AudioRoute.AUTO -> helmet ?: speaker
+                }
+
+                if (chosen == null) {
+                    val text = when (route) {
+                        AudioRoute.HELMET -> "Audio: no call-capable Bluetooth headset found"
+                        AudioRoute.PHONE -> "Audio: phone speaker unavailable"
+                        AudioRoute.AUTO -> "Audio: no communication device available"
+                    }
+                    onStatus(text)
+                    text
+                } else {
+                    val ok = audioManager.setCommunicationDevice(chosen)
+                    val label = chosen.routeLabel()
+                    val text = if (ok) "Audio: $label" else "Audio routing failed: $label"
+                    onStatus(text)
+                    text
+                }
             } else {
-                audioManager.stopBluetoothSco()
-                audioManager.isBluetoothScoOn = false
-                audioManager.isSpeakerphoneOn = true
-                "Audio: phone speaker + microphone"
-            }.also(onStatus)
+                val hasBluetoothSco = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                    .any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+
+                val useBluetooth = when (route) {
+                    AudioRoute.HELMET -> true
+                    AudioRoute.PHONE -> false
+                    AudioRoute.AUTO -> hasBluetoothSco
+                }
+
+                @Suppress("DEPRECATION")
+                if (useBluetooth) {
+                    audioManager.isSpeakerphoneOn = false
+                    audioManager.startBluetoothSco()
+                    audioManager.isBluetoothScoOn = true
+                    "Audio: Bluetooth headset"
+                } else {
+                    audioManager.stopBluetoothSco()
+                    audioManager.isBluetoothScoOn = false
+                    audioManager.isSpeakerphoneOn = true
+                    "Audio: phone speaker + microphone"
+                }.also(onStatus)
+            }
         } catch (t: Throwable) {
-            val text = "Audio routing error: ${t.message ?: "unknown"}"
+            val text = "Audio routing error: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}"
             onStatus(text)
             text
         }
@@ -104,58 +104,70 @@ class AudioEngine(
     @SuppressLint("MissingPermission")
     fun startTransmit() {
         if (!capturing.compareAndSet(false, true)) return
-        selectCommunicationDevice()
 
-        val min = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING)
-        if (min <= 0) {
-            capturing.set(false)
-            onStatus("Microphone buffer unavailable")
-            return
-        }
-        val recordBuffer = max(min, FRAME_BYTES * 4)
+        var recorder: AudioRecord? = null
+        try {
+            selectCommunicationDevice()
 
-        val recorder = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-            SAMPLE_RATE,
-            CHANNEL_IN,
-            ENCODING,
-            recordBuffer,
-        )
-
-        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-            capturing.set(false)
-            recorder.release()
-            onStatus("Microphone could not start")
-            return
-        }
-
-        val aec = createAec(recorder.audioSessionId)
-        val ns = createNs(recorder.audioSessionId)
-        val agc = createAgc(recorder.audioSessionId)
-
-        audioRecord = recorder
-        recorder.startRecording()
-        onStatus("TRANSMITTING • ${effectsLabel(aec != null, ns != null, agc != null)}")
-
-        Thread({
-            val frame = ByteArray(FRAME_BYTES)
-            try {
-                while (capturing.get()) {
-                    val read = recorder.read(frame, 0, frame.size)
-                    if (read > 0) {
-                        onCapturedFrame(if (read == frame.size) frame.copyOf() else frame.copyOf(read))
-                    }
-                }
-            } finally {
-                try { recorder.stop() } catch (_: Throwable) {}
-                aec?.release()
-                ns?.release()
-                agc?.release()
-                recorder.release()
-                if (audioRecord === recorder) audioRecord = null
-                selectCommunicationDevice()
+            val min = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING)
+            if (min <= 0) {
+                capturing.set(false)
+                onStatus("Microphone buffer unavailable")
+                return
             }
-        }, "RideMesh-Mic").start()
+            val recordBuffer = max(min, FRAME_BYTES * 4)
+
+            recorder = AudioRecord(
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                SAMPLE_RATE,
+                CHANNEL_IN,
+                ENCODING,
+                recordBuffer,
+            )
+
+            if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+                capturing.set(false)
+                recorder.release()
+                onStatus("Microphone could not start")
+                return
+            }
+
+            val aec = createAec(recorder.audioSessionId)
+            val ns = createNs(recorder.audioSessionId)
+            val agc = createAgc(recorder.audioSessionId)
+
+            audioRecord = recorder
+            recorder.startRecording()
+            onStatus("HANDS-FREE • ${effectsLabel(aec != null, ns != null, agc != null)}")
+
+            val activeRecorder = recorder
+            Thread({
+                val frame = ByteArray(FRAME_BYTES)
+                try {
+                    while (capturing.get()) {
+                        val read = activeRecorder.read(frame, 0, frame.size)
+                        if (read > 0) {
+                            onCapturedFrame(if (read == frame.size) frame.copyOf() else frame.copyOf(read))
+                        }
+                    }
+                } catch (t: Throwable) {
+                    onStatus("Microphone stream error: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
+                } finally {
+                    try { activeRecorder.stop() } catch (_: Throwable) {}
+                    aec?.release()
+                    ns?.release()
+                    agc?.release()
+                    activeRecorder.release()
+                    if (audioRecord === activeRecorder) audioRecord = null
+                    selectCommunicationDevice()
+                }
+            }, "RideMesh-Mic").start()
+        } catch (t: Throwable) {
+            capturing.set(false)
+            try { recorder?.release() } catch (_: Throwable) {}
+            if (audioRecord === recorder) audioRecord = null
+            onStatus("Microphone error: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
+        }
     }
 
     fun stopTransmit() {
@@ -163,7 +175,7 @@ class AudioEngine(
     }
 
     fun playIncoming(audio: ByteArray) {
-        if (audio.isEmpty() || capturing.get()) return
+        if (audio.isEmpty()) return
         playbackExecutor.execute {
             val track = ensureTrack() ?: return@execute
             try {
@@ -175,7 +187,7 @@ class AudioEngine(
     fun release() {
         stopTransmit()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            audioManager.clearCommunicationDevice()
+            try { audioManager.clearCommunicationDevice() } catch (_: Throwable) {}
         } else {
             @Suppress("DEPRECATION")
             try {
@@ -189,42 +201,46 @@ class AudioEngine(
             it.release()
         }
         audioTrack = null
-        audioManager.mode = AudioManager.MODE_NORMAL
+        try { audioManager.mode = AudioManager.MODE_NORMAL } catch (_: Throwable) {}
         playbackExecutor.shutdownNow()
     }
 
     private fun ensureTrack(): AudioTrack? {
         audioTrack?.let { return it }
 
-        val min = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, ENCODING)
-        if (min <= 0) return null
+        return try {
+            val min = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, ENCODING)
+            if (min <= 0) return null
 
-        val track = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setSampleRate(SAMPLE_RATE)
-                    .setEncoding(ENCODING)
-                    .setChannelMask(CHANNEL_OUT)
-                    .build()
-            )
-            .setBufferSizeInBytes(max(min, FRAME_BYTES * 8))
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+            val track = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(SAMPLE_RATE)
+                        .setEncoding(ENCODING)
+                        .setChannelMask(CHANNEL_OUT)
+                        .build()
+                )
+                .setBufferSizeInBytes(max(min, FRAME_BYTES * 8))
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
 
-        if (track.state != AudioTrack.STATE_INITIALIZED) {
-            track.release()
-            return null
+            if (track.state != AudioTrack.STATE_INITIALIZED) {
+                track.release()
+                null
+            } else {
+                track.play()
+                audioTrack = track
+                track
+            }
+        } catch (_: Throwable) {
+            null
         }
-
-        track.play()
-        audioTrack = track
-        return track
     }
 
     private fun createAec(sessionId: Int): AcousticEchoCanceler? = try {
