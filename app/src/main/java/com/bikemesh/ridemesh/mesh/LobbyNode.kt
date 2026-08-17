@@ -5,7 +5,9 @@ import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
 import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
+import com.google.android.gms.nearby.connection.ConnectionOptions
 import com.google.android.gms.nearby.connection.ConnectionResolution
+import com.google.android.gms.nearby.connection.ConnectionType
 import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
 import com.google.android.gms.nearby.connection.DiscoveryOptions
 import com.google.android.gms.nearby.connection.EndpointDiscoveryCallback
@@ -17,12 +19,10 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Pre-ride discovery/invitation channel.
+ * Short-lived nearby discovery/invitation channel.
  *
- * Riders tap "Find nearby riders" while the app is open. Every phone both
- * advertises and discovers on a shared lobby service. Tapping a discovered
- * rider opens a short Nearby connection and sends a RideMesh invite containing
- * the ride code. The actual voice mesh uses MeshNode after the invite is accepted.
+ * It is also used while an Internet ride is already active. In that case the
+ * voice call stays on Internet while this lobby runs for a short scan window.
  */
 class LobbyNode(
     context: Context,
@@ -154,7 +154,11 @@ class LobbyNode(
             return
         }
 
-        client.requestConnection(advertisedName(), endpointId, lifecycleCallback)
+        val options = ConnectionOptions.Builder()
+            .setConnectionType(ConnectionType.NON_DISRUPTIVE)
+            .build()
+
+        client.requestConnection(advertisedName(), endpointId, lifecycleCallback, options)
             .addOnFailureListener {
                 pendingInvites.remove(endpointId)
                 listener.onLobbyLog("Could not invite ${displayName(name)}: ${it.message ?: "error"}")
@@ -165,7 +169,11 @@ class LobbyNode(
         running = false
         runCatching { client.stopAdvertising() }
         runCatching { client.stopDiscovery() }
-        runCatching { client.stopAllEndpoints() }
+        // Only disconnect the short-lived lobby endpoints we own. Do not use
+        // stopAllEndpoints() here because an active RideMesh voice path may exist.
+        connected.toList().forEach { endpoint ->
+            runCatching { client.disconnectFromEndpoint(endpoint) }
+        }
         endpointNames.keys.forEach { listener.onNearbyRiderLost(it) }
         endpointNames.clear()
         pendingInvites.clear()
