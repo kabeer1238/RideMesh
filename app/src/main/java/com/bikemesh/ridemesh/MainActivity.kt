@@ -1,42 +1,69 @@
 package com.bikemesh.ridemesh
 
 import android.Manifest
+import android.app.AlertDialog
 import android.bluetooth.BluetoothManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.widget.ImageView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.bikemesh.ridemesh.audio.AudioEngine
 import com.bikemesh.ridemesh.audio.AudioRoute
 import com.bikemesh.ridemesh.databinding.ActivityMainBinding
+import com.bikemesh.ridemesh.mesh.LobbyNode
 import com.bikemesh.ridemesh.mesh.MeshNode
 import com.bikemesh.ridemesh.service.RideService
+import com.google.android.gms.mlkit.barcode.GmsBarcodeScannerOptions
+import com.google.android.gms.mlkit.barcode.GmsBarcodeScanning
+import com.google.android.material.button.MaterialButton
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class MainActivity : AppCompatActivity(), MeshNode.Listener {
+class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener {
     private lateinit var binding: ActivityMainBinding
     private lateinit var meshNode: MeshNode
+    private lateinit var lobbyNode: LobbyNode
     private lateinit var audioEngine: AudioEngine
     private val prefs by lazy { getSharedPreferences("ridemesh", MODE_PRIVATE) }
+    private val nearbyButtons = linkedMapOf<String, MaterialButton>()
 
     private var rideStarted = false
     private var pttPressed = false
+    private var pendingAction = PendingAction.NONE
+
+    private enum class PendingAction { NONE, START_RIDE, FIND_RIDERS }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
-        if (hasRequiredPermissions()) startRideNow()
-        else log("Required Nearby/Bluetooth/microphone permission was denied")
+        if (!hasRequiredPermissions()) {
+            log("Required Nearby/Bluetooth/microphone permission was denied")
+            pendingAction = PendingAction.NONE
+            return@registerForActivityResult
+        }
+
+        val action = pendingAction
+        pendingAction = PendingAction.NONE
+        when (action) {
+            PendingAction.START_RIDE -> startRideNow()
+            PendingAction.FIND_RIDERS -> startNearbyLobby()
+            PendingAction.NONE -> Unit
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -47,6 +74,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
         restoreSettings()
 
         meshNode = MeshNode(applicationContext, this)
+        lobbyNode = LobbyNode(applicationContext, this)
         audioEngine = AudioEngine(
             context = applicationContext,
             onCapturedFrame = meshNode::sendLocalAudio,
@@ -67,8 +95,19 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
         }
 
         binding.startRide.setOnClickListener {
-            if (rideStarted) stopRide() else ensurePermissionsAndStart()
+            if (rideStarted) stopRide() else ensurePermissionsAndRun(PendingAction.START_RIDE)
         }
+
+        binding.findNearby.setOnClickListener {
+            if (rideStarted) {
+                log("Stop the active ride before using the pre-ride nearby invitation list")
+            } else {
+                ensurePermissionsAndRun(PendingAction.FIND_RIDERS)
+            }
+        }
+
+        binding.showQr.setOnClickListener { showRideQr() }
+        binding.scanQr.setOnClickListener { scanRideQr() }
 
         binding.ptt.setOnTouchListener { _, event ->
             if (!isBenchPttMode()) return@setOnTouchListener true
@@ -113,26 +152,120 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
         return true
     }
 
-    private fun ensurePermissionsAndStart() {
+    private fun ensurePermissionsAndRun(action: PendingAction) {
         val missing = requiredPermissions().filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
-        if (missing.isEmpty()) startRideNow() else permissionLauncher.launch(missing.toTypedArray())
+        if (missing.isEmpty()) {
+            when (action) {
+                PendingAction.START_RIDE -> startRideNow()
+                PendingAction.FIND_RIDERS -> startNearbyLobby()
+                PendingAction.NONE -> Unit
+            }
+        } else {
+            pendingAction = action
+            permissionLauncher.launch(missing.toTypedArray())
+        }
+    }
+
+    private fun startNearbyLobby() {
+        if (!radiosReady()) {
+            log("Nearby riders unavailable: turn ON Bluetooth and Wi-Fi, then tap FIND again")
+            return
+        }
+
+        clearNearbyRiders("Searching… other RideMesh phones should tap FIND NEARBY RIDEMESH RIDERS too.")
+        lobbyNode.start(
+            binding.riderName.text?.toString().orEmpty(),
+            binding.rideCode.text?.toString().orEmpty(),
+        )
+        binding.findNearby.text = "REFRESH NEARBY RIDERS"
+    }
+
+    private fun showRideQr() {
+        val code = normalizedRideCode()
+        binding.rideCode.setText(code)
+        saveSettings()
+        val payload = "ridemesh://join?ride=${Uri.encode(code)}"
+
+        try {
+            val size = 720
+            val matrix = QRCodeWriter().encode(payload, BarcodeFormat.QR_CODE, size, size)
+            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            for (y in 0 until size) {
+                for (x in 0 until size) {
+                    bitmap.setPixel(x, y, if (matrix[x, y]) Color.BLACK else Color.WHITE)
+                }
+            }
+
+            val image = ImageView(this).apply {
+                setImageBitmap(bitmap)
+                adjustViewBounds = true
+                setPadding(24, 24, 24, 24)
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Join $code")
+                .setMessage("Other riders: RideMesh → SCAN QR")
+                .setView(image)
+                .setPositiveButton("DONE", null)
+                .show()
+            log("Showing join QR for $code")
+        } catch (t: Throwable) {
+            log("Could not create QR: ${t.message ?: t.javaClass.simpleName}")
+        }
+    }
+
+    private fun scanRideQr() {
+        val options = GmsBarcodeScannerOptions.Builder()
+            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+            .enableAutoZoom()
+            .build()
+        val scanner = GmsBarcodeScanning.getClient(this, options)
+        scanner.startScan()
+            .addOnSuccessListener { barcode ->
+                val raw = barcode.rawValue.orEmpty()
+                val code = parseRideQr(raw)
+                if (code == null) {
+                    log("That QR is not a RideMesh join code")
+                    return@addOnSuccessListener
+                }
+                binding.rideCode.setText(code)
+                saveSettings()
+                log("QR accepted • ready to join $code")
+                AlertDialog.Builder(this)
+                    .setTitle("RideMesh invite")
+                    .setMessage("Ride code $code loaded. Join now?")
+                    .setNegativeButton("LATER", null)
+                    .setPositiveButton("JOIN") { _, _ -> ensurePermissionsAndRun(PendingAction.START_RIDE) }
+                    .show()
+            }
+            .addOnCanceledListener { log("QR scan cancelled") }
+            .addOnFailureListener { log("QR scanner error: ${it.message ?: "unknown"}") }
+    }
+
+    private fun parseRideQr(raw: String): String? {
+        return runCatching {
+            val uri = Uri.parse(raw)
+            if (!uri.scheme.equals("ridemesh", true) || !uri.host.equals("join", true)) return@runCatching null
+            uri.getQueryParameter("ride")?.trim()?.uppercase()?.takeIf { it.isNotBlank() }?.take(12)
+        }.getOrNull()
     }
 
     private fun startRideNow() {
         if (rideStarted) return
         if (!radiosReady()) {
-            log("Turn on Bluetooth and Wi-Fi, then tap START / JOIN RIDE again")
-            startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+            log("Cannot start: turn ON Bluetooth and Wi-Fi. RideMesh will not open a generic settings screen.")
             return
         }
 
         val rider = binding.riderName.text?.toString().orEmpty()
-        val code = binding.rideCode.text?.toString().orEmpty()
+        val code = normalizedRideCode()
+        binding.rideCode.setText(code)
         saveSettings()
 
         try {
+            lobbyNode.stop()
+            clearNearbyRiders("Ride active. Stop ride to search/invite nearby riders.")
             startRideServiceSafely()
 
             rideStarted = true
@@ -141,13 +274,16 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
             meshNode.start(rider, code, selectedLabRole())
 
             binding.startRide.text = "STOP RIDE"
-            binding.meshStatus.text = "Mesh: active • ${code.trim().uppercase()}"
+            binding.meshStatus.text = "Mesh: active • $code"
+            binding.findNearby.isEnabled = false
+            binding.showQr.isEnabled = false
+            binding.scanQr.isEnabled = false
 
             if (isBenchPttMode()) {
                 log("Bench ride started. Hold BENCH TALK (or a volume key if enabled) to transmit.")
             } else {
                 audioEngine.startTransmit()
-                log("Ride started • HANDS-FREE intercom active. No TALK button is required while riding.")
+                log("Ride started • HANDS-FREE intercom active. Waiting for direct peers…")
             }
         } catch (t: Throwable) {
             recoverFromStartFailure(t)
@@ -171,6 +307,9 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
         binding.startRide.text = "START / JOIN RIDE"
         binding.meshStatus.text = "Mesh: start failed"
         binding.ptt.text = "BENCH TALK"
+        binding.findNearby.isEnabled = true
+        binding.showQr.isEnabled = true
+        binding.scanQr.isEnabled = true
         log("START ERROR — ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
         log("The app stayed open so we can diagnose this instead of crashing.")
     }
@@ -180,16 +319,16 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
             val bluetoothManager = getSystemService(BluetoothManager::class.java)
             bluetoothManager.adapter?.isEnabled == true
         } catch (t: Throwable) {
-            log("Could not read Bluetooth state: ${t.javaClass.simpleName}. Nearby will check it directly.")
-            true
+            log("Could not read Bluetooth state: ${t.javaClass.simpleName}")
+            false
         }
 
         val wifiOn = try {
             val wifiManager = applicationContext.getSystemService(WifiManager::class.java)
             wifiManager.isWifiEnabled
         } catch (t: Throwable) {
-            log("Could not read Wi-Fi state: ${t.javaClass.simpleName}. Nearby will check it directly.")
-            true
+            log("Could not read Wi-Fi state: ${t.javaClass.simpleName}")
+            false
         }
 
         if (!bluetoothOn) log("Bluetooth is OFF")
@@ -209,6 +348,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
         binding.meshStatus.text = "Mesh: stopped"
         binding.riderCount.text = "Direct peers: 0"
         binding.ptt.text = "BENCH TALK"
+        binding.findNearby.isEnabled = true
+        binding.showQr.isEnabled = true
+        binding.scanQr.isEnabled = true
+        binding.findNearby.text = "FIND NEARBY RIDEMESH RIDERS"
+        clearNearbyRiders("Tap FIND NEARBY RIDEMESH RIDERS to invite riders.")
         log("Ride stopped")
     }
 
@@ -217,9 +361,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
         binding.pttLabel.visibility = if (bench) View.VISIBLE else View.GONE
         binding.ptt.visibility = if (bench) View.VISIBLE else View.GONE
         binding.hardwarePtt.visibility = if (bench) View.VISIBLE else View.GONE
-        if (!bench) {
-            binding.ptt.text = "BENCH TALK"
-        }
+        if (!bench) binding.ptt.text = "BENCH TALK"
     }
 
     private fun isBenchPttMode(): Boolean = selectedLabRole() != MeshNode.LabRole.NORMAL
@@ -260,12 +402,15 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
         }
         prefs.edit()
             .putString("rider", binding.riderName.text?.toString().orEmpty())
-            .putString("code", binding.rideCode.text?.toString().orEmpty())
+            .putString("code", normalizedRideCode())
             .putString("audio_route", audioRoute)
             .putString("lab_role", selectedLabRole().name)
             .putBoolean("hardware_ptt", binding.hardwarePtt.isChecked)
             .apply()
     }
+
+    private fun normalizedRideCode(): String = binding.rideCode.text?.toString()
+        .orEmpty().trim().uppercase().ifBlank { "RIDE01" }.take(12)
 
     private fun selectedLabRole(): MeshNode.LabRole {
         return when (binding.labRole.checkedRadioButtonId) {
@@ -308,11 +453,75 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
     }
 
     override fun onDirectPeerCount(count: Int) {
-        runOnUiThread { binding.riderCount.text = "Direct peers: $count" }
+        runOnUiThread {
+            binding.riderCount.text = "Direct peers: $count"
+            if (rideStarted && count > 0) binding.meshStatus.text = "Mesh: connected • ${normalizedRideCode()}"
+        }
     }
 
     override fun onAudioPacket(audio: ByteArray) {
         audioEngine.playIncoming(audio)
+    }
+
+    override fun onLobbyLog(message: String) {
+        runOnUiThread { log(message) }
+    }
+
+    override fun onNearbyRiderFound(endpointId: String, riderName: String, rideCode: String) {
+        runOnUiThread {
+            if (nearbyButtons.containsKey(endpointId)) return@runOnUiThread
+            if (nearbyButtons.isEmpty()) binding.nearbyUsers.removeAllViews()
+
+            val button = MaterialButton(this).apply {
+                isAllCaps = false
+                text = "$riderName • $rideCode   →   INVITE"
+                setOnClickListener {
+                    lobbyNode.invite(
+                        endpointId = endpointId,
+                        rideCode = normalizedRideCode(),
+                        inviterName = binding.riderName.text?.toString().orEmpty(),
+                    )
+                }
+            }
+            nearbyButtons[endpointId] = button
+            binding.nearbyUsers.addView(button)
+            log("Nearby RideMesh rider found: $riderName")
+        }
+    }
+
+    override fun onNearbyRiderLost(endpointId: String) {
+        runOnUiThread {
+            val button = nearbyButtons.remove(endpointId) ?: return@runOnUiThread
+            binding.nearbyUsers.removeView(button)
+            if (nearbyButtons.isEmpty()) clearNearbyRiders("No RideMesh riders visible yet. Keep FIND active on the other phones.")
+        }
+    }
+
+    override fun onRideInviteReceived(inviterName: String, rideCode: String) {
+        runOnUiThread {
+            AlertDialog.Builder(this)
+                .setTitle("RideMesh invitation")
+                .setMessage("$inviterName invited you to ride $rideCode")
+                .setNegativeButton("DECLINE", null)
+                .setPositiveButton("JOIN RIDE") { _, _ ->
+                    binding.rideCode.setText(rideCode)
+                    saveSettings()
+                    lobbyNode.stop()
+                    ensurePermissionsAndRun(PendingAction.START_RIDE)
+                }
+                .show()
+        }
+    }
+
+    private fun clearNearbyRiders(message: String) {
+        nearbyButtons.clear()
+        binding.nearbyUsers.removeAllViews()
+        val text = android.widget.TextView(this).apply {
+            this.text = message
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.muted))
+            textSize = 12f
+        }
+        binding.nearbyUsers.addView(text)
     }
 
     private fun log(message: String) {
@@ -328,7 +537,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
 
     override fun onDestroy() {
         saveSettings()
-        if (!rideStarted) audioEngine.release()
+        if (::lobbyNode.isInitialized) lobbyNode.stop()
+        if (!rideStarted && ::audioEngine.isInitialized) audioEngine.release()
         super.onDestroy()
     }
 }
