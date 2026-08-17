@@ -32,6 +32,15 @@ jobs:
         with:
           gradle-version: '8.13'
 
+      - name: Prepare RideMesh branding
+        shell: bash
+        run: |
+          mkdir -p app/src/main/res/drawable-nodpi /tmp/ridemesh-branding
+          base64 -d branding/ridemesh_branding.zip.b64 > /tmp/ridemesh-branding.zip
+          unzip -j /tmp/ridemesh-branding.zip -d /tmp/ridemesh-branding
+          cp /tmp/ridemesh-branding/ridemesh_logo_1024.jpg app/src/main/res/drawable-nodpi/ridemesh_logo.jpg
+          cp /tmp/ridemesh-branding/ridemesh_icon_1024.jpg app/src/main/res/drawable-nodpi/ridemesh_icon.jpg
+
       - name: Test and build debug APK
         id: compile
         shell: bash
@@ -51,7 +60,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-v0.2.2-debug-apk
+          name: RideMesh-v0.2.3-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
@@ -64,7 +73,7 @@ jobs:
           mkdir -p dist
           cp build.log dist/last-build.txt 2>/dev/null || echo "Build ended before Gradle log was created" > dist/last-build.txt
           if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            cp app/build/outputs/apk/debug/app-debug.apk dist/RideMesh-v0.2.2-debug.apk
+            cp app/build/outputs/apk/debug/app-debug.apk dist/RideMesh-v0.2.3-debug.apk
             echo "" >> dist/last-build.txt
             echo "RESULT: APK_BUILT" >> dist/last-build.txt
             echo "ARTIFACT_ID: ${APK_ARTIFACT_ID}" >> dist/last-build.txt
@@ -75,8 +84,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add dist/last-build.txt
-          if [ -f dist/RideMesh-v0.2.2-debug.apk ]; then git add dist/RideMesh-v0.2.2-debug.apk; fi
+          if [ -f dist/RideMesh-v0.2.3-debug.apk ]; then git add dist/RideMesh-v0.2.3-debug.apk; fi
           if ! git diff --cached --quiet; then
-            git commit -m "Publish RideMesh v0.2.2 build result [skip ci]"
+            git commit -m "Publish RideMesh v0.2.3 build result [skip ci]"
             git push
           fi
