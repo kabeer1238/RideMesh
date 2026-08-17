@@ -17,7 +17,10 @@ class GmsBarcodeScannerOptions internal constructor(internal val delegate: RealO
         private val delegate = RealOptions.Builder()
 
         fun setBarcodeFormats(vararg formats: Int): Builder = apply {
-            delegate.setBarcodeFormats(*formats)
+            if (formats.isNotEmpty()) {
+                val rest = if (formats.size > 1) formats.copyOfRange(1, formats.size) else intArrayOf()
+                delegate.setBarcodeFormats(formats[0], *rest)
+            }
         }
 
         fun enableAutoZoom(): Builder = apply {
