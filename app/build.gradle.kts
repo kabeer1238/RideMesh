@@ -13,12 +13,13 @@ android {
         applicationId = "com.bikemesh.ridemesh"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.3.2"
+        versionCode = 9
+        versionName = "0.4.0-beta1"
     }
 
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 
     compileOptions {
