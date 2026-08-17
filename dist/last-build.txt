@@ -1,5 +1,5 @@
-RideMesh CI 2026-08-17T13:41:43Z
-Commit: 9b9d424c12687b3f3619967b409029f27a9c4400
+RideMesh CI 2026-08-17T13:44:35Z
+Commit: 16745a947d98c41acc5b32cbda39b37fb0d16f7c
 === UNIT TESTS ===
 To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.13/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
 Daemon will be stopped at the end of the build 
@@ -27,18 +27,10 @@ Daemon will be stopped at the end of the build
 > Task :app:javaPreCompileDebugUnitTest
 > Task :app:processDebugResources
 
-> Task :app:compileDebugKotlin
-e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:27:31 Unresolved reference 'mlkit'.
-e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:28:31 Unresolved reference 'mlkit'.
-e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:219:23 Unresolved reference 'GmsBarcodeScannerOptions'.
-e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:223:23 Unresolved reference 'GmsBarcodeScanning'.
-e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:225:37 Cannot infer type for value parameter 'barcode'. Specify it explicitly.
-e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:226:35 Unresolved reference 'rawValue'.
-e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:230:21 Return type mismatch: expected '??? (Unknown type for value parameter it)', actual 'Unit'.
-e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:243:62 Unresolved reference 'it'.
-
 > Task :app:compileDebugKotlin FAILED
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786974108763.json
+e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/qr/GmsCodeScannerCompat.kt:20:40 The spread operator (*foo) can only be applied in a vararg position.
+e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/qr/GmsCodeScannerCompat.kt:20:41 Argument type mismatch: actual type is 'IntArray', but 'Int' was expected.
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786974280525.json
 
 FAILURE: Build failed with an exception.
 
@@ -53,7 +45,7 @@ Execution failed for task ':app:compileDebugKotlin'.
 > Run with --scan to get full insights.
 > Get more help at https://help.gradle.org.
 
-BUILD FAILED in 34s
+BUILD FAILED in 35s
 20 actionable tasks: 20 executed
 
 RESULT: BUILD_FAILED
