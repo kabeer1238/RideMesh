@@ -13,8 +13,8 @@ android {
         applicationId = "com.bikemesh.ridemesh"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.2.2"
+        versionCode = 5
+        versionName = "0.2.3"
     }
 
     buildFeatures {
@@ -44,5 +44,6 @@ dependencies {
     implementation("com.google.android.gms:play-services-nearby:19.4.0")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     implementation("com.google.zxing:core:3.5.4")
+    implementation("com.hivemq:hivemq-mqtt-client:1.3.14")
     testImplementation("junit:junit:4.13.2")
 }
