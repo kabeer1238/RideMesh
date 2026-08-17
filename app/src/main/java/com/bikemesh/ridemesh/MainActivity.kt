@@ -3,6 +3,7 @@ package com.bikemesh.ridemesh
 import android.Manifest
 import android.app.AlertDialog
 import android.bluetooth.BluetoothManager
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -67,6 +68,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
     }
 
+    /**
+     * Keeps the ride recoverable after a complete outage.
+     *
+     * - InternetNode independently retries the TLS relay.
+     * - When Internet is absent, local mesh is kept awake.
+     * - If no local peer is found for a while, Nearby is restarted to refresh discovery.
+     * - Battery Smart only sleeps local mesh after Internet has remained stable.
+     */
     private val rideWatchdog = object : Runnable {
         override fun run() {
             if (!rideStarted) return
@@ -77,7 +86,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                 if (binding.batterySaver.isChecked && stableFor >= INTERNET_STABLE_BEFORE_MESH_SLEEP_MS) {
                     sleepLocalMesh("Internet stable")
                 } else {
-                    ensureLocalMeshRunning("warm fallback")
+                    ensureLocalMeshRunning("warm handover fallback")
                 }
             } else {
                 ensureLocalMeshRunning("Internet unavailable")
@@ -149,7 +158,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             showScreen(Screen.HOME)
         }
 
-        binding.openSettings.setOnClickListener { showSettingsDialog() }
+        binding.openSettings.setOnClickListener { showSettingsAndHelpDialog() }
         binding.activeStop.setOnClickListener { confirmStopRide() }
         binding.activeRiders.setOnClickListener { showRidersDialog() }
         binding.activeInvite.setOnClickListener { showRideQr() }
@@ -322,7 +331,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             audioEngine.selectCommunicationDevice()
 
             // Start both initially. Battery Smart only sleeps local mesh after
-            // the Internet path proves stable, improving handover reliability.
+            // Internet proves stable, so riding out of local range does not require
+            // a manual mode change.
             ensureLocalMeshRunning("initial fallback")
             internetNode.start(code)
 
@@ -333,7 +343,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
             mainHandler.removeCallbacks(rideWatchdog)
             mainHandler.postDelayed(rideWatchdog, WATCHDOG_INTERVAL_MS)
-            log("Ride started • hands-free hybrid mode")
+            log("Ride started • automatic Internet / local reconnect enabled")
         } catch (t: Throwable) {
             recoverFromStartFailure(t)
         }
@@ -342,6 +352,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private fun sendHybridAudio(audio: ByteArray) {
         if (!rideStarted || audio.isEmpty()) return
 
+        // Internet is the preferred long-range path. Nearby is the immediate
+        // offline fallback whenever Internet is not usable.
         if (internetNode.isConnected()) {
             if (!internetNode.sendLocalAudio(audio)) {
                 ensureLocalMeshRunning("Internet send failed")
@@ -375,7 +387,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private fun restartLocalMesh() {
         if (!rideStarted || internetNode.isConnected() || !radiosReady()) return
-        log("Refreshing local discovery")
+        log("Refreshing local discovery for automatic reconnect")
         meshRunning = false
         meshNode.stop()
         directPeerCount = 0
@@ -402,7 +414,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             audioEngine.startTransmit()
         } else {
             audioEngine.stopTransmit()
-            updateAudioUi("Waiting for connection • microphone sleeping")
+            updateAudioUi("Reconnecting • microphone sleeping")
         }
     }
 
@@ -432,7 +444,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         AlertDialog.Builder(this)
             .setTitle("Could not start ride")
             .setMessage("RideMesh stayed open. Check Bluetooth, Wi-Fi and permissions, then try again.")
-            .setPositiveButton("OK", null)
+            .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
+            .setNegativeButton("CLOSE", null)
             .show()
     }
 
@@ -496,13 +509,13 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         binding.audioStatus.text = text
         binding.homeAudioStatus.text = when {
             text.contains("Bluetooth", true) || text.contains("headset", true) -> "Helmet / Bluetooth audio ready"
-            text.contains("sleep", true) || text.contains("Waiting", true) -> "Audio waiting for connection"
+            text.contains("sleep", true) || text.contains("Reconnect", true) || text.contains("Waiting", true) -> "Audio waiting for connection"
             else -> "Phone audio ready • helmet optional"
         }
 
         binding.audioTile.text = when {
             text.contains("Bluetooth", true) || text.contains("headset", true) -> "HELMET AUDIO"
-            text.contains("sleep", true) || text.contains("Waiting", true) -> "MIC STANDBY"
+            text.contains("sleep", true) || text.contains("Reconnect", true) || text.contains("Waiting", true) -> "MIC STANDBY"
             else -> "PHONE AUDIO"
         }
     }
@@ -619,7 +632,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                 binding.networkTile.text = "INTERNET"
                 binding.riderCount.text = if (internetPeerCount > 0) "$total RIDERS CONNECTED" else "RIDE ACTIVE"
                 binding.meshStatus.text = if (binding.batterySaver.isChecked && !meshRunning) {
-                    "INTERNET VOICE • LOCAL FALLBACK READY"
+                    "INTERNET VOICE • AUTO LOCAL FALLBACK"
                 } else {
                     "INTERNET VOICE • LOCAL MESH WARM"
                 }
@@ -629,13 +642,13 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                 val total = directPeerCount + 1
                 binding.networkTile.text = "LOCAL MESH"
                 binding.riderCount.text = "$total RIDERS NEARBY"
-                binding.meshStatus.text = "LOCAL VOICE • NO INTERNET NEEDED"
+                binding.meshStatus.text = "LOCAL VOICE • AUTO RECONNECT ACTIVE"
             }
 
             else -> {
                 binding.networkTile.text = "SEARCHING"
                 binding.riderCount.text = "RECONNECTING…"
-                binding.meshStatus.text = "SEARCHING FOR INTERNET OR NEARBY RIDERS"
+                binding.meshStatus.text = "AUTO RECONNECT • INTERNET + NEARBY SEARCH"
             }
         }
 
@@ -710,12 +723,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private fun showRidersDialog() {
         val internetTotal = if (internetNode.isConnected()) internetPeerCount + 1 else 0
-        val localTotal = if (directPeerCount > 0) directPeerCount + 1 else if (meshRunning) 1 else 0
 
         val message = buildString {
-            if (internetNode.isConnected()) append("Internet group: $internetTotal rider${if (internetTotal == 1) "" else "s"}\n")
+            if (internetNode.isConnected()) {
+                append("Internet group: $internetTotal rider${if (internetTotal == 1) "" else "s"}\n")
+            }
             append("Nearby direct peers: $directPeerCount\n")
-            append("Local mesh: ${if (meshRunning) "ready" else "sleeping"}\n\n")
+            append("Local mesh: ${if (meshRunning) "ready" else "sleeping"}\n")
+            append("Auto reconnect: ON\n\n")
             append("Invite more riders with the INVITE button and QR code.")
         }
 
@@ -754,7 +769,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             .show()
     }
 
-    private fun showSettingsDialog() {
+    private fun showSettingsAndHelpDialog() {
         val modes = arrayOf(
             "Battery Smart — recommended",
             "Max Link — keep Internet + local mesh active",
@@ -762,14 +777,19 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         val checked = if (binding.batterySaver.isChecked) 0 else 1
 
         AlertDialog.Builder(this)
-            .setTitle("Power mode")
+            .setTitle("RideMesh settings & help")
             .setSingleChoiceItems(modes, checked) { dialog, which ->
                 binding.batterySaver.isChecked = which == 0
                 saveSettings()
                 applyBatteryPolicy()
                 dialog.dismiss()
             }
-            .setMessage("Battery Smart keeps local mesh warm during Internet handover, then sleeps it after the Internet path is stable. It wakes automatically if coverage is lost.")
+            .setMessage(
+                "Battery Smart keeps local mesh warm during handover, then saves power when Internet is stable.\n\n" +
+                    "Need help? Report a bug directly on WhatsApp or join the RideMesh community."
+            )
+            .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
+            .setNeutralButton("COMMUNITY") { _, _ -> openRideMeshCommunity() }
             .setNegativeButton("CLOSE", null)
             .show()
     }
@@ -788,11 +808,49 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                     "Internet riders: ${if (internetNode.isConnected()) internetPeerCount + 1 else 0}\n" +
                     "Direct local peers: $directPeerCount\n" +
                     "Audio: ${binding.audioTile.text}\n" +
-                    "Power: ${binding.powerTile.text}\n\n" +
-                    "The Internet relay in this test build is experimental."
+                    "Power: ${binding.powerTile.text}\n" +
+                    "Auto reconnect: ON\n\n" +
+                    "If both Internet and local radio links disappear, RideMesh keeps trying to recover the ride session."
             )
-            .setPositiveButton("OK", null)
+            .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
+            .setNeutralButton("COMMUNITY") { _, _ -> openRideMeshCommunity() }
+            .setNegativeButton("CLOSE", null)
             .show()
+    }
+
+    private fun openWhatsAppBugReport() {
+        val message = buildString {
+            append("RideMesh bug report\n")
+            append("Ride code: ${normalizedRideCode()}\n")
+            append("Phone: ${Build.MANUFACTURER} ${Build.MODEL}\n")
+            append("Android: ${Build.VERSION.RELEASE}\n")
+            append("Current path: ${if (rideStarted) binding.networkTile.text else "Not riding"}\n")
+            append("Problem: ")
+        }
+        val url = "https://wa.me/$SUPPORT_WHATSAPP?text=${Uri.encode(message)}"
+        openExternalUri(url, "Could not open WhatsApp bug report")
+    }
+
+    private fun openRideMeshCommunity() {
+        openExternalUri(COMMUNITY_URL, "Could not open RideMesh community link")
+    }
+
+    private fun openExternalUri(url: String, failureMessage: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (_: ActivityNotFoundException) {
+            AlertDialog.Builder(this)
+                .setTitle("Link unavailable")
+                .setMessage(failureMessage)
+                .setPositiveButton("OK", null)
+                .show()
+        } catch (_: Throwable) {
+            AlertDialog.Builder(this)
+                .setTitle("Link unavailable")
+                .setMessage(failureMessage)
+                .setPositiveButton("OK", null)
+                .show()
+        }
     }
 
     private fun clearNearbyRiders(message: String) {
@@ -828,5 +886,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         private const val WATCHDOG_INTERVAL_MS = 5_000L
         private const val INTERNET_STABLE_BEFORE_MESH_SLEEP_MS = 15_000L
         private const val LOCAL_MESH_REFRESH_MS = 25_000L
+        private const val SUPPORT_WHATSAPP = "91886648231"
+        private const val COMMUNITY_URL = "https://chat.whatsapp.com/GTH7FA1uTUFGRXElnfDfdE"
     }
 }
