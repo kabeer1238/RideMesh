@@ -23,6 +23,8 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * It is also used while an Internet ride is already active. In that case the
  * voice call stays on Internet while this lobby runs for a short scan window.
+ * Beta 1 deliberately uses low-power discovery and NON_DISRUPTIVE connections
+ * so an invite scan is less likely to disturb the Internet voice path.
  */
 class LobbyNode(
     context: Context,
@@ -118,16 +120,23 @@ class LobbyNode(
         this.rideCode = rideCode.trim().uppercase().ifBlank { "RIDE01" }.take(12)
         running = true
 
-        val advertising = AdvertisingOptions.Builder().setStrategy(STRATEGY).build()
-        val discovery = DiscoveryOptions.Builder().setStrategy(STRATEGY).build()
+        val advertising = AdvertisingOptions.Builder()
+            .setStrategy(STRATEGY)
+            .setConnectionType(ConnectionType.NON_DISRUPTIVE)
+            .setLowPower(true)
+            .build()
+        val discovery = DiscoveryOptions.Builder()
+            .setStrategy(STRATEGY)
+            .setLowPower(true)
+            .build()
 
         try {
             client.startAdvertising(advertisedName(), SERVICE_ID, lifecycleCallback, advertising)
-                .addOnSuccessListener { listener.onLobbyLog("Nearby rider visibility ON") }
+                .addOnSuccessListener { listener.onLobbyLog("Nearby rider visibility ON • low power") }
                 .addOnFailureListener { listener.onLobbyLog("Nearby rider advertising error: ${it.message ?: "unknown"}") }
 
             client.startDiscovery(SERVICE_ID, discoveryCallback, discovery)
-                .addOnSuccessListener { listener.onLobbyLog("Searching for RideMesh riders nearby") }
+                .addOnSuccessListener { listener.onLobbyLog("Searching for RideMesh riders nearby • low power") }
                 .addOnFailureListener { listener.onLobbyLog("Nearby rider discovery error: ${it.message ?: "unknown"}") }
         } catch (t: Throwable) {
             running = false
@@ -156,6 +165,7 @@ class LobbyNode(
 
         val options = ConnectionOptions.Builder()
             .setConnectionType(ConnectionType.NON_DISRUPTIVE)
+            .setLowPower(true)
             .build()
 
         client.requestConnection(advertisedName(), endpointId, lifecycleCallback, options)
@@ -169,8 +179,8 @@ class LobbyNode(
         running = false
         runCatching { client.stopAdvertising() }
         runCatching { client.stopDiscovery() }
-        // Only disconnect the short-lived lobby endpoints we own. Do not use
-        // stopAllEndpoints() here because an active RideMesh voice path may exist.
+        // Only disconnect short-lived lobby endpoints. Do not call stopAllEndpoints()
+        // because a separate active RideMesh voice path may exist.
         connected.toList().forEach { endpoint ->
             runCatching { client.disconnectFromEndpoint(endpoint) }
         }
