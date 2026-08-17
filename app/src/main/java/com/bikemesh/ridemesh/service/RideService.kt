@@ -20,18 +20,36 @@ class RideService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_headset)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText("Ride mesh is active")
+            .setContentText("RideMesh intercom is active")
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .build()
 
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            notification,
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-        )
+        val fullTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+
+        try {
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, fullTypes)
+        } catch (_: SecurityException) {
+            // Some Android/OEM builds enforce microphone FGS prerequisites more strictly.
+            // Keep the mesh process alive with the connected-device type instead of
+            // allowing an uncaught SecurityException to terminate the whole app.
+            try {
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                )
+            } catch (_: Throwable) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+        } catch (_: Throwable) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         return START_STICKY
     }
 
