@@ -30,7 +30,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Prepare, test and build Beta 1 APK
+      - name: Prepare, test, lint and build Beta 1 APK
         id: compile
         shell: bash
         run: |
@@ -46,6 +46,8 @@ jobs:
             file app/src/main/res/drawable-nodpi/ridemesh_icon.jpg
             echo "=== UNIT TESTS ==="
             gradle --no-daemon testDebugUnitTest
+            echo "=== ANDROID LINT ==="
+            gradle --no-daemon lintDebug
             echo "=== APK BUILD ==="
             gradle --no-daemon assembleDebug
           } 2>&1 | tee build.log
@@ -57,6 +59,13 @@ jobs:
           name: RideMesh-Beta1-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideMesh-Beta1-lint
+          path: app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
       - name: Publish build result in repository
         if: always() && github.event_name != 'pull_request'
         shell: bash
