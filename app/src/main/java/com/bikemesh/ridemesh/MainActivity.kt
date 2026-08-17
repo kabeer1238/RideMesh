@@ -4,12 +4,13 @@ import android.Manifest
 import android.bluetooth.BluetoothManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.net.wifi.WifiManager
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.View
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -52,6 +53,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
             onStatus = { text -> runOnUiThread { binding.audioStatus.text = text } },
         )
         applySelectedAudioRoute()
+        updateModeUi()
 
         binding.audioRoute.setOnCheckedChangeListener { _, _ ->
             applySelectedAudioRoute()
@@ -59,13 +61,17 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
         }
 
         binding.hardwarePtt.setOnCheckedChangeListener { _, _ -> saveSettings() }
-        binding.labRole.setOnCheckedChangeListener { _, _ -> saveSettings() }
+        binding.labRole.setOnCheckedChangeListener { _, _ ->
+            updateModeUi()
+            saveSettings()
+        }
 
         binding.startRide.setOnClickListener {
             if (rideStarted) stopRide() else ensurePermissionsAndStart()
         }
 
         binding.ptt.setOnTouchListener { _, event ->
+            if (!isBenchPttMode()) return@setOnTouchListener true
             if (!rideStarted) {
                 if (event.action == MotionEvent.ACTION_DOWN) log("Start / join a ride first")
                 return@setOnTouchListener true
@@ -79,7 +85,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (rideStarted && binding.hardwarePtt.isChecked && isVolumeKey(keyCode)) {
+        if (rideStarted && isBenchPttMode() && binding.hardwarePtt.isChecked && isVolumeKey(keyCode)) {
             if (event?.repeatCount == 0) setPtt(true)
             return true
         }
@@ -87,7 +93,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
-        if (rideStarted && binding.hardwarePtt.isChecked && isVolumeKey(keyCode)) {
+        if (rideStarted && isBenchPttMode() && binding.hardwarePtt.isChecked && isVolumeKey(keyCode)) {
             setPtt(false)
             return true
         }
@@ -95,13 +101,13 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
     }
 
     private fun setPtt(active: Boolean): Boolean {
-        if (!rideStarted || pttPressed == active) return true
+        if (!rideStarted || !isBenchPttMode() || pttPressed == active) return true
         pttPressed = active
         if (active) {
             binding.ptt.text = "TRANSMITTING"
             audioEngine.startTransmit()
         } else {
-            binding.ptt.text = "TALK"
+            binding.ptt.text = "BENCH TALK"
             audioEngine.stopTransmit()
         }
         return true
@@ -126,22 +132,66 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
         val code = binding.rideCode.text?.toString().orEmpty()
         saveSettings()
 
-        ContextCompat.startForegroundService(this, Intent(this, RideService::class.java))
+        try {
+            startRideServiceSafely()
 
-        rideStarted = true
-        applySelectedAudioRoute()
-        audioEngine.selectCommunicationDevice()
-        meshNode.start(rider, code, selectedLabRole())
-        binding.startRide.text = "STOP RIDE"
-        binding.meshStatus.text = "Mesh: active • ${code.trim().uppercase()}"
-        log("Ride started. Helmet NOT required: Phone A ↔ B first, then A → B → C relay test.")
+            rideStarted = true
+            applySelectedAudioRoute()
+            audioEngine.selectCommunicationDevice()
+            meshNode.start(rider, code, selectedLabRole())
+
+            binding.startRide.text = "STOP RIDE"
+            binding.meshStatus.text = "Mesh: active • ${code.trim().uppercase()}"
+
+            if (isBenchPttMode()) {
+                log("Bench ride started. Hold BENCH TALK (or a volume key if enabled) to transmit.")
+            } else {
+                audioEngine.startTransmit()
+                log("Ride started • HANDS-FREE intercom active. No TALK button is required while riding.")
+            }
+        } catch (t: Throwable) {
+            recoverFromStartFailure(t)
+        }
+    }
+
+    private fun startRideServiceSafely() {
+        try {
+            ContextCompat.startForegroundService(this, Intent(this, RideService::class.java))
+        } catch (t: Throwable) {
+            log("Background ride service unavailable: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}. Continuing while app is open.")
+        }
+    }
+
+    private fun recoverFromStartFailure(t: Throwable) {
+        runCatching { audioEngine.stopTransmit() }
+        runCatching { meshNode.stop() }
+        runCatching { stopService(Intent(this, RideService::class.java)) }
+        rideStarted = false
+        pttPressed = false
+        binding.startRide.text = "START / JOIN RIDE"
+        binding.meshStatus.text = "Mesh: start failed"
+        binding.ptt.text = "BENCH TALK"
+        log("START ERROR — ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
+        log("The app stayed open so we can diagnose this instead of crashing.")
     }
 
     private fun radiosReady(): Boolean {
-        val bluetoothManager = getSystemService(BluetoothManager::class.java)
-        val wifiManager = applicationContext.getSystemService(WifiManager::class.java)
-        val bluetoothOn = bluetoothManager.adapter?.isEnabled == true
-        val wifiOn = wifiManager.isWifiEnabled
+        val bluetoothOn = try {
+            val bluetoothManager = getSystemService(BluetoothManager::class.java)
+            bluetoothManager.adapter?.isEnabled == true
+        } catch (t: Throwable) {
+            log("Could not read Bluetooth state: ${t.javaClass.simpleName}. Nearby will check it directly.")
+            true
+        }
+
+        val wifiOn = try {
+            val wifiManager = applicationContext.getSystemService(WifiManager::class.java)
+            wifiManager.isWifiEnabled
+        } catch (t: Throwable) {
+            log("Could not read Wi-Fi state: ${t.javaClass.simpleName}. Nearby will check it directly.")
+            true
+        }
+
         if (!bluetoothOn) log("Bluetooth is OFF")
         if (!wifiOn) log("Wi-Fi is OFF")
         return bluetoothOn && wifiOn
@@ -149,16 +199,30 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener {
 
     private fun stopRide() {
         if (!rideStarted) return
-        setPtt(false)
+        if (isBenchPttMode()) setPtt(false)
+        audioEngine.stopTransmit()
         meshNode.stop()
         stopService(Intent(this, RideService::class.java))
         rideStarted = false
+        pttPressed = false
         binding.startRide.text = "START / JOIN RIDE"
         binding.meshStatus.text = "Mesh: stopped"
         binding.riderCount.text = "Direct peers: 0"
-        binding.ptt.text = "TALK"
+        binding.ptt.text = "BENCH TALK"
         log("Ride stopped")
     }
+
+    private fun updateModeUi() {
+        val bench = isBenchPttMode()
+        binding.pttLabel.visibility = if (bench) View.VISIBLE else View.GONE
+        binding.ptt.visibility = if (bench) View.VISIBLE else View.GONE
+        binding.hardwarePtt.visibility = if (bench) View.VISIBLE else View.GONE
+        if (!bench) {
+            binding.ptt.text = "BENCH TALK"
+        }
+    }
+
+    private fun isBenchPttMode(): Boolean = selectedLabRole() != MeshNode.LabRole.NORMAL
 
     private fun applySelectedAudioRoute() {
         if (!::audioEngine.isInitialized) return
