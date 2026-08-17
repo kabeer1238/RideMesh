@@ -35,11 +35,9 @@ jobs:
       - name: Prepare RideMesh branding
         shell: bash
         run: |
-          mkdir -p app/src/main/res/drawable-nodpi /tmp/ridemesh-branding
-          base64 -d branding/ridemesh_branding.zip.b64 > /tmp/ridemesh-branding.zip
-          unzip -j /tmp/ridemesh-branding.zip -d /tmp/ridemesh-branding
-          cp /tmp/ridemesh-branding/ridemesh_logo_1024.jpg app/src/main/res/drawable-nodpi/ridemesh_logo.jpg
-          cp /tmp/ridemesh-branding/ridemesh_icon_1024.jpg app/src/main/res/drawable-nodpi/ridemesh_icon.jpg
+          mkdir -p app/src/main/res/drawable-nodpi
+          base64 -d branding/ridemesh_logo.jpg.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo.jpg
+          base64 -d branding/ridemesh_icon.jpg.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon.jpg
 
       - name: Test and build debug APK
         id: compile
