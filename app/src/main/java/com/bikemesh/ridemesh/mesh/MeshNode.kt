@@ -5,7 +5,9 @@ import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
 import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
+import com.google.android.gms.nearby.connection.ConnectionOptions
 import com.google.android.gms.nearby.connection.ConnectionResolution
+import com.google.android.gms.nearby.connection.ConnectionType
 import com.google.android.gms.nearby.connection.ConnectionsClient
 import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
 import com.google.android.gms.nearby.connection.DiscoveryOptions
@@ -21,12 +23,12 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * V1 mesh transport.
+ * Local RideMesh transport.
  *
- * Nearby Connections P2P_CLUSTER gives us multiple direct nearby links.
- * This class adds a simple broadcast relay layer on top: each audio packet has
- * a UUID and TTL. A node plays a new packet once, then forwards it to every
- * direct peer except the peer it came from.
+ * Nearby Connections P2P_CLUSTER supplies multiple direct nearby links.
+ * RideMesh adds packet IDs + TTL broadcast forwarding for multi-hop relay.
+ * NON_DISRUPTIVE connection mode is intentional: local mesh should coexist
+ * with mobile/Wi-Fi Internet so the hybrid router can hand over cleanly.
  */
 class MeshNode(
     context: Context,
@@ -132,11 +134,17 @@ class MeshNode(
 
             listener.onLog("Found ${displayName(info.endpointName)} — connecting")
             try {
-                client.requestConnection(advertisedName(), endpointId, lifecycleCallback)
-                    .addOnFailureListener {
-                        requested.remove(endpointId)
-                        listener.onLog("Could not connect to ${displayName(info.endpointName)}: ${it.message ?: "error"}")
-                    }
+                client.requestConnection(
+                    advertisedName(),
+                    endpointId,
+                    lifecycleCallback,
+                    ConnectionOptions.Builder()
+                        .setConnectionType(ConnectionType.NON_DISRUPTIVE)
+                        .build(),
+                ).addOnFailureListener {
+                    requested.remove(endpointId)
+                    listener.onLog("Could not connect to ${displayName(info.endpointName)}: ${it.message ?: "error"}")
+                }
             } catch (t: Throwable) {
                 requested.remove(endpointId)
                 listener.onLog("Connection request error: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
@@ -154,19 +162,23 @@ class MeshNode(
         this.rideCode = rideCode.trim().uppercase().ifBlank { "RIDE01" }.take(12)
         this.labRole = labRole
         running = true
-        val roleText = if (labRole == LabRole.NORMAL) "normal topology" else "LAB ${labRole.name}"
-        listener.onLog("Starting mesh for ride ${this.rideCode} • $roleText")
+        listener.onLog("Starting local mesh for ride ${this.rideCode}")
 
-        val advertising = AdvertisingOptions.Builder().setStrategy(STRATEGY).build()
-        val discovery = DiscoveryOptions.Builder().setStrategy(STRATEGY).build()
+        val advertising = AdvertisingOptions.Builder()
+            .setStrategy(STRATEGY)
+            .setConnectionType(ConnectionType.NON_DISRUPTIVE)
+            .build()
+        val discovery = DiscoveryOptions.Builder()
+            .setStrategy(STRATEGY)
+            .build()
 
         try {
             client.startAdvertising(advertisedName(), SERVICE_ID, lifecycleCallback, advertising)
-                .addOnSuccessListener { listener.onLog("Advertising as ${this.riderName}") }
+                .addOnSuccessListener { listener.onLog("Local mesh visible as ${this.riderName}") }
                 .addOnFailureListener { listener.onLog("Advertising error: ${it.javaClass.simpleName}: ${it.message ?: "unknown"}") }
 
             client.startDiscovery(SERVICE_ID, discoveryCallback, discovery)
-                .addOnSuccessListener { listener.onLog("Scanning for nearby riders") }
+                .addOnSuccessListener { listener.onLog("Searching for nearby RideMesh riders") }
                 .addOnFailureListener { listener.onLog("Discovery error: ${it.javaClass.simpleName}: ${it.message ?: "unknown"}") }
         } catch (t: Throwable) {
             running = false
