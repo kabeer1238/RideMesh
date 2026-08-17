@@ -1,0 +1,59 @@
+RideMesh CI 2026-08-17T13:41:43Z
+Commit: 9b9d424c12687b3f3619967b409029f27a9c4400
+=== UNIT TESTS ===
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.13/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:generateDebugResValues
+> Task :app:dataBindingMergeDependencyArtifactsDebug
+> Task :app:generateDebugResources
+> Task :app:processDebugNavigationResources
+> Task :app:checkDebugAarMetadata
+> Task :app:mapDebugSourceSetPaths
+> Task :app:createDebugCompatibleScreenManifests
+> Task :app:extractDeepLinksDebug
+> Task :app:mergeDebugResources
+> Task :app:processDebugMainManifest
+> Task :app:packageDebugResources
+> Task :app:compileDebugNavigationResources
+> Task :app:parseDebugLocalResources
+> Task :app:processDebugManifest
+> Task :app:dataBindingGenBaseClassesDebug
+> Task :app:processDebugManifestForPackage
+> Task :app:javaPreCompileDebug
+> Task :app:preDebugUnitTestBuild UP-TO-DATE
+> Task :app:javaPreCompileDebugUnitTest
+> Task :app:processDebugResources
+
+> Task :app:compileDebugKotlin
+e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:27:31 Unresolved reference 'mlkit'.
+e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:28:31 Unresolved reference 'mlkit'.
+e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:219:23 Unresolved reference 'GmsBarcodeScannerOptions'.
+e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:223:23 Unresolved reference 'GmsBarcodeScanning'.
+e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:225:37 Cannot infer type for value parameter 'barcode'. Specify it explicitly.
+e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:226:35 Unresolved reference 'rawValue'.
+e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:230:21 Return type mismatch: expected '??? (Unknown type for value parameter it)', actual 'Unit'.
+e: file:///home/runner/work/RideMesh/RideMesh/app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt:243:62 Unresolved reference 'it'.
+
+> Task :app:compileDebugKotlin FAILED
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786974108763.json
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:compileDebugKotlin'.
+> A failure occurred while executing org.jetbrains.kotlin.compilerRunner.btapi.BuildToolsApiCompilationWork
+   > Compilation error. See log for more details
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 34s
+20 actionable tasks: 20 executed
+
+RESULT: BUILD_FAILED
