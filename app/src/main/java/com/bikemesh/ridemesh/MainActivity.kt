@@ -24,6 +24,7 @@ import com.bikemesh.ridemesh.databinding.ActivityMainBinding
 import com.bikemesh.ridemesh.mesh.LobbyNode
 import com.bikemesh.ridemesh.mesh.MeshNode
 import com.bikemesh.ridemesh.service.RideService
+import com.bikemesh.ridemesh.transport.InternetNode
 import com.google.android.gms.mlkit.barcode.GmsBarcodeScannerOptions
 import com.google.android.gms.mlkit.barcode.GmsBarcodeScanning
 import com.google.android.material.button.MaterialButton
@@ -34,10 +35,11 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener {
+class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener, InternetNode.Listener {
     private lateinit var binding: ActivityMainBinding
     private lateinit var meshNode: MeshNode
     private lateinit var lobbyNode: LobbyNode
+    private lateinit var internetNode: InternetNode
     private lateinit var audioEngine: AudioEngine
     private val prefs by lazy { getSharedPreferences("ridemesh", MODE_PRIVATE) }
     private val nearbyButtons = linkedMapOf<String, MaterialButton>()
@@ -45,6 +47,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener 
     private var rideStarted = false
     private var pttPressed = false
     private var pendingAction = PendingAction.NONE
+    private var directPeerCount = 0
 
     private enum class PendingAction { NONE, START_RIDE, FIND_RIDERS }
 
@@ -75,9 +78,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener 
 
         meshNode = MeshNode(applicationContext, this)
         lobbyNode = LobbyNode(applicationContext, this)
+        internetNode = InternetNode(this)
         audioEngine = AudioEngine(
             context = applicationContext,
-            onCapturedFrame = meshNode::sendLocalAudio,
+            onCapturedFrame = ::sendHybridAudio,
             onStatus = { text -> runOnUiThread { binding.audioStatus.text = text } },
         )
         applySelectedAudioRoute()
@@ -253,10 +257,6 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener 
 
     private fun startRideNow() {
         if (rideStarted) return
-        if (!radiosReady()) {
-            log("Cannot start: turn ON Bluetooth and Wi-Fi. RideMesh will not open a generic settings screen.")
-            return
-        }
 
         val rider = binding.riderName.text?.toString().orEmpty()
         val code = normalizedRideCode()
@@ -269,12 +269,22 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener 
             startRideServiceSafely()
 
             rideStarted = true
+            directPeerCount = 0
             applySelectedAudioRoute()
             audioEngine.selectCommunicationDevice()
-            meshNode.start(rider, code, selectedLabRole())
+
+            // Internet is preferred. The public relay is experimental test infrastructure.
+            internetNode.start(code)
+
+            // Keep Nearby alive as the automatic no-coverage fallback whenever radios are available.
+            if (radiosReady()) {
+                meshNode.start(rider, code, selectedLabRole())
+            } else {
+                log("Local mesh standby unavailable because Bluetooth/Wi-Fi is off. Internet voice can still connect.")
+            }
 
             binding.startRide.text = "STOP RIDE"
-            binding.meshStatus.text = "Mesh: active • $code"
+            binding.meshStatus.text = "Hybrid: connecting Internet • mesh standby"
             binding.findNearby.isEnabled = false
             binding.showQr.isEnabled = false
             binding.scanQr.isEnabled = false
@@ -283,10 +293,22 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener 
                 log("Bench ride started. Hold BENCH TALK (or a volume key if enabled) to transmit.")
             } else {
                 audioEngine.startTransmit()
-                log("Ride started • HANDS-FREE intercom active. Waiting for direct peers…")
+                log("Ride started • HYBRID HANDS-FREE • Internet preferred, Nearby fallback.")
             }
         } catch (t: Throwable) {
             recoverFromStartFailure(t)
+        }
+    }
+
+    private fun sendHybridAudio(audio: ByteArray) {
+        if (!rideStarted || audio.isEmpty()) return
+
+        // Prefer the long-range Internet path. If publish fails or Internet is unavailable,
+        // immediately use the Nearby mesh path instead.
+        if (internetNode.isConnected()) {
+            if (!internetNode.sendLocalAudio(audio)) meshNode.sendLocalAudio(audio)
+        } else {
+            meshNode.sendLocalAudio(audio)
         }
     }
 
@@ -300,12 +322,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener 
 
     private fun recoverFromStartFailure(t: Throwable) {
         runCatching { audioEngine.stopTransmit() }
+        runCatching { internetNode.stop() }
         runCatching { meshNode.stop() }
         runCatching { stopService(Intent(this, RideService::class.java)) }
         rideStarted = false
         pttPressed = false
+        directPeerCount = 0
         binding.startRide.text = "START / JOIN RIDE"
-        binding.meshStatus.text = "Mesh: start failed"
+        binding.meshStatus.text = "Hybrid: start failed"
         binding.ptt.text = "BENCH TALK"
         binding.findNearby.isEnabled = true
         binding.showQr.isEnabled = true
@@ -318,21 +342,17 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener 
         val bluetoothOn = try {
             val bluetoothManager = getSystemService(BluetoothManager::class.java)
             bluetoothManager.adapter?.isEnabled == true
-        } catch (t: Throwable) {
-            log("Could not read Bluetooth state: ${t.javaClass.simpleName}")
+        } catch (_: Throwable) {
             false
         }
 
         val wifiOn = try {
             val wifiManager = applicationContext.getSystemService(WifiManager::class.java)
             wifiManager.isWifiEnabled
-        } catch (t: Throwable) {
-            log("Could not read Wi-Fi state: ${t.javaClass.simpleName}")
+        } catch (_: Throwable) {
             false
         }
 
-        if (!bluetoothOn) log("Bluetooth is OFF")
-        if (!wifiOn) log("Wi-Fi is OFF")
         return bluetoothOn && wifiOn
     }
 
@@ -340,12 +360,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener 
         if (!rideStarted) return
         if (isBenchPttMode()) setPtt(false)
         audioEngine.stopTransmit()
+        internetNode.stop()
         meshNode.stop()
         stopService(Intent(this, RideService::class.java))
         rideStarted = false
         pttPressed = false
+        directPeerCount = 0
         binding.startRide.text = "START / JOIN RIDE"
-        binding.meshStatus.text = "Mesh: stopped"
+        binding.meshStatus.text = "Hybrid: stopped"
         binding.riderCount.text = "Direct peers: 0"
         binding.ptt.text = "BENCH TALK"
         binding.findNearby.isEnabled = true
@@ -453,14 +475,37 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener 
     }
 
     override fun onDirectPeerCount(count: Int) {
+        directPeerCount = count
         runOnUiThread {
             binding.riderCount.text = "Direct peers: $count"
-            if (rideStarted && count > 0) binding.meshStatus.text = "Mesh: connected • ${normalizedRideCode()}"
+            updateTransportStatus()
         }
     }
 
     override fun onAudioPacket(audio: ByteArray) {
         audioEngine.playIncoming(audio)
+    }
+
+    override fun onInternetState(connected: Boolean, message: String) {
+        runOnUiThread {
+            log(message)
+            updateTransportStatus()
+        }
+    }
+
+    override fun onInternetAudio(audio: ByteArray) {
+        if (rideStarted) audioEngine.playIncoming(audio)
+    }
+
+    private fun updateTransportStatus() {
+        if (!rideStarted) return
+        binding.meshStatus.text = if (internetNode.isConnected()) {
+            "Hybrid: INTERNET active • mesh peers $directPeerCount"
+        } else if (directPeerCount > 0) {
+            "Hybrid: LOCAL MESH active • $directPeerCount peers"
+        } else {
+            "Hybrid: reconnecting • no active path yet"
+        }
     }
 
     override fun onLobbyLog(message: String) {
@@ -538,6 +583,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener 
     override fun onDestroy() {
         saveSettings()
         if (::lobbyNode.isInitialized) lobbyNode.stop()
+        if (::internetNode.isInitialized && !rideStarted) internetNode.stop()
         if (!rideStarted && ::audioEngine.isInitialized) audioEngine.release()
         super.onDestroy()
     }
