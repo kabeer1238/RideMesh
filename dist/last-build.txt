@@ -1,5 +1,5 @@
-RideMesh CI 2026-08-17T16:13:12Z
-Commit: 7f0f2c956975f327b084bd1b7f3b61acc32fd1bc
+RideMesh CI 2026-08-17T16:36:03Z
+Commit: e9743a889757d7cdf0d95b3f92f2c3c40b8461b6
 === BRANDING ===
 app/src/main/res/drawable-nodpi/ridemesh_logo.jpg: JPEG image data, JFIF standard 1.01, aspect ratio, density 1x1, segment length 16
 app/src/main/res/drawable-nodpi/ridemesh_icon.jpg: JPEG image data, JFIF standard 1.01, aspect ratio, density 1x1, segment length 16
@@ -31,16 +31,16 @@ Daemon will be stopped at the end of the build
 > Task :app:processDebugResources
 > Task :app:compileDebugKotlin
 > Task :app:compileDebugJavaWithJavac
-> Task :app:bundleDebugClassesToCompileJar
 > Task :app:bundleDebugClassesToRuntimeJar
+> Task :app:bundleDebugClassesToCompileJar
 > Task :app:processDebugJavaRes
 > Task :app:compileDebugUnitTestKotlin
 > Task :app:compileDebugUnitTestJavaWithJavac NO-SOURCE
 > Task :app:processDebugUnitTestJavaRes
 > Task :app:testDebugUnitTest
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786983198114.json
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786984567335.json
 
-BUILD SUCCESSFUL in 50s
+BUILD SUCCESSFUL in 39s
 27 actionable tasks: 27 executed
 === APK BUILD ===
 To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.13/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
@@ -81,22 +81,22 @@ Daemon will be stopped at the end of the build
 > Task :app:mergeDebugGlobalSynthetics
 > Task :app:checkDebugDuplicateClasses
 > Task :app:mergeDebugJavaResource
-> Task :app:mergeExtDexDebug
 > Task :app:mergeLibDexDebug
+> Task :app:mergeExtDexDebug
 > Task :app:mergeDebugJniLibFolders
 > Task :app:mergeDebugNativeLibs NO-SOURCE
-> Task :app:mergeProjectDexDebug
 > Task :app:stripDebugDebugSymbols NO-SOURCE
+> Task :app:mergeProjectDexDebug
 > Task :app:validateSigningDebug
 > Task :app:writeDebugAppMetadata
 > Task :app:writeDebugSigningConfigVersions
 > Task :app:packageDebug
 > Task :app:createDebugApkListingFileRedirect
 > Task :app:assembleDebug
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786983248035.json
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786984607839.json
 
-BUILD SUCCESSFUL in 33s
+BUILD SUCCESSFUL in 24s
 39 actionable tasks: 18 executed, 21 up-to-date
 
 RESULT: APK_BUILT
-ARTIFACT_ID: 9292607207
+ARTIFACT_ID: 9293041713
