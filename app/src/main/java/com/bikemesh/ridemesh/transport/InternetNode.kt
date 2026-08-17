@@ -8,6 +8,7 @@ import java.io.EOFException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLSocket
@@ -16,14 +17,16 @@ import javax.net.ssl.SSLSocketFactory
 /**
  * Experimental Internet transport for field testing.
  *
- * This deliberately implements only the small MQTT 3.1.1 subset RideMesh
- * needs (CONNECT, SUBSCRIBE, QoS-0 PUBLISH, PING). It avoids pulling a large
- * networking stack into the Android APK. The public broker remains TEST-ONLY.
+ * Implements the small MQTT 3.1.1 subset RideMesh needs (CONNECT, SUBSCRIBE,
+ * QoS-0 PUBLISH and PING) without a large networking dependency. Audio and a
+ * tiny presence heartbeat share the same ride topic tree. The public broker
+ * remains TEST-ONLY infrastructure.
  */
 class InternetNode(private val listener: Listener) {
     interface Listener {
         fun onInternetState(connected: Boolean, message: String)
         fun onInternetAudio(audio: ByteArray)
+        fun onInternetPeerCount(count: Int)
     }
 
     private val nodeId = UUID.randomUUID()
@@ -31,8 +34,13 @@ class InternetNode(private val listener: Listener) {
     private val connected = AtomicBoolean(false)
     private val running = AtomicBoolean(false)
     private val outputLock = Any()
+    private val peers = ConcurrentHashMap<UUID, Long>()
+    private val reportedPeerCount = AtomicInteger(-1)
 
-    @Volatile private var topic: String = ""
+    @Volatile private var baseTopic: String = ""
+    @Volatile private var audioTopic: String = ""
+    @Volatile private var presenceTopic: String = ""
+    @Volatile private var subscriptionTopic: String = ""
     @Volatile private var socket: SSLSocket? = null
     @Volatile private var output: BufferedOutputStream? = null
     @Volatile private var worker: Thread? = null
@@ -42,7 +50,10 @@ class InternetNode(private val listener: Listener) {
         val safeRide = rideCode.trim().uppercase().ifBlank { "RIDE01" }
             .replace(Regex("[^A-Z0-9_-]"), "_")
             .take(32)
-        topic = "ridemesh/test/v1/$safeRide/audio"
+        baseTopic = "ridemesh/test/v2/$safeRide"
+        audioTopic = "$baseTopic/audio"
+        presenceTopic = "$baseTopic/presence"
+        subscriptionTopic = "$baseTopic/#"
         running.set(true)
         listener.onInternetState(false, "Internet relay connecting…")
 
@@ -53,6 +64,8 @@ class InternetNode(private val listener: Listener) {
     }
 
     fun isConnected(): Boolean = connected.get()
+
+    fun remotePeerCount(): Int = peers.size
 
     fun sendLocalAudio(audio: ByteArray): Boolean {
         if (audio.isEmpty() || !connected.get()) return false
@@ -65,10 +78,10 @@ class InternetNode(private val listener: Listener) {
             )
         )
         return try {
-            sendMqttPublish(topic, packet)
+            sendMqttPublish(audioTopic, packet)
             true
         } catch (_: Throwable) {
-            markDisconnected("Internet send failed • using local mesh")
+            markDisconnected("Internet send failed • switching to local mesh")
             closeSocket()
             false
         }
@@ -77,6 +90,7 @@ class InternetNode(private val listener: Listener) {
     fun stop() {
         running.set(false)
         connected.set(false)
+        clearPeers()
         closeSocket()
         worker?.interrupt()
         worker = null
@@ -89,27 +103,31 @@ class InternetNode(private val listener: Listener) {
             } catch (_: InterruptedException) {
                 break
             } catch (_: Throwable) {
-                if (running.get()) markDisconnected("Internet relay unavailable • using local mesh")
+                if (running.get()) markDisconnected("Internet relay unavailable • local mesh fallback")
             } finally {
                 closeSocket()
             }
 
             if (running.get()) {
-                try { Thread.sleep(RECONNECT_DELAY_MS) } catch (_: InterruptedException) { break }
-                listener.onInternetState(false, "Internet relay reconnecting… • local mesh available")
+                try {
+                    Thread.sleep(RECONNECT_DELAY_MS)
+                } catch (_: InterruptedException) {
+                    break
+                }
+                listener.onInternetState(false, "Internet reconnecting… • local mesh available")
             }
         }
     }
 
     private fun connectAndRead() {
-        val tls = (SSLSocketFactory.getDefault().createSocket(PUBLIC_BROKER, PUBLIC_BROKER_TLS_PORT) as SSLSocket).apply {
+        val tls = (SSLSocketFactory.getDefault()
+            .createSocket(PUBLIC_BROKER, PUBLIC_BROKER_TLS_PORT) as SSLSocket).apply {
             soTimeout = SOCKET_TIMEOUT_MS
             startHandshake()
         }
         socket = tls
         val input = BufferedInputStream(tls.inputStream)
-        val out = BufferedOutputStream(tls.outputStream)
-        output = out
+        output = BufferedOutputStream(tls.outputStream)
 
         sendRaw(connectPacket())
         val connAck = readPacket(input)
@@ -117,20 +135,29 @@ class InternetNode(private val listener: Listener) {
             throw IllegalStateException("MQTT broker rejected connection")
         }
 
-        sendRaw(subscribePacket(topic))
+        sendRaw(subscribePacket(subscriptionTopic))
         connected.set(true)
-        listener.onInternetState(true, "Internet relay active")
+        clearPeers()
+        listener.onInternetState(true, "Internet voice connected")
+        publishPresence()
 
         var lastPing = System.currentTimeMillis()
+        var lastPresence = System.currentTimeMillis()
+
         while (running.get() && !tls.isClosed) {
             try {
                 val mqtt = readPacket(input)
                 if (mqtt.type == 3) handlePublish(mqtt.body)
             } catch (_: java.net.SocketTimeoutException) {
-                // Timeout is also our keep-alive timer; the socket remains usable.
+                // Used as a periodic wake-up for keepalive and presence cleanup.
             }
 
             val now = System.currentTimeMillis()
+            if (now - lastPresence >= PRESENCE_INTERVAL_MS) {
+                publishPresence()
+                prunePeers(now)
+                lastPresence = now
+            }
             if (now - lastPing >= PING_INTERVAL_MS) {
                 sendRaw(byteArrayOf(0xC0.toByte(), 0x00))
                 lastPing = now
@@ -143,11 +170,61 @@ class InternetNode(private val listener: Listener) {
         val topicLen = ((body[0].toInt() and 0xff) shl 8) or (body[1].toInt() and 0xff)
         if (topicLen <= 0 || body.size < 2 + topicLen) return
         val receivedTopic = body.copyOfRange(2, 2 + topicLen).toString(Charsets.UTF_8)
-        if (receivedTopic != topic) return
         val payload = body.copyOfRange(2 + topicLen, body.size)
-        val packet = decode(payload) ?: return
-        if (packet.origin == nodeId) return
-        listener.onInternetAudio(packet.audio)
+
+        when (receivedTopic) {
+            audioTopic -> {
+                val packet = decode(payload) ?: return
+                if (packet.origin == nodeId) return
+                markPeer(packet.origin)
+                listener.onInternetAudio(packet.audio)
+            }
+            presenceTopic -> handlePresence(payload)
+        }
+    }
+
+    private fun publishPresence() {
+        if (!connected.get()) return
+        val payload = ByteBuffer.allocate(PRESENCE_BYTES)
+            .order(ByteOrder.BIG_ENDIAN)
+            .putLong(nodeId.mostSignificantBits)
+            .putLong(nodeId.leastSignificantBits)
+            .putLong(System.currentTimeMillis())
+            .array()
+        sendMqttPublish(presenceTopic, payload)
+    }
+
+    private fun handlePresence(payload: ByteArray) {
+        if (payload.size < PRESENCE_BYTES) return
+        try {
+            val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+            val origin = UUID(buffer.long, buffer.long)
+            buffer.long // sender timestamp; local receive time is used for expiry
+            if (origin == nodeId) return
+            markPeer(origin)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun markPeer(id: UUID) {
+        peers[id] = System.currentTimeMillis()
+        notifyPeerCount()
+    }
+
+    private fun prunePeers(now: Long) {
+        peers.entries.removeIf { now - it.value > PRESENCE_TIMEOUT_MS }
+        notifyPeerCount()
+    }
+
+    private fun clearPeers() {
+        peers.clear()
+        notifyPeerCount(force = true)
+    }
+
+    private fun notifyPeerCount(force: Boolean = false) {
+        val count = peers.size
+        val previous = reportedPeerCount.getAndSet(count)
+        if (force || previous != count) listener.onInternetPeerCount(count)
     }
 
     private fun sendMqttPublish(topic: String, payload: ByteArray) {
@@ -246,15 +323,22 @@ class InternetNode(private val listener: Listener) {
 
     private fun markDisconnected(message: String) {
         val wasConnected = connected.getAndSet(false)
+        clearPeers()
         if (wasConnected || running.get()) listener.onInternetState(false, message)
     }
 
     private fun closeSocket() {
         connected.set(false)
         synchronized(outputLock) {
-            try { output?.close() } catch (_: Throwable) {}
+            try {
+                output?.close()
+            } catch (_: Throwable) {
+            }
             output = null
-            try { socket?.close() } catch (_: Throwable) {}
+            try {
+                socket?.close()
+            } catch (_: Throwable) {
+            }
             socket = null
         }
     }
@@ -299,9 +383,12 @@ class InternetNode(private val listener: Listener) {
         private const val PUBLIC_BROKER = "broker.hivemq.com"
         private const val PUBLIC_BROKER_TLS_PORT = 8883
         private const val KEEP_ALIVE_SECONDS = 30
-        private const val SOCKET_TIMEOUT_MS = 10_000
+        private const val SOCKET_TIMEOUT_MS = 7_000
         private const val PING_INTERVAL_MS = 15_000L
+        private const val PRESENCE_INTERVAL_MS = 10_000L
+        private const val PRESENCE_TIMEOUT_MS = 32_000L
         private const val RECONNECT_DELAY_MS = 2_000L
+        private const val PRESENCE_BYTES = 24
         private const val MAGIC = 0x524D4931 // RMI1
         private const val VERSION: Byte = 1
         private const val HEADER_BYTES = 37
