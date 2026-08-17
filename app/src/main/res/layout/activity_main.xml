@@ -395,7 +395,6 @@
                 android:textColor="@color/faint"
                 android:textSize="11sp" />
 
-            <!-- Internal log retained for diagnosis but hidden from normal riders. -->
             <TextView
                 android:id="@+id/logView"
                 android:layout_width="match_parent"
@@ -629,18 +628,17 @@
                 app:strokeColor="@color/border" />
 
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/activeSos"
+                android:id="@+id/activeStatus"
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 android:layout_width="0dp"
                 android:layout_height="58dp"
                 android:layout_marginStart="5dp"
                 android:layout_weight="1"
-                android:text="SOS"
-                android:textColor="@color/danger"
-                android:textSize="10sp"
-                android:textStyle="bold"
+                android:text="STATUS"
+                android:textColor="@color/white"
+                android:textSize="9sp"
                 app:cornerRadius="12dp"
-                app:strokeColor="@color/danger" />
+                app:strokeColor="@color/border" />
         </LinearLayout>
     </LinearLayout>
 </FrameLayout>
