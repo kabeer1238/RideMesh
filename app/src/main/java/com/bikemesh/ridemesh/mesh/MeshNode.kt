@@ -62,21 +62,25 @@ class MeshNode(
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
-            if (payload.type != Payload.Type.BYTES) return
-            val raw = payload.asBytes() ?: return
-            val packet = MeshPacket.decode(raw) ?: return
+            try {
+                if (payload.type != Payload.Type.BYTES) return
+                val raw = payload.asBytes() ?: return
+                val packet = MeshPacket.decode(raw) ?: return
 
-            synchronized(seenPackets) {
-                if (seenPackets.containsKey(packet.packetId)) return
-                seenPackets[packet.packetId] = true
-            }
+                synchronized(seenPackets) {
+                    if (seenPackets.containsKey(packet.packetId)) return
+                    seenPackets[packet.packetId] = true
+                }
 
-            if (packet.origin != nodeId && packet.audio.isNotEmpty()) {
-                listener.onAudioPacket(packet.audio)
-            }
+                if (packet.origin != nodeId && packet.audio.isNotEmpty()) {
+                    listener.onAudioPacket(packet.audio)
+                }
 
-            if (packet.ttl > 0) {
-                relay(packet.nextHop(), excludeEndpoint = endpointId)
+                if (packet.ttl > 0) {
+                    relay(packet.nextHop(), excludeEndpoint = endpointId)
+                }
+            } catch (t: Throwable) {
+                listener.onLog("Payload error: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
             }
         }
 
@@ -88,11 +92,15 @@ class MeshNode(
             endpointNames[endpointId] = info.endpointName
             val remoteCode = parseRideCode(info.endpointName)
             val remoteRole = parseLabRole(info.endpointName)
-            if (remoteCode == rideCode && isAllowedPeer(remoteRole)) {
-                client.acceptConnection(endpointId, payloadCallback)
-                listener.onLog("Pairing with ${displayName(info.endpointName)}")
-            } else {
-                client.rejectConnection(endpointId)
+            try {
+                if (remoteCode == rideCode && isAllowedPeer(remoteRole)) {
+                    client.acceptConnection(endpointId, payloadCallback)
+                    listener.onLog("Pairing with ${displayName(info.endpointName)}")
+                } else {
+                    client.rejectConnection(endpointId)
+                }
+            } catch (t: Throwable) {
+                listener.onLog("Pairing error: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
             }
         }
 
@@ -123,11 +131,16 @@ class MeshNode(
             if (connected.contains(endpointId) || !requested.add(endpointId)) return
 
             listener.onLog("Found ${displayName(info.endpointName)} — connecting")
-            client.requestConnection(advertisedName(), endpointId, lifecycleCallback)
-                .addOnFailureListener {
-                    requested.remove(endpointId)
-                    listener.onLog("Could not connect to ${displayName(info.endpointName)}: ${it.message ?: "error"}")
-                }
+            try {
+                client.requestConnection(advertisedName(), endpointId, lifecycleCallback)
+                    .addOnFailureListener {
+                        requested.remove(endpointId)
+                        listener.onLog("Could not connect to ${displayName(info.endpointName)}: ${it.message ?: "error"}")
+                    }
+            } catch (t: Throwable) {
+                requested.remove(endpointId)
+                listener.onLog("Connection request error: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
+            }
         }
 
         override fun onEndpointLost(endpointId: String) {
@@ -147,20 +160,25 @@ class MeshNode(
         val advertising = AdvertisingOptions.Builder().setStrategy(STRATEGY).build()
         val discovery = DiscoveryOptions.Builder().setStrategy(STRATEGY).build()
 
-        client.startAdvertising(advertisedName(), SERVICE_ID, lifecycleCallback, advertising)
-            .addOnSuccessListener { listener.onLog("Advertising as ${this.riderName}") }
-            .addOnFailureListener { listener.onLog("Advertising error: ${it.message ?: "unknown"}") }
+        try {
+            client.startAdvertising(advertisedName(), SERVICE_ID, lifecycleCallback, advertising)
+                .addOnSuccessListener { listener.onLog("Advertising as ${this.riderName}") }
+                .addOnFailureListener { listener.onLog("Advertising error: ${it.javaClass.simpleName}: ${it.message ?: "unknown"}") }
 
-        client.startDiscovery(SERVICE_ID, discoveryCallback, discovery)
-            .addOnSuccessListener { listener.onLog("Scanning for nearby riders") }
-            .addOnFailureListener { listener.onLog("Discovery error: ${it.message ?: "unknown"}") }
+            client.startDiscovery(SERVICE_ID, discoveryCallback, discovery)
+                .addOnSuccessListener { listener.onLog("Scanning for nearby riders") }
+                .addOnFailureListener { listener.onLog("Discovery error: ${it.javaClass.simpleName}: ${it.message ?: "unknown"}") }
+        } catch (t: Throwable) {
+            running = false
+            listener.onLog("Nearby start error: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
+        }
     }
 
     fun stop() {
         running = false
-        client.stopAdvertising()
-        client.stopDiscovery()
-        client.stopAllEndpoints()
+        runCatching { client.stopAdvertising() }
+        runCatching { client.stopDiscovery() }
+        runCatching { client.stopAllEndpoints() }
         connected.clear()
         requested.clear()
         endpointNames.clear()
@@ -185,7 +203,14 @@ class MeshNode(
         val bytes = packet.encode()
         for (endpoint in connected) {
             if (endpoint == excludeEndpoint) continue
-            client.sendPayload(endpoint, Payload.fromBytes(bytes))
+            try {
+                client.sendPayload(endpoint, Payload.fromBytes(bytes))
+                    .addOnFailureListener {
+                        listener.onLog("Send error: ${it.javaClass.simpleName}: ${it.message ?: "unknown"}")
+                    }
+            } catch (t: Throwable) {
+                listener.onLog("Send error: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
+            }
         }
     }
 
