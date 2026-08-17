@@ -10,7 +10,7 @@ on:
 permissions:
   contents: write
 
-# v0.3.2: WhatsApp support + community link + hybrid reconnect hardening + non-disruptive Nearby
+# v0.3.3: group-call noise reduction + wind filtering + live QR/nearby rider invites + bug group
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -54,7 +54,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-v0.3.2-debug-apk
+          name: RideMesh-v0.3.3-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Publish build result in repository
@@ -66,7 +66,7 @@ jobs:
           mkdir -p dist
           cp build.log dist/last-build.txt 2>/dev/null || echo "Build ended before logged build step" > dist/last-build.txt
           if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            cp app/build/outputs/apk/debug/app-debug.apk dist/RideMesh-v0.3.2-debug.apk
+            cp app/build/outputs/apk/debug/app-debug.apk dist/RideMesh-v0.3.3-debug.apk
             echo "" >> dist/last-build.txt
             echo "RESULT: APK_BUILT" >> dist/last-build.txt
             echo "ARTIFACT_ID: ${APK_ARTIFACT_ID}" >> dist/last-build.txt
@@ -75,10 +75,10 @@ jobs:
             echo "RESULT: BUILD_FAILED" >> dist/last-build.txt
           fi
           git config user.name "github-actions[bot]"
-          git config user.email "4189822+github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add dist/last-build.txt
-          if [ -f dist/RideMesh-v0.3.2-debug.apk ]; then git add dist/RideMesh-v0.3.2-debug.apk; fi
+          if [ -f dist/RideMesh-v0.3.3-debug.apk ]; then git add dist/RideMesh-v0.3.3-debug.apk; fi
           if ! git diff --cached --quiet; then
-            git commit -m "Publish RideMesh v0.3.2 build result [skip ci]"
+            git commit -m "Publish RideMesh v0.3.3 build result [skip ci]"
             git push
           fi
