@@ -1,5 +1,5 @@
-RideMesh CI 2026-08-17T15:05:32Z
-Commit: 2c8cfbe06dd809e8e05dfd2da93fbf3c4f42564b
+RideMesh CI 2026-08-17T15:08:07Z
+Commit: aa2656aa46912c2831afbd940dc63d108ec6dc09
 === BRANDING ===
 app/src/main/res/drawable-nodpi/ridemesh_logo.jpg: JPEG image data, JFIF standard 1.01, aspect ratio, density 1x1, segment length 16
 app/src/main/res/drawable-nodpi/ridemesh_icon.jpg: JPEG image data, JFIF standard 1.01, aspect ratio, density 1x1, segment length 16
@@ -9,21 +9,21 @@ Daemon will be stopped at the end of the build
 > Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
 > Task :app:preBuild UP-TO-DATE
 > Task :app:preDebugBuild UP-TO-DATE
-> Task :app:dataBindingMergeDependencyArtifactsDebug
 > Task :app:generateDebugResValues
+> Task :app:dataBindingMergeDependencyArtifactsDebug
 > Task :app:generateDebugResources
 > Task :app:processDebugNavigationResources
 > Task :app:checkDebugAarMetadata
-> Task :app:mergeDebugResources
 > Task :app:mapDebugSourceSetPaths
-> Task :app:packageDebugResources
-> Task :app:compileDebugNavigationResources
 > Task :app:createDebugCompatibleScreenManifests
 > Task :app:extractDeepLinksDebug
-> Task :app:parseDebugLocalResources
+> Task :app:mergeDebugResources
 > Task :app:processDebugMainManifest
-> Task :app:dataBindingGenBaseClassesDebug
+> Task :app:packageDebugResources
+> Task :app:compileDebugNavigationResources
+> Task :app:parseDebugLocalResources
 > Task :app:processDebugManifest
+> Task :app:dataBindingGenBaseClassesDebug
 > Task :app:processDebugManifestForPackage
 > Task :app:javaPreCompileDebug
 > Task :app:preDebugUnitTestBuild UP-TO-DATE
@@ -31,16 +31,16 @@ Daemon will be stopped at the end of the build
 > Task :app:processDebugResources
 > Task :app:compileDebugKotlin
 > Task :app:compileDebugJavaWithJavac
-> Task :app:bundleDebugClassesToCompileJar
 > Task :app:bundleDebugClassesToRuntimeJar
+> Task :app:bundleDebugClassesToCompileJar
 > Task :app:processDebugJavaRes
 > Task :app:compileDebugUnitTestKotlin
 > Task :app:compileDebugUnitTestJavaWithJavac NO-SOURCE
 > Task :app:processDebugUnitTestJavaRes
 > Task :app:testDebugUnitTest
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786979138273.json
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786979291629.json
 
-BUILD SUCCESSFUL in 47s
+BUILD SUCCESSFUL in 42s
 27 actionable tasks: 27 executed
 === APK BUILD ===
 To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.13/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
@@ -84,19 +84,19 @@ Daemon will be stopped at the end of the build
 > Task :app:mergeLibDexDebug
 > Task :app:mergeExtDexDebug
 > Task :app:mergeDebugJniLibFolders
+> Task :app:mergeProjectDexDebug
 > Task :app:mergeDebugNativeLibs NO-SOURCE
 > Task :app:stripDebugDebugSymbols NO-SOURCE
-> Task :app:mergeProjectDexDebug
 > Task :app:validateSigningDebug
 > Task :app:writeDebugAppMetadata
 > Task :app:writeDebugSigningConfigVersions
 > Task :app:packageDebug
 > Task :app:createDebugApkListingFileRedirect
 > Task :app:assembleDebug
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786979185326.json
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786979334331.json
 
-BUILD SUCCESSFUL in 31s
+BUILD SUCCESSFUL in 30s
 39 actionable tasks: 18 executed, 21 up-to-date
 
 RESULT: APK_BUILT
-ARTIFACT_ID: 9291994928
+ARTIFACT_ID: 9292017578
