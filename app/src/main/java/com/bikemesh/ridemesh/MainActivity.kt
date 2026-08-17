@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.AlertDialog
 import android.bluetooth.BluetoothManager
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -20,6 +21,7 @@ import android.widget.ImageView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.bikemesh.ridemesh.audio.AudioEngine
 import com.bikemesh.ridemesh.audio.AudioRoute
 import com.bikemesh.ridemesh.databinding.ActivityMainBinding
@@ -33,6 +35,8 @@ import com.google.android.material.button.MaterialButton
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
+import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -61,20 +65,22 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private enum class Screen { HOME, SETUP, ACTIVE }
 
     private val stopLobbyScan = Runnable {
-        if (!rideStarted) {
-            lobbyNode.stop()
-            binding.findNearby.text = "FIND NEARBY RIDERS"
+        lobbyNode.stop()
+        binding.findNearby.text = "FIND NEARBY RIDERS"
+        if (rideStarted) {
+            log("Nearby invite scan finished")
+            if (!internetNode.isConnected() || !binding.batterySaver.isChecked) {
+                ensureLocalMeshRunning("invite scan finished")
+            }
+        } else {
             log("Nearby scan paused to save battery. Tap FIND to scan again.")
         }
     }
 
     /**
      * Keeps the ride recoverable after a complete outage.
-     *
-     * - InternetNode independently retries the TLS relay.
-     * - When Internet is absent, local mesh is kept awake.
-     * - If no local peer is found for a while, Nearby is restarted to refresh discovery.
-     * - Battery Smart only sleeps local mesh after Internet has remained stable.
+     * InternetNode independently retries the Internet relay. When Internet is
+     * absent, local mesh stays awake and periodically refreshes discovery.
      */
     private val rideWatchdog = object : Runnable {
         override fun run() {
@@ -161,7 +167,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         binding.openSettings.setOnClickListener { showSettingsAndHelpDialog() }
         binding.activeStop.setOnClickListener { confirmStopRide() }
         binding.activeRiders.setOnClickListener { showRidersDialog() }
-        binding.activeInvite.setOnClickListener { showRideQr() }
+        binding.activeInvite.setOnClickListener { showLiveInviteOptions() }
         binding.activeAudio.setOnClickListener { showAudioRouteDialog() }
         binding.activeStatus.setOnClickListener { showRideStatusDialog() }
 
@@ -180,7 +186,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
 
         binding.findNearby.setOnClickListener {
-            if (!rideStarted) ensurePermissionsAndRun(PendingAction.FIND_RIDERS)
+            ensurePermissionsAndRun(PendingAction.FIND_RIDERS)
         }
 
         binding.showQr.setOnClickListener { showRideQr() }
@@ -209,21 +215,41 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
     }
 
+    /**
+     * Starts a short lobby scan. During an active ride we only do this while the
+     * Internet voice path is healthy, so adding riders cannot interrupt a local-only call.
+     */
     private fun startNearbyLobby() {
         if (!radiosReady()) {
-            log("Nearby riders unavailable: turn ON Bluetooth and Wi-Fi, then tap FIND again")
+            log("Nearby riders unavailable: turn ON Bluetooth and Wi-Fi, then try again")
+            return
+        }
+
+        if (rideStarted && !internetNode.isConnected()) {
+            AlertDialog.Builder(this)
+                .setTitle("Keep local voice uninterrupted")
+                .setMessage("Nearby rider scanning during a local-only mesh call can compete with the same radio. Share the QR now, or use FIND NEARBY when Internet voice is available.")
+                .setPositiveButton("SHARE QR") { _, _ -> shareRideQr() }
+                .setNegativeButton("CLOSE", null)
+                .show()
             return
         }
 
         stopLobbyDiscovery()
         clearNearbyRiders("Scanning nearby…")
+
+        if (rideStarted && meshRunning) {
+            // Voice stays on Internet while the short invite scan uses Nearby.
+            sleepLocalMesh("live nearby invite scan")
+        }
+
         lobbyNode.start(
             binding.riderName.text?.toString().orEmpty(),
             normalizedRideCode(),
         )
         binding.findNearby.text = "SCANNING…"
         mainHandler.postDelayed(stopLobbyScan, LOBBY_SCAN_WINDOW_MS)
-        log("Short nearby scan started")
+        log(if (rideStarted) "Live nearby rider scan started • Internet voice continues" else "Short nearby scan started")
     }
 
     private fun stopLobbyDiscovery() {
@@ -232,22 +258,45 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         if (::binding.isInitialized) binding.findNearby.text = "FIND NEARBY RIDERS"
     }
 
+    private fun showLiveInviteOptions() {
+        val options = arrayOf(
+            "Show QR code",
+            "Share QR code",
+            "Find nearby RideMesh riders",
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Add riders without ending the call")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> showRideQr()
+                    1 -> shareRideQr()
+                    2 -> ensurePermissionsAndRun(PendingAction.FIND_RIDERS)
+                }
+            }
+            .setNegativeButton("CLOSE", null)
+            .show()
+    }
+
+    private fun buildRideQrBitmap(code: String): Bitmap {
+        val payload = "ridemesh://join?ride=${Uri.encode(code)}"
+        val size = 720
+        val matrix = QRCodeWriter().encode(payload, BarcodeFormat.QR_CODE, size, size)
+        return Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).apply {
+            for (y in 0 until size) {
+                for (x in 0 until size) {
+                    setPixel(x, y, if (matrix[x, y]) Color.BLACK else Color.WHITE)
+                }
+            }
+        }
+    }
+
     private fun showRideQr() {
         val code = normalizedRideCode()
         binding.rideCode.setText(code)
         saveSettings()
-        val payload = "ridemesh://join?ride=${Uri.encode(code)}"
 
         try {
-            val size = 720
-            val matrix = QRCodeWriter().encode(payload, BarcodeFormat.QR_CODE, size, size)
-            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-            for (y in 0 until size) {
-                for (x in 0 until size) {
-                    bitmap.setPixel(x, y, if (matrix[x, y]) Color.BLACK else Color.WHITE)
-                }
-            }
-
+            val bitmap = buildRideQrBitmap(code)
             val image = ImageView(this).apply {
                 setImageBitmap(bitmap)
                 adjustViewBounds = true
@@ -256,13 +305,42 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
             AlertDialog.Builder(this)
                 .setTitle("Invite to $code")
-                .setMessage("Your friend can open RideMesh → JOIN A RIDE → SCAN QR")
+                .setMessage("Scan this QR to join. Your current conversation stays active.")
                 .setView(image)
-                .setPositiveButton("DONE", null)
+                .setPositiveButton("SHARE") { _, _ -> shareRideQr() }
+                .setNegativeButton("CLOSE", null)
                 .show()
             log("Showing QR invite for $code")
         } catch (t: Throwable) {
             log("Could not create QR: ${t.message ?: t.javaClass.simpleName}")
+        }
+    }
+
+    private fun shareRideQr() {
+        val code = normalizedRideCode()
+        try {
+            val bitmap = buildRideQrBitmap(code)
+            val shareDir = File(cacheDir, "shared").apply { mkdirs() }
+            val file = File(shareDir, "RideMesh-$code.png")
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "image/png"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_TEXT, "Join my RideMesh ride: $code\nOpen RideMesh → Join a Ride → Scan QR")
+                clipData = ClipData.newUri(contentResolver, "RideMesh invite QR", uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Share RideMesh QR"))
+        } catch (t: Throwable) {
+            log("Could not share QR: ${t.message ?: t.javaClass.simpleName}")
+            AlertDialog.Builder(this)
+                .setTitle("Could not share QR")
+                .setMessage("Ride code: $code")
+                .setPositiveButton("OK", null)
+                .show()
         }
     }
 
@@ -330,9 +408,6 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             applySelectedAudioRoute()
             audioEngine.selectCommunicationDevice()
 
-            // Start both initially. Battery Smart only sleeps local mesh after
-            // Internet proves stable, so riding out of local range does not require
-            // a manual mode change.
             ensureLocalMeshRunning("initial fallback")
             internetNode.start(code)
 
@@ -343,7 +418,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
             mainHandler.removeCallbacks(rideWatchdog)
             mainHandler.postDelayed(rideWatchdog, WATCHDOG_INTERVAL_MS)
-            log("Ride started • automatic Internet / local reconnect enabled")
+            log("Ride started • noise reduction + automatic Internet / local reconnect enabled")
         } catch (t: Throwable) {
             recoverFromStartFailure(t)
         }
@@ -352,8 +427,6 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private fun sendHybridAudio(audio: ByteArray) {
         if (!rideStarted || audio.isEmpty()) return
 
-        // Internet is the preferred long-range path. Nearby is the immediate
-        // offline fallback whenever Internet is not usable.
         if (internetNode.isConnected()) {
             if (!internetNode.sendLocalAudio(audio)) {
                 ensureLocalMeshRunning("Internet send failed")
@@ -476,6 +549,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private fun stopRide() {
         mainHandler.removeCallbacks(rideWatchdog)
+        stopLobbyDiscovery()
         audioEngine.stopTransmit()
         internetNode.stop()
         meshRunning = false
@@ -508,15 +582,15 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private fun updateAudioUi(text: String) {
         binding.audioStatus.text = text
         binding.homeAudioStatus.text = when {
-            text.contains("Bluetooth", true) || text.contains("headset", true) -> "Helmet / Bluetooth audio ready"
+            text.contains("Bluetooth", true) || text.contains("headset", true) -> "Helmet audio • noise reduction ready"
             text.contains("sleep", true) || text.contains("Reconnect", true) || text.contains("Waiting", true) -> "Audio waiting for connection"
-            else -> "Phone audio ready • helmet optional"
+            else -> "Phone audio • noise reduction ready"
         }
 
         binding.audioTile.text = when {
             text.contains("Bluetooth", true) || text.contains("headset", true) -> "HELMET AUDIO"
             text.contains("sleep", true) || text.contains("Reconnect", true) || text.contains("Waiting", true) -> "MIC STANDBY"
-            else -> "PHONE AUDIO"
+            else -> "VOICE CLEAN"
         }
     }
 
@@ -607,6 +681,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                 if (internetConnectedSinceMs == 0L) internetConnectedSinceMs = System.currentTimeMillis()
             } else {
                 internetConnectedSinceMs = 0L
+                // If an invite scan was using Nearby, stop it before waking the local voice mesh.
+                stopLobbyDiscovery()
                 if (rideStarted) ensureLocalMeshRunning("Internet path lost")
             }
             updateTransportStatus()
@@ -674,24 +750,31 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     override fun onNearbyRiderFound(endpointId: String, riderName: String, rideCode: String) {
         runOnUiThread {
             if (nearbyButtons.containsKey(endpointId)) return@runOnUiThread
-            if (nearbyButtons.isEmpty()) binding.nearbyUsers.removeAllViews()
 
-            val button = MaterialButton(this).apply {
+            val marker = MaterialButton(this).apply {
                 isAllCaps = false
                 text = "$riderName   •   $rideCode     INVITE"
                 setTextColor(ContextCompat.getColor(this@MainActivity, R.color.white))
                 strokeColor = ContextCompat.getColorStateList(this@MainActivity, R.color.border)
                 setOnClickListener {
-                    lobbyNode.invite(
-                        endpointId,
-                        normalizedRideCode(),
-                        binding.riderName.text?.toString().orEmpty(),
-                    )
+                    lobbyNode.invite(endpointId, normalizedRideCode(), binding.riderName.text?.toString().orEmpty())
                 }
             }
+            nearbyButtons[endpointId] = marker
 
-            nearbyButtons[endpointId] = button
-            binding.nearbyUsers.addView(button)
+            if (rideStarted) {
+                AlertDialog.Builder(this)
+                    .setTitle("Nearby RideMesh rider found")
+                    .setMessage("$riderName is nearby${if (rideCode.isNotBlank()) " • currently showing $rideCode" else ""}. Invite them to ${normalizedRideCode()}?\n\nYour current Internet conversation continues while you invite.")
+                    .setPositiveButton("INVITE") { _, _ ->
+                        lobbyNode.invite(endpointId, normalizedRideCode(), binding.riderName.text?.toString().orEmpty())
+                    }
+                    .setNegativeButton("LATER", null)
+                    .show()
+            } else {
+                if (nearbyButtons.size == 1) binding.nearbyUsers.removeAllViews()
+                binding.nearbyUsers.addView(marker)
+            }
         }
     }
 
@@ -699,7 +782,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         runOnUiThread {
             val button = nearbyButtons.remove(endpointId) ?: return@runOnUiThread
             binding.nearbyUsers.removeView(button)
-            if (nearbyButtons.isEmpty()) {
+            if (!rideStarted && nearbyButtons.isEmpty()) {
                 clearNearbyRiders("No riders visible. Tap FIND to scan again.")
             }
         }
@@ -707,6 +790,16 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     override fun onRideInviteReceived(inviterName: String, rideCode: String) {
         runOnUiThread {
+            if (rideStarted) {
+                val sameRide = normalizedRideCode().equals(rideCode, true)
+                AlertDialog.Builder(this)
+                    .setTitle(if (sameRide) "Already in this ride" else "Ride invitation received")
+                    .setMessage(if (sameRide) "$inviterName invited you to the ride you are already using." else "$inviterName invited you to $rideCode. End your current ride before switching groups.")
+                    .setPositiveButton("OK", null)
+                    .show()
+                return@runOnUiThread
+            }
+
             AlertDialog.Builder(this)
                 .setTitle("Ride invitation")
                 .setMessage("$inviterName invited you to $rideCode")
@@ -730,14 +823,16 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             }
             append("Nearby direct peers: $directPeerCount\n")
             append("Local mesh: ${if (meshRunning) "ready" else "sleeping"}\n")
+            append("Noise reduction: ON\n")
             append("Auto reconnect: ON\n\n")
-            append("Invite more riders with the INVITE button and QR code.")
+            append("Use INVITE to add riders without ending the conversation.")
         }
 
         AlertDialog.Builder(this)
             .setTitle("Riders")
             .setMessage(message)
-            .setPositiveButton("OK", null)
+            .setPositiveButton("INVITE") { _, _ -> showLiveInviteOptions() }
+            .setNegativeButton("CLOSE", null)
             .show()
     }
 
@@ -754,7 +849,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
 
         AlertDialog.Builder(this)
-            .setTitle("Audio route")
+            .setTitle("Audio route • noise reduction ON")
             .setSingleChoiceItems(choices, checked) { dialog, which ->
                 when (which) {
                     1 -> binding.routePhone.isChecked = true
@@ -785,8 +880,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                 dialog.dismiss()
             }
             .setMessage(
-                "Battery Smart keeps local mesh warm during handover, then saves power when Internet is stable.\n\n" +
-                    "Need help? Report a bug directly on WhatsApp or join the RideMesh community."
+                "Noise reduction is always enabled for group voice. Battery Smart keeps local mesh warm during handover, then saves power when Internet is stable.\n\n" +
+                    "Bug reports: WhatsApp group or direct support +91 9188664823."
             )
             .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
             .setNeutralButton("COMMUNITY") { _, _ -> openRideMeshCommunity() }
@@ -808,17 +903,36 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                     "Internet riders: ${if (internetNode.isConnected()) internetPeerCount + 1 else 0}\n" +
                     "Direct local peers: $directPeerCount\n" +
                     "Audio: ${binding.audioTile.text}\n" +
+                    "Noise reduction: ON\n" +
                     "Power: ${binding.powerTile.text}\n" +
                     "Auto reconnect: ON\n\n" +
-                    "If both Internet and local radio links disappear, RideMesh keeps trying to recover the ride session."
+                    "INVITE can add more riders without stopping the current call."
             )
             .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
-            .setNeutralButton("COMMUNITY") { _, _ -> openRideMeshCommunity() }
+            .setNeutralButton("INVITE") { _, _ -> showLiveInviteOptions() }
             .setNegativeButton("CLOSE", null)
             .show()
     }
 
     private fun openWhatsAppBugReport() {
+        val options = arrayOf(
+            "Join RideMesh bug report group",
+            "Send direct WhatsApp report to +91 9188664823",
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Report a RideMesh bug")
+            .setItems(options) { _, which ->
+                if (which == 0) {
+                    openExternalUri(BUG_REPORT_GROUP_URL, "Could not open the RideMesh bug report group")
+                } else {
+                    openDirectWhatsAppBugReport()
+                }
+            }
+            .setNegativeButton("CLOSE", null)
+            .show()
+    }
+
+    private fun openDirectWhatsAppBugReport() {
         val message = buildString {
             append("RideMesh bug report\n")
             append("Ride code: ${normalizedRideCode()}\n")
@@ -886,7 +1000,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         private const val WATCHDOG_INTERVAL_MS = 5_000L
         private const val INTERNET_STABLE_BEFORE_MESH_SLEEP_MS = 15_000L
         private const val LOCAL_MESH_REFRESH_MS = 25_000L
-        private const val SUPPORT_WHATSAPP = "91886648231"
+        private const val SUPPORT_WHATSAPP = "919188664823"
+        private const val BUG_REPORT_GROUP_URL = "https://chat.whatsapp.com/CGToJCBDG6XFGUpeTp7uKW"
         private const val COMMUNITY_URL = "https://chat.whatsapp.com/GTH7FA1uTUFGRXElnfDfdE"
     }
 }
