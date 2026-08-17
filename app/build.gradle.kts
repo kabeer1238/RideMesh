@@ -26,15 +26,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-
-    packaging {
-        resources {
-            excludes += setOf(
-                "META-INF/INDEX.LIST",
-                "META-INF/io.netty.versions.properties",
-            )
-        }
-    }
 }
 
 kotlin {
@@ -53,6 +44,5 @@ dependencies {
     implementation("com.google.android.gms:play-services-nearby:19.4.0")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     implementation("com.google.zxing:core:3.5.4")
-    implementation("com.hivemq:hivemq-mqtt-client:1.3.14")
     testImplementation("junit:junit:4.13.2")
 }
