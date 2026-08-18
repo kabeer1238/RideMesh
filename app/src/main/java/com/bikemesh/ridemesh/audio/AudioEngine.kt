@@ -5,6 +5,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
@@ -13,10 +14,9 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.os.Build
+import android.os.Process
 import java.util.ArrayDeque
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.PI
 import kotlin.math.max
@@ -35,21 +35,104 @@ class AudioEngine(
 ) {
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val capturing = AtomicBoolean(false)
+    private val playbackRunning = AtomicBoolean(true)
+    private val transmitDesired = AtomicBoolean(false)
+    private val focusPaused = AtomicBoolean(false)
+    private val focusHeld = AtomicBoolean(false)
 
-    // Never allow seconds of old voice to queue up. If the radio/network is slower than
-    // real time we discard the oldest pending frame rather than making riders hear stale audio.
-    private val playbackExecutor = ThreadPoolExecutor(
-        1,
-        1,
-        0L,
-        TimeUnit.MILLISECONDS,
-        ArrayBlockingQueue(PLAYBACK_QUEUE_FRAMES),
-        ThreadPoolExecutor.DiscardOldestPolicy(),
-    )
+    /**
+     * Incoming audio is kept per remote rider and mixed into one 20 ms output frame.
+     * This prevents a three-rider call from serialising two remote 20 ms frames into
+     * 40 ms of playback every 20 ms, which was the main source of growing delay/jitter.
+     */
+    private val sourceQueues = ConcurrentHashMap<String, ArrayDeque<ByteArray>>()
+    private val sourcePrimed = ConcurrentHashMap.newKeySet<String>()
+    private val sourceLastSeenMs = ConcurrentHashMap<String, Long>()
 
     @Volatile private var audioRecord: AudioRecord? = null
     @Volatile private var audioTrack: AudioTrack? = null
     @Volatile private var route: AudioRoute = AudioRoute.AUTO
+    @Volatile private var playbackActiveUntilMs = 0L
+
+    private val playbackThread = Thread({ playbackLoop() }, "RideMesh-Mixer").apply {
+        isDaemon = true
+        start()
+    }
+
+    private val voiceAttributes = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+        .build()
+
+    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        when (change) {
+            AudioManager.AUDIOFOCUS_GAIN -> resumeAfterAudioFocus()
+            AudioManager.AUDIOFOCUS_LOSS,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> pauseForAudioFocus()
+        }
+    }
+
+    private val audioFocusRequest: AudioFocusRequest by lazy {
+        AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(voiceAttributes)
+            .setAcceptsDelayedFocusGain(true)
+            .setWillPauseWhenDucked(true)
+            .setOnAudioFocusChangeListener(audioFocusListener)
+            .build()
+    }
+
+    private fun ensureAudioFocus(): Boolean {
+        if (focusHeld.get() && focusPaused.get()) return false
+        if (focusHeld.get() && !focusPaused.get()) return true
+        return when (audioManager.requestAudioFocus(audioFocusRequest)) {
+            AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
+                focusHeld.set(true)
+                focusPaused.set(false)
+                true
+            }
+            AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
+                focusHeld.set(true)
+                focusPaused.set(true)
+                onStatus("PAUSED FOR PHONE CALL • AUTO RESUME")
+                false
+            }
+            else -> {
+                focusHeld.set(false)
+                focusPaused.set(true)
+                onStatus("AUDIO BUSY • WAITING TO RESUME")
+                false
+            }
+        }
+    }
+
+    private fun pauseForAudioFocus() {
+        focusPaused.set(true)
+        capturing.set(false)
+        clearRemoteAudio()
+        audioTrack?.let {
+            try { it.pause() } catch (_: Throwable) {}
+            try { it.flush() } catch (_: Throwable) {}
+        }
+        onStatus("PAUSED FOR PHONE CALL • AUTO RESUME")
+    }
+
+    private fun resumeAfterAudioFocus() {
+        focusHeld.set(true)
+        focusPaused.set(false)
+        selectCommunicationDevice()
+        audioTrack?.let {
+            try { it.play() } catch (_: Throwable) {}
+        }
+        onStatus("HANDS-FREE • AUDIO RESUMED")
+        if (transmitDesired.get()) startRecorder()
+    }
+
+    private fun clearRemoteAudio() {
+        sourceQueues.values.forEach { queue -> synchronized(queue) { queue.clear() } }
+        sourcePrimed.clear()
+        sourceLastSeenMs.clear()
+    }
 
     fun setRoute(newRoute: AudioRoute) {
         route = newRoute
@@ -118,6 +201,13 @@ class AudioEngine(
 
     @SuppressLint("MissingPermission")
     fun startTransmit() {
+        transmitDesired.set(true)
+        if (!ensureAudioFocus() || focusPaused.get()) return
+        startRecorder()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startRecorder() {
         if (!capturing.compareAndSet(false, true)) return
 
         var recorder: AudioRecord? = null
@@ -130,7 +220,7 @@ class AudioEngine(
                 onStatus("Microphone buffer unavailable")
                 return
             }
-            val recordBuffer = max(min, FRAME_BYTES * 4)
+            val recordBuffer = max(min, FRAME_BYTES * 2)
 
             recorder = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
@@ -147,18 +237,17 @@ class AudioEngine(
                 return
             }
 
-            // VOICE_COMMUNICATION requests the platform's VoIP capture tuning. We also
-            // explicitly attach the available preprocessors to this AudioRecord session.
             val aec = createAec(recorder.audioSessionId)
             val ns = createNs(recorder.audioSessionId)
             val agc = createAgc(recorder.audioSessionId)
 
             audioRecord = recorder
             recorder.startRecording()
-            onStatus("HANDS-FREE • NOISE REDUCTION • VAD • ${effectsLabel(aec != null, ns != null, agc != null)}")
+            onStatus("HANDS-FREE • ECHO GUARD • VAD • ${effectsLabel(aec != null, ns != null, agc != null)}")
 
             val activeRecorder = recorder
             Thread({
+                Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
                 val frame = ByteArray(FRAME_BYTES)
                 val preRoll = ArrayDeque<ByteArray>(VAD_PREROLL_FRAMES)
                 val windFilter = WindRumbleFilter(SAMPLE_RATE, WIND_FILTER_CUTOFF_HZ)
@@ -172,15 +261,21 @@ class AudioEngine(
                         if (read <= 0) continue
 
                         val raw = if (read == frame.size) frame.copyOf() else frame.copyOf(read)
-                        // Motorcycle wind noise is dominated by low-frequency rumble. Remove
-                        // that energy before VAD so wind is less likely to hold the mic open.
                         val current = windFilter.process(raw)
                         val rms = pcmRms(current)
 
-                        // Slowly learn the background level only when the frame does not look like speech.
-                        val speechThreshold = max(VAD_MIN_RMS, noiseFloor * VAD_NOISE_MULTIPLIER)
+                        val normalThreshold = max(VAD_MIN_RMS, noiseFloor * VAD_NOISE_MULTIPLIER)
+                        val farEndAudioActive = System.currentTimeMillis() < playbackActiveUntilMs
+                        val echoThreshold = if (aec != null) {
+                            max(VAD_ECHO_MIN_RMS_AEC, normalThreshold * VAD_ECHO_MULTIPLIER_AEC)
+                        } else {
+                            max(VAD_ECHO_MIN_RMS_NO_AEC, normalThreshold * VAD_ECHO_MULTIPLIER_NO_AEC)
+                        }
+                        val speechThreshold = if (farEndAudioActive) echoThreshold else normalThreshold
                         val speech = rms >= speechThreshold
-                        if (!speech) {
+
+                        // Do not learn loud far-end playback as the new road-noise floor.
+                        if (!speech && !farEndAudioActive) {
                             noiseFloor = (noiseFloor * 0.985) + (rms * 0.015)
                         }
 
@@ -190,7 +285,6 @@ class AudioEngine(
                         val sending = speech || hangover > 0
                         if (sending) {
                             if (!wasSending) {
-                                // Preserve the beginning of the first word instead of clipping it.
                                 while (preRoll.isNotEmpty()) onCapturedFrame(preRoll.removeFirst())
                             }
                             onCapturedFrame(current)
@@ -209,7 +303,7 @@ class AudioEngine(
                     agc?.release()
                     activeRecorder.release()
                     if (audioRecord === activeRecorder) audioRecord = null
-                    selectCommunicationDevice()
+                    if (!focusPaused.get()) selectCommunicationDevice()
                 }
             }, "RideMesh-Mic").start()
         } catch (t: Throwable) {
@@ -221,21 +315,117 @@ class AudioEngine(
     }
 
     fun stopTransmit() {
+        transmitDesired.set(false)
         capturing.set(false)
     }
 
-    fun playIncoming(audio: ByteArray) {
-        if (audio.isEmpty()) return
-        playbackExecutor.execute {
-            val track = ensureTrack() ?: return@execute
-            try {
-                track.write(audio, 0, audio.size, AudioTrack.WRITE_BLOCKING)
-            } catch (_: Throwable) {}
+    /**
+     * Queue one remote rider independently. Each source is capped at ~60 ms so a weak
+     * network cannot create seconds of old speech. Two frames are collected before a
+     * source starts, giving a small jitter buffer without noticeable conversational lag.
+     */
+    fun playIncoming(sourceId: String, audio: ByteArray) {
+        if (audio.isEmpty() || !playbackRunning.get() || focusPaused.get()) return
+        val key = sourceId.ifBlank { "unknown" }
+        val normalized = when {
+            audio.size == FRAME_BYTES -> audio.copyOf()
+            audio.size > FRAME_BYTES -> audio.copyOf(FRAME_BYTES)
+            else -> audio.copyOf(FRAME_BYTES)
         }
+        val queue = sourceQueues.computeIfAbsent(key) { ArrayDeque(SOURCE_QUEUE_MAX_FRAMES) }
+        synchronized(queue) {
+            while (queue.size >= SOURCE_QUEUE_MAX_FRAMES) queue.removeFirst()
+            queue.addLast(normalized)
+            if (queue.size >= SOURCE_PRIME_FRAMES) sourcePrimed.add(key)
+        }
+        sourceLastSeenMs[key] = System.currentTimeMillis()
+    }
+
+    private fun playbackLoop() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+        while (playbackRunning.get()) {
+            if (focusPaused.get()) {
+                try { Thread.sleep(PLAYBACK_IDLE_SLEEP_MS) } catch (_: InterruptedException) { break }
+                continue
+            }
+            try {
+                val frames = ArrayList<ByteArray>(sourceQueues.size)
+                val now = System.currentTimeMillis()
+
+                for ((sourceId, queue) in sourceQueues) {
+                    val frame = synchronized(queue) {
+                        if (!sourcePrimed.contains(sourceId) && queue.size >= SOURCE_PRIME_FRAMES) {
+                            sourcePrimed.add(sourceId)
+                        }
+                        if (sourcePrimed.contains(sourceId) && queue.isNotEmpty()) queue.removeFirst() else null
+                    }
+                    if (frame != null) frames.add(frame)
+
+                    val lastSeen = sourceLastSeenMs[sourceId] ?: now
+                    if (now - lastSeen > SOURCE_EXPIRE_MS && synchronized(queue) { queue.isEmpty() }) {
+                        sourceQueues.remove(sourceId, queue)
+                        sourcePrimed.remove(sourceId)
+                        sourceLastSeenMs.remove(sourceId)
+                    }
+                }
+
+                if (frames.isEmpty()) {
+                    Thread.sleep(PLAYBACK_IDLE_SLEEP_MS)
+                    continue
+                }
+
+                val mixed = mixFrames(frames)
+                val track = ensureTrack()
+                if (track == null) {
+                    Thread.sleep(PLAYBACK_IDLE_SLEEP_MS)
+                    continue
+                }
+
+                playbackActiveUntilMs = System.currentTimeMillis() + ECHO_GUARD_AFTER_PLAYBACK_MS
+                track.write(mixed, 0, mixed.size, AudioTrack.WRITE_BLOCKING)
+            } catch (_: InterruptedException) {
+                break
+            } catch (_: Throwable) {
+                Thread.sleep(PLAYBACK_IDLE_SLEEP_MS)
+            }
+        }
+    }
+
+    internal fun mixFrames(frames: List<ByteArray>): ByteArray {
+        if (frames.isEmpty()) return ByteArray(FRAME_BYTES)
+        if (frames.size == 1) return frames[0].copyOf()
+
+        val out = ByteArray(FRAME_BYTES)
+        var i = 0
+        while (i + 1 < FRAME_BYTES) {
+            var sum = 0
+            var contributors = 0
+            for (frame in frames) {
+                if (i + 1 >= frame.size) continue
+                val lo = frame[i].toInt() and 0xff
+                val hi = frame[i + 1].toInt()
+                sum += ((hi shl 8) or lo).toShort().toInt()
+                contributors++
+            }
+            val mixed = if (contributors == 0) 0 else (sum / contributors)
+                .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+            out[i] = (mixed and 0xff).toByte()
+            out[i + 1] = ((mixed shr 8) and 0xff).toByte()
+            i += 2
+        }
+        return out
     }
 
     fun release() {
         stopTransmit()
+        playbackRunning.set(false)
+        playbackThread.interrupt()
+        sourceQueues.clear()
+        sourcePrimed.clear()
+        sourceLastSeenMs.clear()
+        if (focusHeld.getAndSet(false)) {
+            try { audioManager.abandonAudioFocusRequest(audioFocusRequest) } catch (_: Throwable) {}
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try { audioManager.clearCommunicationDevice() } catch (_: Throwable) {}
         } else {
@@ -252,7 +442,6 @@ class AudioEngine(
         }
         audioTrack = null
         try { audioManager.mode = AudioManager.MODE_NORMAL } catch (_: Throwable) {}
-        playbackExecutor.shutdownNow()
     }
 
     private fun ensureTrack(): AudioTrack? {
@@ -276,8 +465,9 @@ class AudioEngine(
                         .setChannelMask(CHANNEL_OUT)
                         .build()
                 )
-                .setBufferSizeInBytes(max(min, FRAME_BYTES * 6))
+                .setBufferSizeInBytes(max(min, FRAME_BYTES * 2))
                 .setTransferMode(AudioTrack.MODE_STREAM)
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                 .build()
 
             if (track.state != AudioTrack.STATE_INITIALIZED) {
@@ -336,7 +526,6 @@ class AudioEngine(
         return if (enabled.isEmpty()) "software wind filter" else enabled.joinToString("+") + "+WIND"
     }
 
-    /** Very small first-order high-pass filter to reduce motorcycle wind/road rumble. */
     private class WindRumbleFilter(sampleRate: Int, cutoffHz: Double) {
         private val alpha: Double
         private var previousInput = 0.0
@@ -393,15 +582,23 @@ class AudioEngine(
         private const val CHANNEL_OUT = AudioFormat.CHANNEL_OUT_MONO
         private const val FRAME_MS = 20
         private const val SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_MS / 1000
-        private const val FRAME_BYTES = SAMPLES_PER_FRAME * 2
+        internal const val FRAME_BYTES = SAMPLES_PER_FRAME * 2
 
-        private const val PLAYBACK_QUEUE_FRAMES = 8 // ~160 ms maximum pending audio
+        private const val SOURCE_QUEUE_MAX_FRAMES = 3 // ~60 ms maximum per remote rider
+        private const val SOURCE_PRIME_FRAMES = 2     // ~40 ms jitter buffer
+        private const val SOURCE_EXPIRE_MS = 2_000L
+        private const val PLAYBACK_IDLE_SLEEP_MS = 4L
+        private const val ECHO_GUARD_AFTER_PLAYBACK_MS = 100L
 
-        private const val VAD_PREROLL_FRAMES = 3    // 60 ms of audio before speech trigger
-        private const val VAD_HANGOVER_FRAMES = 12 // 240 ms after speech falls below threshold
+        private const val VAD_PREROLL_FRAMES = 2
+        private const val VAD_HANGOVER_FRAMES = 5 // 100 ms: fast close without clipping word endings
         private const val VAD_INITIAL_NOISE_FLOOR = 250.0
-        private const val VAD_MIN_RMS = 520.0
-        private const val VAD_NOISE_MULTIPLIER = 2.2
+        private const val VAD_MIN_RMS = 480.0
+        private const val VAD_NOISE_MULTIPLIER = 2.05
+        private const val VAD_ECHO_MIN_RMS_AEC = 1_800.0
+        private const val VAD_ECHO_MIN_RMS_NO_AEC = 3_200.0
+        private const val VAD_ECHO_MULTIPLIER_AEC = 2.4
+        private const val VAD_ECHO_MULTIPLIER_NO_AEC = 3.4
         private const val WIND_FILTER_CUTOFF_HZ = 110.0
     }
 }
