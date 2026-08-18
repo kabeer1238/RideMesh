@@ -79,7 +79,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add app BETA1_1_UI_REFRESH.md tools/apply_beta11_landing.py
-          git add -A .github/workflows/apply-beta11-landing.yml
           if ! git diff --cached --quiet; then
             git commit -m "Polish RideMesh Beta 1.1 landing and launcher icon [skip ci]"
             git push origin beta1.1
