@@ -134,6 +134,17 @@ class AudioEngine(
         sourceLastSeenMs.clear()
     }
 
+    /** Clears received voice when switching between primary and secondary groups. */
+    fun resetIncomingAudio() {
+        clearRemoteAudio()
+        playbackActiveUntilMs = 0L
+        audioTrack?.let {
+            try { it.pause() } catch (_: Throwable) {}
+            try { it.flush() } catch (_: Throwable) {}
+            try { if (!focusPaused.get()) it.play() } catch (_: Throwable) {}
+        }
+    }
+
     fun setRoute(newRoute: AudioRoute) {
         route = newRoute
     }
