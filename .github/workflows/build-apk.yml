@@ -30,6 +30,9 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
+      - name: Apply rider roster and launcher icon update
+        if: github.event_name == 'pull_request' && github.head_ref == 'beta1.1'
+        run: python3 tools/apply_rider_roster.py
       - name: Test, lint and build Beta 1.1
         id: compile
         shell: bash
@@ -55,16 +58,30 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1.1-apk
+          name: RideMesh-Beta1.1-Rider-Roster-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Upload lint report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1.1-lint
+          name: RideMesh-Beta1.1-Rider-Roster-lint
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
+      - name: Persist validated rider roster source
+        if: success() && github.event_name == 'pull_request' && github.head_ref == 'beta1.1'
+        shell: bash
+        run: |
+          git fetch origin beta1.1
+          git checkout -B beta1.1 origin/beta1.1
+          python3 tools/apply_rider_roster.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app
+          if ! git diff --cached --quiet; then
+            git commit -m "Add connected rider roster and launcher icon polish [skip ci]"
+            git push origin beta1.1
+          fi
       - name: Publish build result
         if: always() && github.event_name != 'pull_request'
         shell: bash
