@@ -34,11 +34,7 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Apply approved Beta 1.4 branding and single-group UI
-        if: github.ref == 'refs/heads/beta1.4' || github.head_ref == 'beta1.4'
-        run: python3 tools/apply_beta14_branding.py
-
-      - name: Materialize exact RideMesh branding
+      - name: Materialize approved RideMesh branding
         if: github.ref == 'refs/heads/beta1.4' || github.head_ref == 'beta1.4'
         shell: bash
         run: |
@@ -90,20 +86,17 @@ jobs:
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
 
-      - name: Persist validated Beta 1.4 source
+      - name: Persist validated Beta 1.4 branding assets
         if: success() && github.ref == 'refs/heads/beta1.4'
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
-            app/build.gradle.kts \
-            app/src/main/java/com/bikemesh/ridemesh/SplashActivity.kt \
-            app/src/main/res/layout/activity_main.xml \
             app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp \
             app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp \
             app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
           if ! git diff --cached --quiet; then
-            git commit -m "Beta 1.4: validated single-group branding release [skip ci]"
+            git commit -m "Beta 1.4: refresh approved branding assets [skip ci]"
             git push origin beta1.4
           fi
