@@ -1,3 +1,4 @@
+// RideMesh Beta 1.4 — approved single-group branding release
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
