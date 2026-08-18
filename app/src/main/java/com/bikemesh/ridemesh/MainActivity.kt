@@ -22,6 +22,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.bikemesh.ridemesh.audio.AudioEngine
 import com.bikemesh.ridemesh.audio.AudioRoute
 import com.bikemesh.ridemesh.databinding.ActivityMainBinding
@@ -40,7 +41,6 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.random.Random
 
 class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener, InternetNode.Listener {
     private lateinit var binding: ActivityMainBinding
@@ -126,10 +126,30 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Must run before super.onCreate() so the system splash is owned by us
+        // and can be dismissed with a custom exit instead of popping abruptly.
+        val splash = installSplashScreen()
+        splash.setOnExitAnimationListener { provider ->
+            val view = provider.view
+            view.animate()
+                .alpha(0f)
+                .scaleX(1.06f)
+                .scaleY(1.06f)
+                .setDuration(280L)
+                .withEndAction { provider.remove() }
+                .start()
+        }
+
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        // Read the real version rather than hardcoding it, so the badge a
+        // tester quotes in a bug report always matches the installed build.
+        binding.buildBadge.text = runCatching {
+            "BETA 1.1  •  v" + packageManager.getPackageInfo(packageName, 0).versionName
+        }.getOrDefault("BETA 1.1")
 
         restoreSettings()
 
@@ -629,7 +649,26 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         .ifBlank { "RIDE01" }
         .take(12)
 
-    private fun generateRideCode(): String = "RM" + Random.nextInt(1000, 9999)
+    /**
+     * Ride codes are the only thing separating one group's audio from another
+     * on the shared relay, so they must not be cheap to enumerate.
+     *
+     * Beta 1 used Random.nextInt(1000, 9999) -- about 9,000 possibilities from
+     * a non-cryptographic RNG, which is small enough to walk through
+     * exhaustively. v1.1 uses SecureRandom over an unambiguous alphabet
+     * (no 0/O or 1/I, so codes stay easy to read out over a helmet intercom)
+     * giving roughly 32^6 combinations.
+     *
+     * NOTE: this raises the cost of guessing a ride; it is not authentication.
+     * Anyone who learns a code can still join. Real membership auth is tracked
+     * as a pre-launch item in ARCHITECTURE.md.
+     */
+    private fun generateRideCode(): String {
+        val rng = java.security.SecureRandom()
+        val sb = StringBuilder("RM")
+        repeat(RIDE_CODE_LENGTH) { sb.append(RIDE_CODE_ALPHABET[rng.nextInt(RIDE_CODE_ALPHABET.length)]) }
+        return sb.toString()
+    }
 
     private fun hasRequiredPermissions(): Boolean = requiredPermissions().all {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
@@ -1002,6 +1041,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         private const val LOCAL_MESH_REFRESH_MS = 25_000L
         private const val SUPPORT_WHATSAPP = "919188664823"
         private const val BUG_REPORT_GROUP_URL = "https://chat.whatsapp.com/CGToJCBDG6XFGUpeTp7uKW"
-        private const val COMMUNITY_URL = "https://chat.whatsapp.com/GTH7FA1uTUFGRXElnfDfdE"
+        private const val COMMUNITY_URL = "https://chat.whatsapp.com/CGToJCBDG6XFGUpeTp7uKW"
+
+        // Ride code entropy. Alphabet excludes 0/O and 1/I so codes read
+        // unambiguously over an intercom; 32^6 keyspace with SecureRandom.
+        private const val RIDE_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        private const val RIDE_CODE_LENGTH = 6
     }
 }

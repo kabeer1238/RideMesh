@@ -118,7 +118,14 @@ class LobbyNode(
         this.rideCode = rideCode.trim().uppercase().ifBlank { "RIDE01" }.take(12)
         running = true
 
-        val advertising = AdvertisingOptions.Builder().setStrategy(STRATEGY).build()
+        // NON_DISRUPTIVE keeps Nearby from tearing down the phone's existing
+        // Wi-Fi/Internet connection while scanning. Without this the lobby
+        // scan could knock a rider off mobile data at the exact moment the
+        // Internet transport was trying to keep the ride alive.
+        val advertising = AdvertisingOptions.Builder()
+            .setStrategy(STRATEGY)
+            .setConnectionType(ConnectionType.NON_DISRUPTIVE)
+            .build()
         val discovery = DiscoveryOptions.Builder().setStrategy(STRATEGY).build()
 
         try {

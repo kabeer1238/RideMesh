@@ -1,6 +1,6 @@
-# RideMesh Beta 1 Tester Guide
+# RideMesh Beta 1.1 Tester Guide
 
-Version: **0.4.0-beta1**
+Version: **1.1.0-beta1.1**
 
 RideMesh Beta 1 is an Android field-test build for motorcycle group voice. It combines Internet group voice with automatic Nearby local fallback and supports phone audio or compatible Bluetooth helmet/headset audio.
 
@@ -22,7 +22,7 @@ RideMesh Beta 1 is an Android field-test build for motorcycle group voice. It co
 - Find nearby RideMesh riders while an active Internet conversation continues.
 - WhatsApp bug-report group: https://chat.whatsapp.com/CGToJCBDG6XFGUpeTp7uKW
 - Direct support fallback: +91 9188664823
-- RideMesh community: https://chat.whatsapp.com/GTH7FA1uTUFGRXElnfDfdE
+- RideMesh community: https://chat.whatsapp.com/CGToJCBDG6XFGUpeTp7uKW
 
 ## Important live-invite behavior
 
