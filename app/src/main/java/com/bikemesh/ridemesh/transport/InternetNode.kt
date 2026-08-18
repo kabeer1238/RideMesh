@@ -36,6 +36,7 @@ class InternetNode(private val listener: Listener) {
     private val running = AtomicBoolean(false)
     private val outputLock = Any()
     private val peers = ConcurrentHashMap<UUID, RiderPeer>()
+    private val linkStats = ConcurrentHashMap<UUID, LinkStats>()
     private val reportedPeerCount = AtomicInteger(-1)
 
     @Volatile private var riderName: String = "Rider"
@@ -188,6 +189,7 @@ class InternetNode(private val listener: Listener) {
             audioTopic -> {
                 val packet = decode(payload) ?: return
                 if (packet.origin == nodeId) return
+                updateLinkStats(packet)
                 touchPeer(packet.origin)
                 listener.onInternetAudio(packet.origin.toString(), packet.audio)
             }
@@ -222,9 +224,9 @@ class InternetNode(private val listener: Listener) {
         peers.compute(id) { _, current ->
             if (current == null) {
                 added = true
-                RiderPeer(id = id, riderName = "", deviceName = "", lastSeenMs = now)
+                RiderPeer(id = id, riderName = "", deviceName = "", lastSeenMs = now, qualityBars = qualityBarsFor(id))
             } else {
-                current.copy(lastSeenMs = now)
+                current.copy(lastSeenMs = now, qualityBars = qualityBarsFor(id))
             }
         }
         notifyPeerCount(force = added)
@@ -235,10 +237,54 @@ class InternetNode(private val listener: Listener) {
         val previous = peers[id]
         val resolvedRider = riderName.ifBlank { previous?.riderName.orEmpty() }
         val resolvedDevice = deviceName.ifBlank { previous?.deviceName.orEmpty() }
-        peers[id] = RiderPeer(id, resolvedRider, resolvedDevice, now)
+        peers[id] = RiderPeer(id, resolvedRider, resolvedDevice, now, previous?.qualityBars ?: qualityBarsFor(id))
         val identityChanged = previous == null ||
             previous.riderName != resolvedRider || previous.deviceName != resolvedDevice
         notifyPeerCount(force = identityChanged)
+    }
+
+    private data class LinkStats(
+        var lastArrivalMs: Long = 0L,
+        var lastSequence: Int? = null,
+        var jitterEwmaMs: Double = 0.0,
+        var lossEwma: Double = 0.0,
+    )
+
+    private fun updateLinkStats(packet: InternetPacket) {
+        val now = System.currentTimeMillis()
+        val stats = linkStats.computeIfAbsent(packet.origin) { LinkStats() }
+
+        if (stats.lastArrivalMs > 0L) {
+            val interval = now - stats.lastArrivalMs
+            if (interval in 5L..400L) {
+                val deviation = kotlin.math.abs(interval.toDouble() - 20.0)
+                stats.jitterEwmaMs = (stats.jitterEwmaMs * 0.85) + (deviation * 0.15)
+            }
+        }
+
+        val previousSequence = stats.lastSequence
+        if (previousSequence != null) {
+            val delta = packet.sequence.toLong() - previousSequence.toLong()
+            if (delta in 1L..1000L) {
+                val missing = (delta - 1L).coerceAtLeast(0L)
+                val sampleLoss = missing.toDouble() / delta.toDouble()
+                stats.lossEwma = (stats.lossEwma * 0.90) + (sampleLoss * 0.10)
+            }
+        }
+
+        stats.lastArrivalMs = now
+        stats.lastSequence = packet.sequence
+        val quality = qualityBars(stats)
+        peers.computeIfPresent(packet.origin) { _, current -> current.copy(qualityBars = quality) }
+    }
+
+    private fun qualityBarsFor(id: UUID): Int = linkStats[id]?.let(::qualityBars) ?: 4
+
+    private fun qualityBars(stats: LinkStats): Int = when {
+        stats.lossEwma >= 0.15 || stats.jitterEwmaMs >= 75.0 -> 1
+        stats.lossEwma >= 0.08 || stats.jitterEwmaMs >= 45.0 -> 2
+        stats.lossEwma >= 0.03 || stats.jitterEwmaMs >= 22.0 -> 3
+        else -> 4
     }
 
     private fun prunePeers(now: Long) {
@@ -248,6 +294,7 @@ class InternetNode(private val listener: Listener) {
 
     private fun clearPeers() {
         peers.clear()
+        linkStats.clear()
         notifyPeerCount(force = true)
     }
 
@@ -390,6 +437,7 @@ class InternetNode(private val listener: Listener) {
         val riderName: String,
         val deviceName: String,
         val lastSeenMs: Long,
+        val qualityBars: Int = 4,
     ) {
         val displayName: String
             get() = riderName.ifBlank {

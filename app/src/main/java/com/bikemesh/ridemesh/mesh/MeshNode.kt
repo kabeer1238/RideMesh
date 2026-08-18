@@ -40,6 +40,7 @@ class MeshNode(
         val endpointId: String,
         val riderName: String,
         val deviceName: String,
+        val qualityBars: Int = 4,
     ) {
         val displayName: String
             get() = riderName.ifBlank { deviceName.ifBlank { "Rider" } }
@@ -57,6 +58,7 @@ class MeshNode(
     private val connected = ConcurrentHashMap.newKeySet<String>()
     private val requested = ConcurrentHashMap.newKeySet<String>()
     private val endpointNames = ConcurrentHashMap<String, String>()
+    private val originEndpoints = ConcurrentHashMap<UUID, String>()
 
     private var riderName: String = "Rider"
     private var deviceName: String = "Android device"
@@ -83,6 +85,8 @@ class MeshNode(
                     if (seenPackets.containsKey(packet.packetId)) return
                     seenPackets[packet.packetId] = true
                 }
+
+                if (packet.origin != nodeId) originEndpoints[packet.origin] = endpointId
 
                 if (packet.origin != nodeId && packet.audio.isNotEmpty()) {
                     listener.onAudioPacket(packet.origin.toString(), packet.audio)
@@ -130,6 +134,7 @@ class MeshNode(
         override fun onDisconnected(endpointId: String) {
             connected.remove(endpointId)
             requested.remove(endpointId)
+            originEndpoints.entries.removeIf { it.value == endpointId }
             listener.onLog("Peer disconnected: ${displayName(endpointNames[endpointId] ?: endpointId)}")
             listener.onDirectPeerCount(connected.size)
         }
@@ -210,8 +215,13 @@ class MeshNode(
         connected.clear()
         requested.clear()
         endpointNames.clear()
+        originEndpoints.clear()
         listener.onDirectPeerCount(0)
     }
+
+    fun endpointIdForSource(sourceId: String): String? = runCatching {
+        originEndpoints[UUID.fromString(sourceId)]
+    }.getOrNull()
 
     fun directPeers(): List<RiderPeer> = connected.mapNotNull { endpointId ->
         val endpointName = endpointNames[endpointId] ?: return@mapNotNull null

@@ -5,6 +5,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
@@ -13,6 +14,7 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.os.Build
+import android.os.Process
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -34,6 +36,9 @@ class AudioEngine(
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val capturing = AtomicBoolean(false)
     private val playbackRunning = AtomicBoolean(true)
+    private val transmitDesired = AtomicBoolean(false)
+    private val focusPaused = AtomicBoolean(false)
+    private val focusHeld = AtomicBoolean(false)
 
     /**
      * Incoming audio is kept per remote rider and mixed into one 20 ms output frame.
@@ -52,6 +57,81 @@ class AudioEngine(
     private val playbackThread = Thread({ playbackLoop() }, "RideMesh-Mixer").apply {
         isDaemon = true
         start()
+    }
+
+    private val voiceAttributes = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+        .build()
+
+    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        when (change) {
+            AudioManager.AUDIOFOCUS_GAIN -> resumeAfterAudioFocus()
+            AudioManager.AUDIOFOCUS_LOSS,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> pauseForAudioFocus()
+        }
+    }
+
+    private val audioFocusRequest: AudioFocusRequest by lazy {
+        AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(voiceAttributes)
+            .setAcceptsDelayedFocusGain(true)
+            .setWillPauseWhenDucked(true)
+            .setOnAudioFocusChangeListener(audioFocusListener)
+            .build()
+    }
+
+    private fun ensureAudioFocus(): Boolean {
+        if (focusHeld.get() && focusPaused.get()) return false
+        if (focusHeld.get() && !focusPaused.get()) return true
+        return when (audioManager.requestAudioFocus(audioFocusRequest)) {
+            AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
+                focusHeld.set(true)
+                focusPaused.set(false)
+                true
+            }
+            AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
+                focusHeld.set(true)
+                focusPaused.set(true)
+                onStatus("PAUSED FOR PHONE CALL • AUTO RESUME")
+                false
+            }
+            else -> {
+                focusHeld.set(false)
+                focusPaused.set(true)
+                onStatus("AUDIO BUSY • WAITING TO RESUME")
+                false
+            }
+        }
+    }
+
+    private fun pauseForAudioFocus() {
+        focusPaused.set(true)
+        capturing.set(false)
+        clearRemoteAudio()
+        audioTrack?.let {
+            try { it.pause() } catch (_: Throwable) {}
+            try { it.flush() } catch (_: Throwable) {}
+        }
+        onStatus("PAUSED FOR PHONE CALL • AUTO RESUME")
+    }
+
+    private fun resumeAfterAudioFocus() {
+        focusHeld.set(true)
+        focusPaused.set(false)
+        selectCommunicationDevice()
+        audioTrack?.let {
+            try { it.play() } catch (_: Throwable) {}
+        }
+        onStatus("HANDS-FREE • AUDIO RESUMED")
+        if (transmitDesired.get()) startRecorder()
+    }
+
+    private fun clearRemoteAudio() {
+        sourceQueues.values.forEach { queue -> synchronized(queue) { queue.clear() } }
+        sourcePrimed.clear()
+        sourceLastSeenMs.clear()
     }
 
     fun setRoute(newRoute: AudioRoute) {
@@ -121,6 +201,13 @@ class AudioEngine(
 
     @SuppressLint("MissingPermission")
     fun startTransmit() {
+        transmitDesired.set(true)
+        if (!ensureAudioFocus() || focusPaused.get()) return
+        startRecorder()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startRecorder() {
         if (!capturing.compareAndSet(false, true)) return
 
         var recorder: AudioRecord? = null
@@ -133,7 +220,7 @@ class AudioEngine(
                 onStatus("Microphone buffer unavailable")
                 return
             }
-            val recordBuffer = max(min, FRAME_BYTES * 4)
+            val recordBuffer = max(min, FRAME_BYTES * 2)
 
             recorder = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
@@ -160,6 +247,7 @@ class AudioEngine(
 
             val activeRecorder = recorder
             Thread({
+                Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
                 val frame = ByteArray(FRAME_BYTES)
                 val preRoll = ArrayDeque<ByteArray>(VAD_PREROLL_FRAMES)
                 val windFilter = WindRumbleFilter(SAMPLE_RATE, WIND_FILTER_CUTOFF_HZ)
@@ -215,7 +303,7 @@ class AudioEngine(
                     agc?.release()
                     activeRecorder.release()
                     if (audioRecord === activeRecorder) audioRecord = null
-                    selectCommunicationDevice()
+                    if (!focusPaused.get()) selectCommunicationDevice()
                 }
             }, "RideMesh-Mic").start()
         } catch (t: Throwable) {
@@ -227,6 +315,7 @@ class AudioEngine(
     }
 
     fun stopTransmit() {
+        transmitDesired.set(false)
         capturing.set(false)
     }
 
@@ -236,7 +325,7 @@ class AudioEngine(
      * source starts, giving a small jitter buffer without noticeable conversational lag.
      */
     fun playIncoming(sourceId: String, audio: ByteArray) {
-        if (audio.isEmpty() || !playbackRunning.get()) return
+        if (audio.isEmpty() || !playbackRunning.get() || focusPaused.get()) return
         val key = sourceId.ifBlank { "unknown" }
         val normalized = when {
             audio.size == FRAME_BYTES -> audio.copyOf()
@@ -253,7 +342,12 @@ class AudioEngine(
     }
 
     private fun playbackLoop() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
         while (playbackRunning.get()) {
+            if (focusPaused.get()) {
+                try { Thread.sleep(PLAYBACK_IDLE_SLEEP_MS) } catch (_: InterruptedException) { break }
+                continue
+            }
             try {
                 val frames = ArrayList<ByteArray>(sourceQueues.size)
                 val now = System.currentTimeMillis()
@@ -329,6 +423,9 @@ class AudioEngine(
         sourceQueues.clear()
         sourcePrimed.clear()
         sourceLastSeenMs.clear()
+        if (focusHeld.getAndSet(false)) {
+            try { audioManager.abandonAudioFocusRequest(audioFocusRequest) } catch (_: Throwable) {}
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try { audioManager.clearCommunicationDevice() } catch (_: Throwable) {}
         } else {
@@ -368,8 +465,9 @@ class AudioEngine(
                         .setChannelMask(CHANNEL_OUT)
                         .build()
                 )
-                .setBufferSizeInBytes(max(min, FRAME_BYTES * 3))
+                .setBufferSizeInBytes(max(min, FRAME_BYTES * 2))
                 .setTransferMode(AudioTrack.MODE_STREAM)
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                 .build()
 
             if (track.state != AudioTrack.STATE_INITIALIZED) {
@@ -492,11 +590,11 @@ class AudioEngine(
         private const val PLAYBACK_IDLE_SLEEP_MS = 4L
         private const val ECHO_GUARD_AFTER_PLAYBACK_MS = 100L
 
-        private const val VAD_PREROLL_FRAMES = 3
-        private const val VAD_HANGOVER_FRAMES = 8 // 160 ms; shorter to reduce echo tails
+        private const val VAD_PREROLL_FRAMES = 2
+        private const val VAD_HANGOVER_FRAMES = 5 // 100 ms: fast close without clipping word endings
         private const val VAD_INITIAL_NOISE_FLOOR = 250.0
-        private const val VAD_MIN_RMS = 520.0
-        private const val VAD_NOISE_MULTIPLIER = 2.2
+        private const val VAD_MIN_RMS = 480.0
+        private const val VAD_NOISE_MULTIPLIER = 2.05
         private const val VAD_ECHO_MIN_RMS_AEC = 1_800.0
         private const val VAD_ECHO_MIN_RMS_NO_AEC = 3_200.0
         private const val VAD_ECHO_MULTIPLIER_AEC = 2.4

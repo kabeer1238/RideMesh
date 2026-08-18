@@ -9,15 +9,22 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.GridLayout
 import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -40,6 +47,7 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 
 class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener, InternetNode.Listener {
@@ -52,6 +60,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private val prefs by lazy { getSharedPreferences("ridemesh", MODE_PRIVATE) }
     private val nearbyButtons = linkedMapOf<String, MaterialButton>()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val speakingUntilMs = ConcurrentHashMap<String, Long>()
 
     private var rideStarted = false
     private var pendingAction = PendingAction.NONE
@@ -63,6 +72,15 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private enum class PendingAction { NONE, START_RIDE, FIND_RIDERS }
     private enum class Screen { HOME, SETUP, ACTIVE }
+
+    private data class RiderTile(
+        val key: String,
+        val name: String,
+        val device: String,
+        val qualityBars: Int,
+        val path: String,
+        val self: Boolean = false,
+    )
 
     private val stopLobbyScan = Runnable {
         lobbyNode.stop()
@@ -388,7 +406,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private fun startRideNow() {
         if (rideStarted) return
 
-        val rider = binding.riderName.text?.toString().orEmpty().ifBlank { Build.MODEL.take(18) }
+        val rider = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
         val code = normalizedRideCode()
         binding.riderName.setText(rider)
         binding.rideCode.setText(code)
@@ -566,7 +584,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         binding.networkTile.text = "CONNECTING"
         binding.homeNetworkStatus.text = "●  READY TO RIDE"
         binding.activeRiders.text = "RIDERS"
-        binding.activeRiderNames.text = ""
+        binding.riderGrid.removeAllViews()
+        speakingUntilMs.clear()
         log("Ride stopped")
         showScreen(Screen.HOME)
     }
@@ -598,7 +617,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun restoreSettings() {
-        binding.riderName.setText(prefs.getString("rider", Build.MODEL.take(18)))
+        val savedRider = prefs.getString("rider", "").orEmpty()
+        binding.riderName.setText(
+            savedRider.takeIf { it.isNotBlank() && !it.equals(Build.MODEL, ignoreCase = true) } ?: "Rider"
+        )
         binding.rideCode.setText(prefs.getString("code", "RIDE01"))
         binding.batterySaver.isChecked = prefs.getBoolean("battery_smart", true)
 
@@ -686,7 +708,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     override fun onAudioPacket(sourceId: String, audio: ByteArray) {
-        if (rideStarted) audioEngine.playIncoming(sourceId, audio)
+        if (!rideStarted) return
+        val tileKey = meshNode.endpointIdForSource(sourceId) ?: sourceId
+        markRiderSpeaking(tileKey)
+        audioEngine.playIncoming(sourceId, audio)
     }
 
     override fun onInternetState(connected: Boolean, message: String) {
@@ -711,7 +736,9 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     override fun onInternetAudio(sourceId: String, audio: ByteArray) {
-        if (rideStarted) audioEngine.playIncoming(sourceId, audio)
+        if (!rideStarted) return
+        markRiderSpeaking(sourceId)
+        audioEngine.playIncoming(sourceId, audio)
     }
 
     private fun updateTransportStatus() {
@@ -754,25 +781,158 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             else -> 1
         }
         binding.activeRiders.text = "RIDERS $visibleRiderTotal"
-        updateRiderRosterPreview()
+        renderRiderGrid()
         applyPowerUi()
     }
 
-    private fun updateRiderRosterPreview() {
-        if (!rideStarted) return
+    private fun markRiderSpeaking(key: String) {
+        val expires = System.currentTimeMillis() + SPEAKING_HOLD_MS
+        speakingUntilMs[key] = expires
+        runOnUiThread {
+            renderRiderGrid()
+            mainHandler.postDelayed({
+                val current = speakingUntilMs[key] ?: return@postDelayed
+                if (System.currentTimeMillis() >= current) {
+                    speakingUntilMs.remove(key, current)
+                    renderRiderGrid()
+                }
+            }, SPEAKING_HOLD_MS + 40L)
+        }
+    }
 
-        val me = binding.riderName.text?.toString().orEmpty().ifBlank { Build.MODEL.take(18) }
-        val names = linkedSetOf<String>()
-        names.add(me)
+    private fun renderRiderGrid() {
+        if (!rideStarted || !::binding.isInitialized) return
+
+        val me = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
+        val meDevice = deviceLabel()
+        val riders = mutableListOf(
+            RiderTile(
+                key = SELF_TILE_KEY,
+                name = me,
+                device = meDevice,
+                qualityBars = if (internetNode.isConnected() || directPeerCount > 0) 4 else 1,
+                path = if (internetNode.isConnected()) "Internet" else if (directPeerCount > 0) "Local" else "Searching",
+                self = true,
+            )
+        )
 
         if (internetNode.isConnected()) {
-            internetNode.remotePeers().forEach { names.add(it.displayName) }
+            internetNode.remotePeers().forEach { peer ->
+                riders += RiderTile(
+                    key = peer.id.toString(),
+                    name = peer.displayName,
+                    device = peer.deviceName,
+                    qualityBars = peer.qualityBars,
+                    path = "Internet",
+                )
+            }
         } else if (meshRunning) {
-            meshNode.directPeers().forEach { names.add(it.displayName) }
+            meshNode.directPeers().forEach { peer ->
+                riders += RiderTile(
+                    key = peer.endpointId,
+                    name = peer.displayName,
+                    device = peer.deviceName,
+                    qualityBars = peer.qualityBars,
+                    path = "Local",
+                )
+            }
         }
 
-        binding.activeRiderNames.text = names.joinToString("   •   ")
+        val visible = riders.take(MAX_VISIBLE_RIDER_TILES)
+        val grid = binding.riderGrid
+        grid.removeAllViews()
+        grid.columnCount = 3
+        grid.rowCount = if (visible.size <= 3) 1 else 2
+
+        val positions = riderPositions(visible.size)
+        visible.forEachIndexed { index, rider ->
+            val (row, col) = positions[index]
+            grid.addView(buildRiderTile(rider), GridLayout.LayoutParams().apply {
+                rowSpec = GridLayout.spec(row)
+                columnSpec = GridLayout.spec(col, 1f)
+                width = 0
+                height = dp(108)
+                setMargins(dp(3), dp(3), dp(3), dp(3))
+            })
+        }
     }
+
+    private fun buildRiderTile(rider: RiderTile): View {
+        val speaking = (speakingUntilMs[rider.key] ?: 0L) > System.currentTimeMillis()
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(3), dp(3), dp(3), dp(2))
+        }
+
+        val avatar = TextView(this).apply {
+            text = rider.name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "R"
+            gravity = Gravity.CENTER
+            textSize = 22f
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.white))
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#101918"))
+                setStroke(
+                    dp(if (speaking) 3 else 1),
+                    if (speaking) ContextCompat.getColor(this@MainActivity, R.color.accent)
+                    else ContextCompat.getColor(this@MainActivity, R.color.border)
+                )
+            }
+        }
+        card.addView(avatar, LinearLayout.LayoutParams(dp(52), dp(52)))
+
+        val name = TextView(this).apply {
+            text = rider.name.ifBlank { "Rider" }
+            gravity = Gravity.CENTER
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            textSize = 10.5f
+            setTextColor(
+                ContextCompat.getColor(
+                    this@MainActivity,
+                    if (speaking) R.color.accent else R.color.white
+                )
+            )
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+        }
+        card.addView(name, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(21)).apply {
+            topMargin = dp(3)
+        })
+
+        val quality = TextView(this).apply {
+            text = if (rider.self) "YOU  ${qualityGlyphs(rider.qualityBars)}" else qualityGlyphs(rider.qualityBars)
+            gravity = Gravity.CENTER
+            textSize = 9.5f
+            setTextColor(qualityColor(rider.qualityBars))
+        }
+        card.addView(quality, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(18)))
+        return card
+    }
+
+    private fun riderPositions(count: Int): List<Pair<Int, Int>> = when (count.coerceIn(1, 6)) {
+        1 -> listOf(0 to 1)
+        2 -> listOf(0 to 0, 0 to 2)
+        3 -> listOf(0 to 0, 0 to 1, 0 to 2)
+        4 -> listOf(0 to 0, 0 to 2, 1 to 0, 1 to 2)
+        5 -> listOf(0 to 0, 0 to 1, 0 to 2, 1 to 0, 1 to 2)
+        else -> listOf(0 to 0, 0 to 1, 0 to 2, 1 to 0, 1 to 1, 1 to 2)
+    }
+
+    private fun qualityGlyphs(bars: Int): String {
+        val clamped = bars.coerceIn(1, 4)
+        val levels = arrayOf("▂", "▄", "▆", "█")
+        return levels.mapIndexed { index, glyph -> if (index < clamped) glyph else "·" }.joinToString("")
+    }
+
+    private fun qualityColor(bars: Int): Int = when (bars.coerceIn(1, 4)) {
+        1 -> Color.parseColor("#FF6B6B")
+        2 -> ContextCompat.getColor(this, R.color.amber)
+        else -> ContextCompat.getColor(this, R.color.accent)
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun applyPowerUi() {
         binding.powerTile.text = if (binding.batterySaver.isChecked) "SMART POWER" else "MAX LINK"
@@ -853,7 +1013,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun showRidersDialog() {
-        val me = binding.riderName.text?.toString().orEmpty().ifBlank { Build.MODEL.take(18) }
+        val me = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
         val meDevice = deviceLabel()
         val internetPeers = if (internetNode.isConnected()) internetNode.remotePeers() else emptyList()
         val localPeers = if (meshRunning) meshNode.directPeers() else emptyList()
@@ -1065,6 +1225,9 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     companion object {
+        private const val SELF_TILE_KEY = "self"
+        private const val MAX_VISIBLE_RIDER_TILES = 6
+        private const val SPEAKING_HOLD_MS = 560L
         private const val LOBBY_SCAN_WINDOW_MS = 20_000L
         private const val WATCHDOG_INTERVAL_MS = 5_000L
         private const val INTERNET_STABLE_BEFORE_MESH_SLEEP_MS = 15_000L

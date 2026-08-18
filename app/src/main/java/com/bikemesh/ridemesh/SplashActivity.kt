@@ -17,54 +17,32 @@ class SplashActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val density = resources.displayMetrics.density
-        fun dp(value: Int) = (value * density).toInt()
-
-        val brand = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
+        val root = android.widget.FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
+        }
+        val logo = ImageView(this).apply {
+            setImageResource(R.drawable.ridemesh_logo_exact)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
             alpha = 0f
             scaleX = 0.97f
             scaleY = 0.97f
         }
 
-        val mark = ImageView(this).apply {
-            setImageResource(R.drawable.ridemesh_brand_mark)
-            scaleType = ImageView.ScaleType.CENTER_INSIDE
-        }
-        brand.addView(mark, LinearLayout.LayoutParams(dp(132), dp(108)))
+        val width = (resources.displayMetrics.widthPixels * 0.76f).toInt()
+        val height = (width * 189f / 342f).toInt()
+        root.addView(
+            logo,
+            android.widget.FrameLayout.LayoutParams(width, height, Gravity.CENTER)
+        )
+        setContentView(root)
 
-        val name = TextView(this).apply {
-            text = "RIDE MESH"
-            setTextColor(Color.WHITE)
-            textSize = 26f
-            letterSpacing = 0.12f
-            gravity = Gravity.CENTER
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }
-        brand.addView(name, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-
-        val byline = TextView(this).apply {
-            text = "BY AUTOPILOT INDIA  •  BETA 1.1"
-            setTextColor(Color.rgb(0, 230, 230))
-            textSize = 10f
-            letterSpacing = 0.05f
-            gravity = Gravity.CENTER
-        }
-        brand.addView(byline, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(5)
-        })
-
-        setContentView(brand)
-
-        brand.animate()
+        logo.animate()
             .alpha(1f)
             .scaleX(1f)
             .scaleY(1f)
             .setDuration(LOGO_REVEAL_MS)
             .withEndAction {
-                brand.postDelayed({
+                logo.postDelayed({
                     startActivity(Intent(this, MainActivity::class.java))
                     finish()
                 }, HOLD_MS)
@@ -73,7 +51,7 @@ class SplashActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val LOGO_REVEAL_MS = 480L
-        private const val HOLD_MS = 140L
+        private const val LOGO_REVEAL_MS = 440L
+        private const val HOLD_MS = 120L
     }
 }
