@@ -409,7 +409,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             audioEngine.selectCommunicationDevice()
 
             ensureLocalMeshRunning("initial fallback")
-            internetNode.start(code)
+            internetNode.start(code, rider, deviceLabel())
 
             binding.activeRideCode.text = code
             showScreen(Screen.ACTIVE)
@@ -444,6 +444,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             binding.riderName.text?.toString().orEmpty(),
             normalizedRideCode(),
             MeshNode.LabRole.NORMAL,
+            deviceLabel(),
         )
         meshRunning = true
         lastMeshRefreshMs = System.currentTimeMillis()
@@ -564,6 +565,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         binding.meshStatus.text = "CONNECTING…"
         binding.networkTile.text = "CONNECTING"
         binding.homeNetworkStatus.text = "●  READY TO RIDE"
+        binding.activeRiders.text = "RIDERS"
         log("Ride stopped")
         showScreen(Screen.HOME)
     }
@@ -630,6 +632,18 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         .take(12)
 
     private fun generateRideCode(): String = "RM" + Random.nextInt(1000, 9999)
+
+    private fun deviceLabel(): String {
+        val manufacturer = Build.MANUFACTURER.trim()
+            .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+        val model = Build.MODEL.trim()
+        return when {
+            model.isBlank() -> manufacturer.ifBlank { "Android device" }
+            manufacturer.isBlank() -> model
+            model.startsWith(manufacturer, ignoreCase = true) -> model
+            else -> "$manufacturer $model"
+        }.take(48)
+    }
 
     private fun hasRequiredPermissions(): Boolean = requiredPermissions().all {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
@@ -733,6 +747,12 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             directPeerCount > 0 -> "●  LOCAL MESH ACTIVE"
             else -> "●  READY TO RIDE"
         }
+        val visibleRiderTotal = when {
+            internetNode.isConnected() -> internetPeerCount + 1
+            directPeerCount > 0 -> directPeerCount + 1
+            else -> 1
+        }
+        binding.activeRiders.text = "RIDERS $visibleRiderTotal"
         applyPowerUi()
     }
 
@@ -815,21 +835,52 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun showRidersDialog() {
-        val internetTotal = if (internetNode.isConnected()) internetPeerCount + 1 else 0
+        val me = binding.riderName.text?.toString().orEmpty().ifBlank { Build.MODEL.take(18) }
+        val meDevice = deviceLabel()
+        val internetPeers = if (internetNode.isConnected()) internetNode.remotePeers() else emptyList()
+        val localPeers = if (meshRunning) meshNode.directPeers() else emptyList()
+        val riderLines = linkedMapOf<String, String>()
+
+        internetPeers.forEach { peer ->
+            val device = peer.deviceName.ifBlank { "Android device" }
+            val key = "${peer.displayName}|$device".lowercase(Locale.ROOT)
+            riderLines[key] = "• ${peer.displayName}\n  $device • Internet"
+        }
+
+        localPeers.forEach { peer ->
+            val device = peer.deviceName.ifBlank { "Android device" }
+            val key = "${peer.displayName}|$device".lowercase(Locale.ROOT)
+            if (!riderLines.containsKey(key)) {
+                riderLines[key] = "• ${peer.displayName}\n  $device • Local mesh"
+            }
+        }
 
         val message = buildString {
-            if (internetNode.isConnected()) {
-                append("Internet group: $internetTotal rider${if (internetTotal == 1) "" else "s"}\n")
+            append("YOU\n")
+            append("• $me\n")
+            append("  $meDevice\n\n")
+
+            append("CONNECTED RIDERS")
+            if (riderLines.isEmpty()) {
+                append("\nWaiting for another rider…")
+            } else {
+                append(" (${riderLines.size})\n")
+                append(riderLines.values.joinToString("\n\n"))
             }
-            append("Nearby direct peers: $directPeerCount\n")
-            append("Local mesh: ${if (meshRunning) "ready" else "sleeping"}\n")
-            append("Noise reduction: ON\n")
-            append("Auto reconnect: ON\n\n")
-            append("Use INVITE to add riders without ending the conversation.")
+
+            append("\n\nPath: ")
+            append(
+                when {
+                    internetNode.isConnected() -> "Internet"
+                    directPeerCount > 0 -> "Local mesh"
+                    else -> "Reconnecting"
+                }
+            )
+            append(" • Auto reconnect ON")
         }
 
         AlertDialog.Builder(this)
-            .setTitle("Riders")
+            .setTitle("Riders • ${riderLines.size + 1} total")
             .setMessage(message)
             .setPositiveButton("INVITE") { _, _ -> showLiveInviteOptions() }
             .setNegativeButton("CLOSE", null)

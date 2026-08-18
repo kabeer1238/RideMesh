@@ -35,9 +35,11 @@ class InternetNode(private val listener: Listener) {
     private val connected = AtomicBoolean(false)
     private val running = AtomicBoolean(false)
     private val outputLock = Any()
-    private val peers = ConcurrentHashMap<UUID, Long>()
+    private val peers = ConcurrentHashMap<UUID, RiderPeer>()
     private val reportedPeerCount = AtomicInteger(-1)
 
+    @Volatile private var riderName: String = "Rider"
+    @Volatile private var deviceName: String = "Android device"
     @Volatile private var baseTopic: String = ""
     @Volatile private var audioTopic: String = ""
     @Volatile private var presenceTopic: String = ""
@@ -47,8 +49,10 @@ class InternetNode(private val listener: Listener) {
     @Volatile private var worker: Thread? = null
     private var reconnectAttempt = 0
 
-    fun start(rideCode: String) {
+    fun start(rideCode: String, riderName: String, deviceName: String) {
         stop()
+        this.riderName = sanitizeIdentity(riderName, "Rider", MAX_RIDER_NAME_BYTES)
+        this.deviceName = sanitizeIdentity(deviceName, "Android device", MAX_DEVICE_NAME_BYTES)
         val safeRide = rideCode.trim().uppercase().ifBlank { "RIDE01" }
             .replace(Regex("[^A-Z0-9_-]"), "_")
             .take(32)
@@ -68,6 +72,9 @@ class InternetNode(private val listener: Listener) {
     fun isConnected(): Boolean = connected.get()
 
     fun remotePeerCount(): Int = peers.size
+
+    fun remotePeers(): List<RiderPeer> = peers.values
+        .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.displayName })
 
     fun sendLocalAudio(audio: ByteArray): Boolean {
         if (audio.isEmpty() || !connected.get()) return false
@@ -181,7 +188,7 @@ class InternetNode(private val listener: Listener) {
             audioTopic -> {
                 val packet = decode(payload) ?: return
                 if (packet.origin == nodeId) return
-                markPeer(packet.origin)
+                touchPeer(packet.origin)
                 listener.onInternetAudio(packet.audio)
             }
             presenceTopic -> handlePresence(payload)
@@ -190,34 +197,52 @@ class InternetNode(private val listener: Listener) {
 
     private fun publishPresence() {
         if (!connected.get()) return
-        val payload = ByteBuffer.allocate(PRESENCE_BYTES)
-            .order(ByteOrder.BIG_ENDIAN)
-            .putLong(nodeId.mostSignificantBits)
-            .putLong(nodeId.leastSignificantBits)
-            .putLong(System.currentTimeMillis())
-            .array()
-        sendMqttPublish(presenceTopic, payload)
+        sendMqttPublish(
+            presenceTopic,
+            encodePresence(
+                PresencePacket(
+                    origin = nodeId,
+                    timestampMs = System.currentTimeMillis(),
+                    riderName = riderName,
+                    deviceName = deviceName,
+                )
+            )
+        )
     }
 
     private fun handlePresence(payload: ByteArray) {
-        if (payload.size < PRESENCE_BYTES) return
-        try {
-            val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
-            val origin = UUID(buffer.long, buffer.long)
-            buffer.long // sender timestamp; local receive time is used for expiry
-            if (origin == nodeId) return
-            markPeer(origin)
-        } catch (_: Throwable) {
-        }
+        val presence = decodePresence(payload) ?: return
+        if (presence.origin == nodeId) return
+        markPeer(presence.origin, presence.riderName, presence.deviceName)
     }
 
-    private fun markPeer(id: UUID) {
-        peers[id] = System.currentTimeMillis()
-        notifyPeerCount()
+    private fun touchPeer(id: UUID) {
+        val now = System.currentTimeMillis()
+        var added = false
+        peers.compute(id) { _, current ->
+            if (current == null) {
+                added = true
+                RiderPeer(id = id, riderName = "", deviceName = "", lastSeenMs = now)
+            } else {
+                current.copy(lastSeenMs = now)
+            }
+        }
+        notifyPeerCount(force = added)
+    }
+
+    private fun markPeer(id: UUID, riderName: String, deviceName: String) {
+        val now = System.currentTimeMillis()
+        val previous = peers[id]
+        val resolvedRider = riderName.ifBlank { previous?.riderName.orEmpty() }
+        val resolvedDevice = deviceName.ifBlank { previous?.deviceName.orEmpty() }
+        peers[id] = RiderPeer(id, resolvedRider, resolvedDevice, now)
+        val identityChanged = previous == null ||
+            previous.riderName != resolvedRider || previous.deviceName != resolvedDevice
+        notifyPeerCount(force = identityChanged)
     }
 
     private fun prunePeers(now: Long) {
-        peers.entries.removeIf { now - it.value > PRESENCE_TIMEOUT_MS }
+        peers.entries.removeIf { now - it.value.lastSeenMs > PRESENCE_TIMEOUT_MS }
         notifyPeerCount()
     }
 
@@ -360,6 +385,85 @@ class InternetNode(private val listener: Listener) {
         }
     }
 
+    data class RiderPeer(
+        val id: UUID,
+        val riderName: String,
+        val deviceName: String,
+        val lastSeenMs: Long,
+    ) {
+        val displayName: String
+            get() = riderName.ifBlank {
+                deviceName.ifBlank { "Rider ${id.toString().take(4).uppercase()}" }
+            }
+    }
+
+    internal data class PresencePacket(
+        val origin: UUID,
+        val timestampMs: Long,
+        val riderName: String,
+        val deviceName: String,
+    )
+
+    internal fun encodePresence(packet: PresencePacket): ByteArray {
+        val riderBytes = packet.riderName.toByteArray(Charsets.UTF_8).let {
+            if (it.size > MAX_RIDER_NAME_BYTES) it.copyOf(MAX_RIDER_NAME_BYTES) else it
+        }
+        val deviceBytes = packet.deviceName.toByteArray(Charsets.UTF_8).let {
+            if (it.size > MAX_DEVICE_NAME_BYTES) it.copyOf(MAX_DEVICE_NAME_BYTES) else it
+        }
+        return ByteBuffer.allocate(PRESENCE_BASE_BYTES + 1 + riderBytes.size + 1 + deviceBytes.size)
+            .order(ByteOrder.BIG_ENDIAN)
+            .putLong(packet.origin.mostSignificantBits)
+            .putLong(packet.origin.leastSignificantBits)
+            .putLong(packet.timestampMs)
+            .put(riderBytes.size.toByte())
+            .put(riderBytes)
+            .put(deviceBytes.size.toByte())
+            .put(deviceBytes)
+            .array()
+    }
+
+    internal fun decodePresence(payload: ByteArray): PresencePacket? {
+        if (payload.size < PRESENCE_BASE_BYTES) return null
+        return try {
+            val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+            val origin = UUID(buffer.long, buffer.long)
+            val timestamp = buffer.long
+
+            // Beta 1 / early Beta 1.1 presence was exactly 24 bytes. Keep it readable.
+            if (!buffer.hasRemaining()) {
+                return PresencePacket(origin, timestamp, "", "")
+            }
+
+            val riderLength = buffer.get().toInt() and 0xff
+            if (riderLength > buffer.remaining()) return PresencePacket(origin, timestamp, "", "")
+            val riderBytes = ByteArray(riderLength)
+            buffer.get(riderBytes)
+            val rider = riderBytes.toString(Charsets.UTF_8).trim()
+
+            if (!buffer.hasRemaining()) {
+                return PresencePacket(origin, timestamp, rider, "")
+            }
+            val deviceLength = buffer.get().toInt() and 0xff
+            if (deviceLength > buffer.remaining()) return PresencePacket(origin, timestamp, rider, "")
+            val deviceBytes = ByteArray(deviceLength)
+            buffer.get(deviceBytes)
+            val device = deviceBytes.toString(Charsets.UTF_8).trim()
+            PresencePacket(origin, timestamp, rider, device)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun sanitizeIdentity(value: String, fallback: String, maxBytes: Int): String {
+        val clean = value.trim().replace('|', '/').ifBlank { fallback }
+        var result = clean
+        while (result.toByteArray(Charsets.UTF_8).size > maxBytes && result.isNotEmpty()) {
+            result = result.dropLast(1)
+        }
+        return result.ifBlank { fallback }
+    }
+
     internal data class InternetPacket(
         val origin: UUID,
         val sequence: Int,
@@ -407,7 +511,9 @@ class InternetNode(private val listener: Listener) {
         private const val RECONNECT_BASE_DELAY_MS = 2_000L
         private const val RECONNECT_MAX_DELAY_MS = 15_000L
         private const val RECONNECT_JITTER_MS = 750L
-        private const val PRESENCE_BYTES = 24
+        private const val PRESENCE_BASE_BYTES = 24
+        private const val MAX_RIDER_NAME_BYTES = 48
+        private const val MAX_DEVICE_NAME_BYTES = 64
         private const val MAGIC = 0x524D4931 // RMI1
         private const val VERSION: Byte = 1
         private const val HEADER_BYTES = 33
