@@ -3,15 +3,13 @@ package com.bikemesh.ridemesh
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
-import android.view.Gravity
 import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 
 /**
- * Short, intentionally subtle brand reveal. No network, radio or microphone work
- * starts here; the real RideMesh session remains entirely user initiated.
+ * Short, intentionally subtle brand reveal using the approved RideMesh artwork.
+ * No network, radio or microphone work starts here; the real RideMesh session
+ * remains entirely user initiated.
  */
 class SplashActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -21,18 +19,19 @@ class SplashActivity : AppCompatActivity() {
             setBackgroundColor(Color.BLACK)
         }
         val logo = ImageView(this).apply {
-            setImageResource(R.drawable.ridemesh_logo_exact)
-            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setImageResource(R.drawable.ridemesh_boot_exact)
+            scaleType = ImageView.ScaleType.FIT_CENTER
             alpha = 0f
-            scaleX = 0.97f
-            scaleY = 0.97f
+            scaleX = 0.975f
+            scaleY = 0.975f
         }
 
-        val width = (resources.displayMetrics.widthPixels * 0.76f).toInt()
-        val height = (width * 189f / 342f).toInt()
         root.addView(
             logo,
-            android.widget.FrameLayout.LayoutParams(width, height, Gravity.CENTER)
+            android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            )
         )
         setContentView(root)
 
@@ -51,7 +50,7 @@ class SplashActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val LOGO_REVEAL_MS = 440L
-        private const val HOLD_MS = 120L
+        private const val LOGO_REVEAL_MS = 420L
+        private const val HOLD_MS = 140L
     }
 }
