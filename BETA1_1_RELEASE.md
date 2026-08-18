@@ -1,13 +1,15 @@
 # RideMesh Beta 1.1
 
-Version: `0.4.1-beta1.1` (`versionCode 11`)
+Version: `0.4.2-beta1.1` (`versionCode 12`)
 
 ## Focus
-Beta 1.1 is a reliability and presentation update for the invited field-test group.
+Beta 1.1 is a reliability, presentation and tester-experience update for the invited field-test group.
 
 ## Included
-- RideMesh chosen logo remains the Android launcher icon.
-- New short black/cyan logo splash with a subtle fade/scale reveal before Home.
+- Proper adaptive Android launcher icon using the chosen RideMesh artwork.
+- App label standardized to `RideMesh`.
+- Short, subtle logo splash before Home.
+- New polished landing page with clear Create Ride / Join Ride actions, live readiness status, and quick Hybrid / Helmet / Smart Power indicators.
 - Fixed the confirmed Internet packet header-size bug: 33 bytes, not 37.
 - Added a regression test for exact Internet packet framing / PCM round-trip.
 - Internet reconnect now uses short exponential backoff plus jitter instead of a synchronized fixed 2-second loop.
@@ -27,3 +29,4 @@ Beta 1.1 is a reliability and presentation update for the invited field-test gro
 5. Different Bluetooth helmet/intercom brands.
 6. Wind/noise and overlapping speech.
 7. Battery consumption.
+8. Launcher icon appearance and landing-page readability on different Android phones.
