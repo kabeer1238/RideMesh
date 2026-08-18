@@ -3,14 +3,13 @@ name: Build RideMesh APK
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "master", "beta1.2" ]
+    branches: [ "main", "master", "beta1.4" ]
   pull_request:
     branches: [ "main", "master" ]
 
 permissions:
   contents: write
 
-# RideMesh release gate: unit tests + Android lint + APK packaging
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -35,32 +34,37 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Apply Beta 1.2 rider and audio patch
-        if: github.ref == 'refs/heads/beta1.2' || github.head_ref == 'beta1.2'
-        shell: bash
-        run: |
-          python3 tools/apply_beta12_patch.py
-          python3 tools/fix_beta12_constants.py
+      - name: Apply approved Beta 1.4 branding and single-group UI
+        if: github.ref == 'refs/heads/beta1.4' || github.head_ref == 'beta1.4'
+        run: python3 tools/apply_beta14_branding.py
 
-      - name: Materialize exact supplied RideMesh branding
-        if: github.ref == 'refs/heads/beta1.2' || github.head_ref == 'beta1.2'
+      - name: Materialize exact RideMesh branding
+        if: github.ref == 'refs/heads/beta1.4' || github.head_ref == 'beta1.4'
         shell: bash
         run: |
           mkdir -p app/src/main/res/drawable-nodpi
           base64 -d branding/ridemesh_logo_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
           base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
           file app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
           file app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          file app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
           test -s app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
           test -s app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          test -s app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
-      - name: Test, lint and build Beta 1.2
+      - name: Verify second-group feature is absent
+        shell: bash
+        run: |
+          ! grep -R "secondaryInternetNode\|SECONDARY GROUP\|CREATE SECOND GROUP\|JOIN SECOND GROUP" app/src/main/java app/src/main/res/layout/activity_main.xml
+
+      - name: Test, lint and build Beta 1.4
         id: compile
         shell: bash
         run: |
           set -o pipefail
           {
-            echo "RideMesh Beta 1.2 CI $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RideMesh Beta 1.4 CI $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo "Commit: $GITHUB_SHA"
             echo "=== UNIT TESTS ==="
             gradle --no-daemon testDebugUnitTest
@@ -70,12 +74,11 @@ jobs:
             gradle --no-daemon assembleDebug
           } 2>&1 | tee build.log
 
-      - name: Upload Beta 1.2 APK
-        id: apk_artifact
+      - name: Upload Beta 1.4 APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1.2-v0.4.6-apk
+          name: RideMesh-Beta1.4-v0.4.8-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
@@ -83,29 +86,24 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1.2-v0.4.6-lint
+          name: RideMesh-Beta1.4-v0.4.8-lint
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
 
-      - name: Persist validated Beta 1.2 source
-        if: success() && github.ref == 'refs/heads/beta1.2'
+      - name: Persist validated Beta 1.4 source
+        if: success() && github.ref == 'refs/heads/beta1.4'
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
             app/build.gradle.kts \
-            app/src/main/AndroidManifest.xml \
             app/src/main/java/com/bikemesh/ridemesh/SplashActivity.kt \
-            app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt \
-            app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt \
-            app/src/main/java/com/bikemesh/ridemesh/mesh/MeshNode.kt \
-            app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt \
             app/src/main/res/layout/activity_main.xml \
-            app/src/main/res/drawable/live_panel_bg.xml \
             app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp \
-            app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+            app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp \
+            app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
           if ! git diff --cached --quiet; then
-            git commit -m "Beta 1.2: validated rider UI and realtime audio improvements [skip ci]"
-            git push origin beta1.2
+            git commit -m "Beta 1.4: validated single-group branding release [skip ci]"
+            git push origin beta1.4
           fi
