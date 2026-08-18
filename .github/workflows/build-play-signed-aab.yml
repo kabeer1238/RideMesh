@@ -1,4 +1,4 @@
-name: Build RideMesh Play-Signed AAB
+name: Build RideMesh Play-Signed AAB API 36
 
 on:
   workflow_dispatch:
@@ -22,8 +22,8 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android 35 SDK
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Install Android 16 API 36 SDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
       - name: Set up Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
@@ -54,9 +54,16 @@ jobs:
           test -s app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           test -s app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
-      - name: Verify second-group feature is absent
+      - name: Verify Play release configuration
         shell: bash
         run: |
+          grep -q 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
+          grep -q 'compileSdk = 36' app/build.gradle.kts
+          grep -q 'targetSdk = 36' app/build.gradle.kts
+          grep -q 'versionCode = 1' app/build.gradle.kts
+          grep -q 'versionName = "1.0.0-beta"' app/build.gradle.kts
+          grep -q 'android.permission.FOREGROUND_SERVICE_MICROPHONE' app/src/main/AndroidManifest.xml
+          grep -q 'android:foregroundServiceType="microphone|connectedDevice"' app/src/main/AndroidManifest.xml
           ! grep -R "secondaryInternetNode\|SECONDARY GROUP\|CREATE SECOND GROUP\|JOIN SECOND GROUP" app/src/main/java app/src/main/res/layout/activity_main.xml
 
       - name: Restore upload keystore
@@ -95,20 +102,20 @@ jobs:
             "$AAB" "$KEY_ALIAS"
           jarsigner -verify -verbose -certs "$AAB" | tee "$RUNNER_TEMP/aab-verify.txt"
           grep -qi "jar verified" "$RUNNER_TEMP/aab-verify.txt"
-          cp "$AAB" "RideMesh-Beta1.4-v0.4.8-PLAY-SIGNED.aab"
+          cp "$AAB" "RideMesh-1.0.0-beta-API36-PLAY-SIGNED.aab"
 
       - name: Upload Play-signed AAB
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1.4-v0.4.8-PLAY-SIGNED
-          path: RideMesh-Beta1.4-v0.4.8-PLAY-SIGNED.aab
+          name: RideMesh-1.0.0-beta-API36-PLAY-SIGNED
+          path: RideMesh-1.0.0-beta-API36-PLAY-SIGNED.aab
           if-no-files-found: error
 
       - name: Upload lint report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1.4-v0.4.8-play-lint
+          name: RideMesh-1.0.0-beta-API36-play-lint
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
 
