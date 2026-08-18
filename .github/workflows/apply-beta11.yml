@@ -1,0 +1,126 @@
+name: Prepare RideMesh Beta 1.1
+
+on:
+  push:
+    branches: [ "beta1.1" ]
+    paths:
+      - ".github/workflows/apply-beta11.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout beta1.1
+        uses: actions/checkout@v4
+        with:
+          ref: beta1.1
+          fetch-depth: 0
+
+      - name: Apply Beta 1.1 source changes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('app/build.gradle.kts')
+          s = p.read_text()
+          s = s.replace('versionCode = 10', 'versionCode = 11')
+          s = s.replace('versionName = "0.4.0-beta1"', 'versionName = "0.4.1-beta1.1"')
+          p.write_text(s)
+
+          p = Path('app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt')
+          s = p.read_text()
+          if 'import kotlin.random.Random' not in s:
+              s = s.replace('import java.util.concurrent.atomic.AtomicInteger\n', 'import java.util.concurrent.atomic.AtomicInteger\nimport kotlin.random.Random\n')
+          s = s.replace('    @Volatile private var worker: Thread? = null\n', '    @Volatile private var worker: Thread? = null\n    private var reconnectAttempt = 0\n')
+          s = s.replace('''            if (running.get()) {\n                try {\n                    Thread.sleep(RECONNECT_DELAY_MS)\n                } catch (_: InterruptedException) {\n                    break\n                }\n                listener.onInternetState(false, "Internet reconnecting… • local mesh available")\n            }''', '''            if (running.get()) {\n                val delayMs = nextReconnectDelayMs()\n                try {\n                    Thread.sleep(delayMs)\n                } catch (_: InterruptedException) {\n                    break\n                }\n                listener.onInternetState(false, "Internet reconnecting… • local mesh available")\n            }''')
+          s = s.replace('''        connected.set(true)\n        clearPeers()''', '''        connected.set(true)\n        reconnectAttempt = 0\n        clearPeers()''')
+          marker = '    private fun markDisconnected(message: String) {'
+          helper = '''    /**\n     * Avoid synchronized reconnect storms after a cellular/broker outage.\n     * Short exponential backoff keeps recovery quick while adding jitter so\n     * multiple riders do not all reconnect in the same millisecond.\n     */\n    private fun nextReconnectDelayMs(): Long {\n        val exponent = reconnectAttempt.coerceAtMost(3)\n        val base = (RECONNECT_BASE_DELAY_MS * (1L shl exponent)).coerceAtMost(RECONNECT_MAX_DELAY_MS)\n        reconnectAttempt = (reconnectAttempt + 1).coerceAtMost(8)\n        return base + Random.nextLong(0L, RECONNECT_JITTER_MS + 1L)\n    }\n\n'''
+          if 'private fun nextReconnectDelayMs()' not in s:
+              s = s.replace(marker, helper + marker)
+          s = s.replace('private const val RECONNECT_DELAY_MS = 2_000L', 'private const val RECONNECT_BASE_DELAY_MS = 2_000L\n        private const val RECONNECT_MAX_DELAY_MS = 15_000L\n        private const val RECONNECT_JITTER_MS = 750L')
+          s = s.replace('private const val HEADER_BYTES = 37', 'private const val HEADER_BYTES = 33')
+          s = s.replace('    private data class InternetPacket(', '    internal data class InternetPacket(')
+          s = s.replace('    private fun encode(packet: InternetPacket): ByteArray {', '    internal fun encode(packet: InternetPacket): ByteArray {')
+          s = s.replace('    private fun decode(bytes: ByteArray): InternetPacket? {', '    internal fun decode(bytes: ByteArray): InternetPacket? {')
+          p.write_text(s)
+
+          p = Path('app/src/main/AndroidManifest.xml')
+          s = p.read_text().replace('android:allowBackup="true"', 'android:allowBackup="false"')
+          old = '''        <activity\n            android:name=".MainActivity"\n            android:exported="true"\n            android:screenOrientation="portrait">\n            <intent-filter>\n                <action android:name="android.intent.action.MAIN" />\n                <category android:name="android.intent.category.LAUNCHER" />\n            </intent-filter>\n        </activity>'''
+          new = '''        <activity\n            android:name=".SplashActivity"\n            android:exported="true"\n            android:noHistory="true"\n            android:screenOrientation="portrait"\n            android:theme="@style/Theme.RideMesh.Splash">\n            <intent-filter>\n                <action android:name="android.intent.action.MAIN" />\n                <category android:name="android.intent.category.LAUNCHER" />\n            </intent-filter>\n        </activity>\n\n        <activity\n            android:name=".MainActivity"\n            android:exported="false"\n            android:screenOrientation="portrait" />'''
+          if old not in s:
+              raise SystemExit('MainActivity launcher block not found')
+          p.write_text(s.replace(old, new))
+
+          p = Path('app/src/main/res/values/themes.xml')
+          s = p.read_text()
+          splash_style = '''\n    <style name="Theme.RideMesh.Splash" parent="Theme.MaterialComponents.DayNight.NoActionBar">\n        <item name="android:windowBackground">@color/black</item>\n        <item name="android:navigationBarColor">@color/black</item>\n        <item name="android:statusBarColor">@color/black</item>\n        <item name="android:windowLightStatusBar">false</item>\n        <item name="android:windowLightNavigationBar">false</item>\n        <item name="android:fontFamily">sans</item>\n    </style>\n'''
+          if 'Theme.RideMesh.Splash' not in s:
+              s = s.replace('</resources>', splash_style + '</resources>')
+          p.write_text(s)
+
+          Path('app/src/main/java/com/bikemesh/ridemesh/SplashActivity.kt').write_text('''package com.bikemesh.ridemesh\n\nimport android.content.Intent\nimport android.os.Bundle\nimport android.view.Gravity\nimport android.widget.FrameLayout\nimport android.widget.ImageView\nimport androidx.appcompat.app.AppCompatActivity\n\n/**\n * Short, subtle brand reveal. It deliberately starts no network, radio or\n * microphone work; the actual RideMesh session remains user initiated.\n */\nclass SplashActivity : AppCompatActivity() {\n    override fun onCreate(savedInstanceState: Bundle?) {\n        super.onCreate(savedInstanceState)\n\n        val root = FrameLayout(this).apply {\n            setBackgroundColor(android.graphics.Color.BLACK)\n        }\n        val logo = ImageView(this).apply {\n            setImageResource(R.drawable.ridemesh_logo)\n            scaleType = ImageView.ScaleType.CENTER_INSIDE\n            alpha = 0f\n            scaleX = 0.965f\n            scaleY = 0.965f\n        }\n        val size = (resources.displayMetrics.widthPixels * 0.68f).toInt()\n        root.addView(logo, FrameLayout.LayoutParams(size, size, Gravity.CENTER))\n        setContentView(root)\n\n        logo.animate()\n            .alpha(1f)\n            .scaleX(1f)\n            .scaleY(1f)\n            .setDuration(LOGO_REVEAL_MS)\n            .withEndAction {\n                logo.postDelayed({\n                    startActivity(Intent(this, MainActivity::class.java))\n                    overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out)\n                    finish()\n                }, HOLD_MS)\n            }\n            .start()\n    }\n\n    companion object {\n        private const val LOGO_REVEAL_MS = 620L\n        private const val HOLD_MS = 180L\n    }\n}\n''')
+
+          test = Path('app/src/test/java/com/bikemesh/ridemesh/transport/InternetNodeTest.kt')
+          test.parent.mkdir(parents=True, exist_ok=True)
+          test.write_text('''package com.bikemesh.ridemesh.transport\n\nimport org.junit.Assert.assertArrayEquals\nimport org.junit.Assert.assertEquals\nimport org.junit.Assert.assertNotNull\nimport org.junit.Test\nimport java.util.UUID\n\nclass InternetNodeTest {\n    private val listener = object : InternetNode.Listener {\n        override fun onInternetState(connected: Boolean, message: String) = Unit\n        override fun onInternetAudio(audio: ByteArray) = Unit\n        override fun onInternetPeerCount(count: Int) = Unit\n    }\n\n    @Test\n    fun encodedPacketHasExact33ByteHeaderAndRoundTripsAudio() {\n        val node = InternetNode(listener)\n        val audio = ByteArray(640) { index -> (index and 0xff).toByte() }\n        val packet = InternetNode.InternetPacket(\n            origin = UUID.fromString("12345678-1234-5678-1234-567812345678"),\n            sequence = 42,\n            timestampMs = 1_725_000_000_000L,\n            audio = audio,\n        )\n\n        val encoded = node.encode(packet)\n        assertEquals(33 + audio.size, encoded.size)\n        val decoded = node.decode(encoded)\n        assertNotNull(decoded)\n        assertEquals(packet.origin, decoded!!.origin)\n        assertEquals(packet.sequence, decoded.sequence)\n        assertEquals(packet.timestampMs, decoded.timestampMs)\n        assertArrayEquals(audio, decoded.audio)\n    }\n}\n''')
+
+          Path('BETA1_1_RELEASE.md').write_text('''# RideMesh Beta 1.1\n\nVersion: `0.4.1-beta1.1` (`versionCode 11`)\n\n## Focus\nBeta 1.1 is a reliability and presentation update for the invited field-test group.\n\n## Included\n- Chosen RideMesh logo remains the Android launcher icon.\n- New short logo splash with a subtle fade/scale reveal before Home.\n- Fixed the confirmed Internet packet header-size bug: 33 bytes, not 37.\n- Added a regression test for exact Internet packet framing / PCM round-trip.\n- Internet reconnect now uses short exponential backoff plus jitter instead of a synchronized fixed 2-second loop.\n- Android backup is disabled for the Beta app data.\n- Existing hands-free audio, AEC/NS/AGC where supported, adaptive VAD, wind-rumble filter, bounded playback queue, Battery Smart, QR/share invites, live Internet invite scanning and automatic Internet/local reconnect are retained.\n\n## Deferred intentionally\n- Internet room authentication and E2E encryption remain deferred for the small trusted Beta group.\n- Opus and production relay infrastructure remain Beta 2 targets.\n- Moving the complete live communication engine from MainActivity into RideService remains a major lifecycle hardening task for Beta 2; Beta 1.1 must still be field-tested with screen-off/OEM battery management.\n\n## Tester priorities\n1. 3-6 rider Internet calls.\n2. 30-60 minute screen-off rides.\n3. Network loss, complete outage and later 4G/5G recovery.\n4. Local-range loss and rediscovery.\n5. Different Bluetooth helmet/intercom brands.\n6. Wind/noise and overlapping speech.\n7. Battery consumption.\n''')
+
+          p = Path('.github/workflows/build-apk.yml')
+          s = p.read_text()
+          s = s.replace('RideMesh Beta 1', 'RideMesh Beta 1.1')
+          s = s.replace('RideMesh-Beta1-apk', 'RideMesh-Beta1.1-apk')
+          s = s.replace('RideMesh-Beta1-lint', 'RideMesh-Beta1.1-lint')
+          s = s.replace('dist/RideMesh-Beta1.apk', 'dist/RideMesh-Beta1.1.apk')
+          p.write_text(s)
+          PY
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 35 SDK
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Decode chosen RideMesh branding
+        run: |
+          mkdir -p app/src/main/res/drawable-nodpi
+          base64 -d branding/ridemesh_logo.jpg.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo.jpg
+          base64 -d branding/ridemesh_icon.jpg.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon.jpg
+          file app/src/main/res/drawable-nodpi/ridemesh_logo.jpg
+          file app/src/main/res/drawable-nodpi/ridemesh_icon.jpg
+
+      - name: Validate Beta 1.1
+        run: |
+          gradle --no-daemon testDebugUnitTest
+          gradle --no-daemon lintDebug
+          gradle --no-daemon assembleDebug
+
+      - name: Remove generated branding and temporary preparer
+        run: |
+          rm -rf app/src/main/res/drawable-nodpi
+          rm -f .github/workflows/apply-beta11.yml
+
+      - name: Commit validated Beta 1.1 source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app BETA1_1_RELEASE.md .github/workflows/build-apk.yml .github/workflows/apply-beta11.yml
+          git commit -m "RideMesh Beta 1.1 release candidate [skip ci]"
+          git push origin beta1.1
