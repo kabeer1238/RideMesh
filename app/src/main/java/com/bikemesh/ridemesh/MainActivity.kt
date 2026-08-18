@@ -9,15 +9,23 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.EditText
+import android.widget.GridLayout
 import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -40,6 +48,7 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 
 class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener, InternetNode.Listener {
@@ -47,11 +56,13 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private lateinit var meshNode: MeshNode
     private lateinit var lobbyNode: LobbyNode
     private lateinit var internetNode: InternetNode
+    private lateinit var secondaryInternetNode: InternetNode
     private lateinit var audioEngine: AudioEngine
 
     private val prefs by lazy { getSharedPreferences("ridemesh", MODE_PRIVATE) }
     private val nearbyButtons = linkedMapOf<String, MaterialButton>()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val speakingUntilMs = ConcurrentHashMap<String, Long>()
 
     private var rideStarted = false
     private var pendingAction = PendingAction.NONE
@@ -60,9 +71,24 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private var meshRunning = false
     private var internetConnectedSinceMs = 0L
     private var lastMeshRefreshMs = 0L
+    private var primaryRideCode = ""
+    private var secondaryRideCode: String? = null
+    private var secondaryPeerCount = 0
+    private var secondaryHadConnection = false
+    private var activeGroup = ActiveGroup.PRIMARY
 
+    private enum class ActiveGroup { PRIMARY, SECONDARY }
     private enum class PendingAction { NONE, START_RIDE, FIND_RIDERS }
     private enum class Screen { HOME, SETUP, ACTIVE }
+
+    private data class RiderTile(
+        val key: String,
+        val name: String,
+        val device: String,
+        val qualityBars: Int,
+        val path: String,
+        val self: Boolean = false,
+    )
 
     private val stopLobbyScan = Runnable {
         lobbyNode.stop()
@@ -136,6 +162,31 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         meshNode = MeshNode(applicationContext, this)
         lobbyNode = LobbyNode(applicationContext, this)
         internetNode = InternetNode(this)
+        secondaryInternetNode = InternetNode(object : InternetNode.Listener {
+            override fun onInternetState(connected: Boolean, message: String) {
+                runOnUiThread {
+                    log("Secondary • $message")
+                    if (connected) secondaryHadConnection = true
+                    if (!connected && secondaryHadConnection && activeGroup == ActiveGroup.SECONDARY && primaryPathAvailable()) {
+                        switchActiveGroup(ActiveGroup.PRIMARY, "Secondary link lost • returned to primary")
+                    } else {
+                        updateTransportStatus()
+                        updateCapturePolicy()
+                    }
+                }
+            }
+
+            override fun onInternetPeerCount(count: Int) {
+                secondaryPeerCount = count
+                runOnUiThread { if (activeGroup == ActiveGroup.SECONDARY) updateTransportStatus() }
+            }
+
+            override fun onInternetAudio(sourceId: String, audio: ByteArray) {
+                if (!rideStarted || activeGroup != ActiveGroup.SECONDARY) return
+                markRiderSpeaking(sourceId)
+                audioEngine.playIncoming("secondary:$sourceId", audio)
+            }
+        })
         audioEngine = AudioEngine(
             context = applicationContext,
             onCapturedFrame = ::sendHybridAudio,
@@ -170,6 +221,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         binding.activeInvite.setOnClickListener { showLiveInviteOptions() }
         binding.activeAudio.setOnClickListener { showAudioRouteDialog() }
         binding.activeStatus.setOnClickListener { showRideStatusDialog() }
+        binding.groupSwitcher.setOnClickListener { showGroupsDialog() }
 
         binding.audioRoute.setOnCheckedChangeListener { _, _ ->
             applySelectedAudioRoute()
@@ -259,18 +311,28 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun showLiveInviteOptions() {
-        val options = arrayOf(
-            "Show QR code",
-            "Share QR code",
-            "Find nearby RideMesh riders",
-        )
+        val secondaryActive = activeGroup == ActiveGroup.SECONDARY
+        val options = if (secondaryActive) {
+            arrayOf("Show QR code", "Share QR code", "Manage primary / secondary groups")
+        } else {
+            arrayOf("Show QR code", "Share QR code", "Find nearby RideMesh riders", "Manage primary / secondary groups")
+        }
         AlertDialog.Builder(this)
-            .setTitle("Add riders without ending the call")
+            .setTitle("Invite to ${currentInviteCode()}")
             .setItems(options) { _, which ->
-                when (which) {
-                    0 -> showRideQr()
-                    1 -> shareRideQr()
-                    2 -> ensurePermissionsAndRun(PendingAction.FIND_RIDERS)
+                if (secondaryActive) {
+                    when (which) {
+                        0 -> showRideQr()
+                        1 -> shareRideQr()
+                        2 -> showGroupsDialog()
+                    }
+                } else {
+                    when (which) {
+                        0 -> showRideQr()
+                        1 -> shareRideQr()
+                        2 -> ensurePermissionsAndRun(PendingAction.FIND_RIDERS)
+                        3 -> showGroupsDialog()
+                    }
                 }
             }
             .setNegativeButton("CLOSE", null)
@@ -291,9 +353,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun showRideQr() {
-        val code = normalizedRideCode()
-        binding.rideCode.setText(code)
-        saveSettings()
+        val code = currentInviteCode()
+        if (!rideStarted || activeGroup == ActiveGroup.PRIMARY) {
+            binding.rideCode.setText(code)
+            saveSettings()
+        }
 
         try {
             val bitmap = buildRideQrBitmap(code)
@@ -317,7 +381,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun shareRideQr() {
-        val code = normalizedRideCode()
+        val code = currentInviteCode()
         try {
             val bitmap = buildRideQrBitmap(code)
             val shareDir = File(cacheDir, "shared").apply { mkdirs() }
@@ -388,7 +452,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private fun startRideNow() {
         if (rideStarted) return
 
-        val rider = binding.riderName.text?.toString().orEmpty().ifBlank { Build.MODEL.take(18) }
+        val rider = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
         val code = normalizedRideCode()
         binding.riderName.setText(rider)
         binding.rideCode.setText(code)
@@ -399,6 +463,12 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             startRideServiceSafely()
 
             rideStarted = true
+            primaryRideCode = code
+            secondaryRideCode = null
+            secondaryPeerCount = 0
+            secondaryHadConnection = false
+            activeGroup = ActiveGroup.PRIMARY
+            secondaryInternetNode.stop()
             directPeerCount = 0
             internetPeerCount = 0
             meshRunning = false
@@ -409,16 +479,15 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             audioEngine.selectCommunicationDevice()
 
             ensureLocalMeshRunning("initial fallback")
-            internetNode.start(code)
+            internetNode.start(primaryRideCode, rider, deviceLabel())
 
-            binding.activeRideCode.text = code
             showScreen(Screen.ACTIVE)
             updateTransportStatus()
             updateCapturePolicy()
 
             mainHandler.removeCallbacks(rideWatchdog)
             mainHandler.postDelayed(rideWatchdog, WATCHDOG_INTERVAL_MS)
-            log("Ride started • noise reduction + automatic Internet / local reconnect enabled")
+            log("Primary ride started • dual-group ready • automatic Internet / local reconnect enabled")
         } catch (t: Throwable) {
             recoverFromStartFailure(t)
         }
@@ -426,6 +495,13 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private fun sendHybridAudio(audio: ByteArray) {
         if (!rideStarted || audio.isEmpty()) return
+
+        if (activeGroup == ActiveGroup.SECONDARY) {
+            if (secondaryInternetNode.isConnected()) {
+                secondaryInternetNode.sendLocalAudio(audio)
+            }
+            return
+        }
 
         if (internetNode.isConnected()) {
             if (!internetNode.sendLocalAudio(audio)) {
@@ -442,8 +518,9 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         if (!rideStarted || meshRunning || !radiosReady()) return
         meshNode.start(
             binding.riderName.text?.toString().orEmpty(),
-            normalizedRideCode(),
+            primaryRideCode.ifBlank { normalizedRideCode() },
             MeshNode.LabRole.NORMAL,
+            deviceLabel(),
         )
         meshRunning = true
         lastMeshRefreshMs = System.currentTimeMillis()
@@ -483,6 +560,17 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private fun updateCapturePolicy() {
         if (!rideStarted) return
+
+        if (activeGroup == ActiveGroup.SECONDARY) {
+            if (secondaryInternetNode.isConnected()) {
+                audioEngine.startTransmit()
+            } else {
+                audioEngine.stopTransmit()
+                updateAudioUi("Secondary reconnecting • microphone sleeping")
+            }
+            return
+        }
+
         if (internetNode.isConnected() || directPeerCount > 0) {
             audioEngine.startTransmit()
         } else {
@@ -552,6 +640,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         stopLobbyDiscovery()
         audioEngine.stopTransmit()
         internetNode.stop()
+        secondaryInternetNode.stop()
         meshRunning = false
         meshNode.stop()
         stopService(Intent(this, RideService::class.java))
@@ -560,10 +649,18 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         directPeerCount = 0
         internetPeerCount = 0
         internetConnectedSinceMs = 0L
+        primaryRideCode = ""
+        secondaryRideCode = null
+        secondaryPeerCount = 0
+        secondaryHadConnection = false
+        activeGroup = ActiveGroup.PRIMARY
         binding.riderCount.text = "RIDE ACTIVE"
         binding.meshStatus.text = "CONNECTING…"
         binding.networkTile.text = "CONNECTING"
         binding.homeNetworkStatus.text = "●  READY TO RIDE"
+        binding.activeRiders.text = "RIDERS"
+        binding.riderGrid.removeAllViews()
+        speakingUntilMs.clear()
         log("Ride stopped")
         showScreen(Screen.HOME)
     }
@@ -595,7 +692,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun restoreSettings() {
-        binding.riderName.setText(prefs.getString("rider", Build.MODEL.take(18)))
+        val savedRider = prefs.getString("rider", "").orEmpty()
+        binding.riderName.setText(
+            savedRider.takeIf { it.isNotBlank() && !it.equals(Build.MODEL, ignoreCase = true) } ?: "Rider"
+        )
         binding.rideCode.setText(prefs.getString("code", "RIDE01"))
         binding.batterySaver.isChecked = prefs.getBoolean("battery_smart", true)
 
@@ -630,6 +730,18 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         .take(12)
 
     private fun generateRideCode(): String = "RM" + Random.nextInt(1000, 9999)
+
+    private fun deviceLabel(): String {
+        val manufacturer = Build.MANUFACTURER.trim()
+            .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+        val model = Build.MODEL.trim()
+        return when {
+            model.isBlank() -> manufacturer.ifBlank { "Android device" }
+            manufacturer.isBlank() -> model
+            model.startsWith(manufacturer, ignoreCase = true) -> model
+            else -> "$manufacturer $model"
+        }.take(48)
+    }
 
     private fun hasRequiredPermissions(): Boolean = requiredPermissions().all {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
@@ -670,8 +782,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
     }
 
-    override fun onAudioPacket(audio: ByteArray) {
-        if (rideStarted) audioEngine.playIncoming(audio)
+    override fun onAudioPacket(sourceId: String, audio: ByteArray) {
+        if (!rideStarted || activeGroup != ActiveGroup.PRIMARY) return
+        val tileKey = meshNode.endpointIdForSource(sourceId) ?: sourceId
+        markRiderSpeaking(tileKey)
+        audioEngine.playIncoming(sourceId, audio)
     }
 
     override fun onInternetState(connected: Boolean, message: String) {
@@ -681,7 +796,6 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                 if (internetConnectedSinceMs == 0L) internetConnectedSinceMs = System.currentTimeMillis()
             } else {
                 internetConnectedSinceMs = 0L
-                // If an invite scan was using Nearby, stop it before waking the local voice mesh.
                 stopLobbyDiscovery()
                 if (rideStarted) ensureLocalMeshRunning("Internet path lost")
             }
@@ -695,37 +809,56 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         runOnUiThread { updateTransportStatus() }
     }
 
-    override fun onInternetAudio(audio: ByteArray) {
-        if (rideStarted) audioEngine.playIncoming(audio)
+    override fun onInternetAudio(sourceId: String, audio: ByteArray) {
+        if (!rideStarted || activeGroup != ActiveGroup.PRIMARY) return
+        markRiderSpeaking(sourceId)
+        audioEngine.playIncoming(sourceId, audio)
     }
 
     private fun updateTransportStatus() {
         if (!rideStarted) return
 
-        when {
-            internetNode.isConnected() -> {
-                val total = internetPeerCount + 1
-                binding.networkTile.text = "INTERNET"
-                binding.riderCount.text = if (internetPeerCount > 0) "$total RIDERS CONNECTED" else "RIDE ACTIVE"
-                binding.meshStatus.text = if (binding.batterySaver.isChecked && !meshRunning) {
-                    "INTERNET VOICE • AUTO LOCAL FALLBACK"
-                } else {
-                    "INTERNET VOICE • LOCAL MESH WARM"
+        if (activeGroup == ActiveGroup.SECONDARY) {
+            val connected = secondaryInternetNode.isConnected()
+            val total = secondaryPeerCount + 1
+            binding.networkTile.text = if (connected) "INTERNET" else "SEARCHING"
+            binding.riderCount.text = if (connected && secondaryPeerCount > 0) "$total RIDERS CONNECTED" else if (connected) "SECOND GROUP ACTIVE" else "SECOND GROUP RECONNECTING…"
+            binding.meshStatus.text = if (connected) "SECONDARY INTERNET VOICE • PRIMARY STAYS CONNECTED" else "SECONDARY RECONNECTING • PRIMARY AVAILABLE"
+            binding.activeGroupLabel.text = "SECONDARY"
+            binding.activeRideCode.text = secondaryRideCode ?: "—"
+            binding.activeRiders.text = "RIDERS ${if (connected) total else 1}"
+        } else {
+            when {
+                internetNode.isConnected() -> {
+                    val total = internetPeerCount + 1
+                    binding.networkTile.text = "INTERNET"
+                    binding.riderCount.text = if (internetPeerCount > 0) "$total RIDERS CONNECTED" else "RIDE ACTIVE"
+                    binding.meshStatus.text = if (binding.batterySaver.isChecked && !meshRunning) {
+                        "INTERNET VOICE • AUTO LOCAL FALLBACK"
+                    } else {
+                        "INTERNET VOICE • LOCAL MESH WARM"
+                    }
+                }
+                directPeerCount > 0 -> {
+                    val total = directPeerCount + 1
+                    binding.networkTile.text = "LOCAL MESH"
+                    binding.riderCount.text = "$total RIDERS NEARBY"
+                    binding.meshStatus.text = "LOCAL VOICE • AUTO RECONNECT ACTIVE"
+                }
+                else -> {
+                    binding.networkTile.text = "SEARCHING"
+                    binding.riderCount.text = "RECONNECTING…"
+                    binding.meshStatus.text = "AUTO RECONNECT • INTERNET + NEARBY SEARCH"
                 }
             }
-
-            directPeerCount > 0 -> {
-                val total = directPeerCount + 1
-                binding.networkTile.text = "LOCAL MESH"
-                binding.riderCount.text = "$total RIDERS NEARBY"
-                binding.meshStatus.text = "LOCAL VOICE • AUTO RECONNECT ACTIVE"
+            binding.activeGroupLabel.text = "PRIMARY"
+            binding.activeRideCode.text = primaryRideCode.ifBlank { normalizedRideCode() }
+            val visibleRiderTotal = when {
+                internetNode.isConnected() -> internetPeerCount + 1
+                directPeerCount > 0 -> directPeerCount + 1
+                else -> 1
             }
-
-            else -> {
-                binding.networkTile.text = "SEARCHING"
-                binding.riderCount.text = "RECONNECTING…"
-                binding.meshStatus.text = "AUTO RECONNECT • INTERNET + NEARBY SEARCH"
-            }
+            binding.activeRiders.text = "RIDERS $visibleRiderTotal"
         }
 
         binding.homeNetworkStatus.text = when {
@@ -733,8 +866,173 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             directPeerCount > 0 -> "●  LOCAL MESH ACTIVE"
             else -> "●  READY TO RIDE"
         }
+        renderRiderGrid()
         applyPowerUi()
     }
+
+    private fun markRiderSpeaking(key: String) {
+        val expires = System.currentTimeMillis() + SPEAKING_HOLD_MS
+        speakingUntilMs[key] = expires
+        runOnUiThread {
+            renderRiderGrid()
+            mainHandler.postDelayed({
+                val current = speakingUntilMs[key] ?: return@postDelayed
+                if (System.currentTimeMillis() >= current) {
+                    speakingUntilMs.remove(key, current)
+                    renderRiderGrid()
+                }
+            }, SPEAKING_HOLD_MS + 40L)
+        }
+    }
+
+    private fun renderRiderGrid() {
+        if (!rideStarted || !::binding.isInitialized) return
+
+        val me = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
+        val meDevice = deviceLabel()
+        val secondary = activeGroup == ActiveGroup.SECONDARY
+        val primaryConnected = internetNode.isConnected() || directPeerCount > 0
+        val activeConnected = if (secondary) secondaryInternetNode.isConnected() else primaryConnected
+        val riders = mutableListOf(
+            RiderTile(
+                key = SELF_TILE_KEY,
+                name = me,
+                device = meDevice,
+                qualityBars = if (activeConnected) 4 else 1,
+                path = if (secondary) "Secondary Internet" else if (internetNode.isConnected()) "Internet" else if (directPeerCount > 0) "Local" else "Searching",
+                self = true,
+            )
+        )
+
+        if (secondary) {
+            if (secondaryInternetNode.isConnected()) {
+                secondaryInternetNode.remotePeers().forEach { peer ->
+                    riders += RiderTile(
+                        key = peer.id.toString(),
+                        name = peer.displayName,
+                        device = peer.deviceName,
+                        qualityBars = peer.qualityBars,
+                        path = "Secondary Internet",
+                    )
+                }
+            }
+        } else if (internetNode.isConnected()) {
+            internetNode.remotePeers().forEach { peer ->
+                riders += RiderTile(
+                    key = peer.id.toString(),
+                    name = peer.displayName,
+                    device = peer.deviceName,
+                    qualityBars = peer.qualityBars,
+                    path = "Internet",
+                )
+            }
+        } else if (meshRunning) {
+            meshNode.directPeers().forEach { peer ->
+                riders += RiderTile(
+                    key = peer.endpointId,
+                    name = peer.displayName,
+                    device = peer.deviceName,
+                    qualityBars = peer.qualityBars,
+                    path = "Local",
+                )
+            }
+        }
+
+        val visible = riders.take(MAX_VISIBLE_RIDER_TILES)
+        val grid = binding.riderGrid
+        grid.removeAllViews()
+        grid.columnCount = 3
+        grid.rowCount = if (visible.size <= 3) 1 else 2
+
+        val positions = riderPositions(visible.size)
+        visible.forEachIndexed { index, rider ->
+            val (row, col) = positions[index]
+            grid.addView(buildRiderTile(rider), GridLayout.LayoutParams().apply {
+                rowSpec = GridLayout.spec(row)
+                columnSpec = GridLayout.spec(col, 1f)
+                width = 0
+                height = dp(118)
+                setMargins(dp(4), dp(4), dp(4), dp(4))
+            })
+        }
+    }
+
+    private fun buildRiderTile(rider: RiderTile): View {
+        val speaking = (speakingUntilMs[rider.key] ?: 0L) > System.currentTimeMillis()
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(3), dp(3), dp(3), dp(2))
+        }
+
+        val avatar = TextView(this).apply {
+            text = rider.name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "R"
+            gravity = Gravity.CENTER
+            textSize = 27f
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.white))
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#101918"))
+                setStroke(
+                    dp(if (speaking) 3 else 1),
+                    if (speaking) ContextCompat.getColor(this@MainActivity, R.color.accent)
+                    else ContextCompat.getColor(this@MainActivity, R.color.border)
+                )
+            }
+        }
+        card.addView(avatar, LinearLayout.LayoutParams(dp(64), dp(64)))
+
+        val name = TextView(this).apply {
+            text = rider.name.ifBlank { "Rider" }
+            gravity = Gravity.CENTER
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            textSize = 12f
+            setTextColor(
+                ContextCompat.getColor(
+                    this@MainActivity,
+                    if (speaking) R.color.accent else R.color.white
+                )
+            )
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+        }
+        card.addView(name, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(21)).apply {
+            topMargin = dp(3)
+        })
+
+        val quality = TextView(this).apply {
+            text = if (rider.self) "YOU  ${qualityGlyphs(rider.qualityBars)}" else qualityGlyphs(rider.qualityBars)
+            gravity = Gravity.CENTER
+            textSize = 10.5f
+            setTextColor(qualityColor(rider.qualityBars))
+        }
+        card.addView(quality, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(18)))
+        return card
+    }
+
+    private fun riderPositions(count: Int): List<Pair<Int, Int>> = when (count.coerceIn(1, 6)) {
+        1 -> listOf(0 to 1)
+        2 -> listOf(0 to 0, 0 to 2)
+        3 -> listOf(0 to 0, 0 to 1, 0 to 2)
+        4 -> listOf(0 to 0, 0 to 2, 1 to 0, 1 to 2)
+        5 -> listOf(0 to 0, 0 to 1, 0 to 2, 1 to 0, 1 to 2)
+        else -> listOf(0 to 0, 0 to 1, 0 to 2, 1 to 0, 1 to 1, 1 to 2)
+    }
+
+    private fun qualityGlyphs(bars: Int): String {
+        val clamped = bars.coerceIn(1, 4)
+        val levels = arrayOf("▂", "▄", "▆", "█")
+        return levels.mapIndexed { index, glyph -> if (index < clamped) glyph else "·" }.joinToString("")
+    }
+
+    private fun qualityColor(bars: Int): Int = when (bars.coerceIn(1, 4)) {
+        1 -> Color.parseColor("#FF6B6B")
+        2 -> ContextCompat.getColor(this, R.color.amber)
+        else -> ContextCompat.getColor(this, R.color.accent)
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun applyPowerUi() {
         binding.powerTile.text = if (binding.batterySaver.isChecked) "SMART POWER" else "MAX LINK"
@@ -791,12 +1089,22 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     override fun onRideInviteReceived(inviterName: String, rideCode: String) {
         runOnUiThread {
             if (rideStarted) {
-                val sameRide = normalizedRideCode().equals(rideCode, true)
-                AlertDialog.Builder(this)
-                    .setTitle(if (sameRide) "Already in this ride" else "Ride invitation received")
-                    .setMessage(if (sameRide) "$inviterName invited you to the ride you are already using." else "$inviterName invited you to $rideCode. End your current ride before switching groups.")
-                    .setPositiveButton("OK", null)
-                    .show()
+                val samePrimary = primaryRideCode.equals(rideCode, true)
+                val sameSecondary = secondaryRideCode?.equals(rideCode, true) == true
+                if (samePrimary || sameSecondary) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Already connected")
+                        .setMessage("$inviterName invited you to a RideMesh group already on this phone.")
+                        .setPositiveButton("OK", null)
+                        .show()
+                } else {
+                    AlertDialog.Builder(this)
+                        .setTitle("Join as second group?")
+                        .setMessage("$inviterName invited you to $rideCode. Your primary group $primaryRideCode will stay connected in the background. Secondary voice uses Internet in this Beta.")
+                        .setNegativeButton("DECLINE", null)
+                        .setPositiveButton("JOIN SECOND GROUP") { _, _ -> startSecondaryGroup(rideCode) }
+                        .show()
+                }
                 return@runOnUiThread
             }
 
@@ -815,25 +1123,192 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun showRidersDialog() {
-        val internetTotal = if (internetNode.isConnected()) internetPeerCount + 1 else 0
+        val me = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
+        val meDevice = deviceLabel()
+        val riderLines = linkedMapOf<String, String>()
+        val secondary = activeGroup == ActiveGroup.SECONDARY
 
-        val message = buildString {
-            if (internetNode.isConnected()) {
-                append("Internet group: $internetTotal rider${if (internetTotal == 1) "" else "s"}\n")
+        if (secondary) {
+            if (secondaryInternetNode.isConnected()) {
+                secondaryInternetNode.remotePeers().forEach { peer ->
+                    val device = peer.deviceName.ifBlank { "Android device" }
+                    val key = "${peer.displayName}|$device".lowercase(Locale.ROOT)
+                    riderLines[key] = "• ${peer.displayName}\n  $device • Secondary Internet • ${qualityGlyphs(peer.qualityBars)}"
+                }
             }
-            append("Nearby direct peers: $directPeerCount\n")
-            append("Local mesh: ${if (meshRunning) "ready" else "sleeping"}\n")
-            append("Noise reduction: ON\n")
-            append("Auto reconnect: ON\n\n")
-            append("Use INVITE to add riders without ending the conversation.")
+        } else {
+            if (internetNode.isConnected()) {
+                internetNode.remotePeers().forEach { peer ->
+                    val device = peer.deviceName.ifBlank { "Android device" }
+                    val key = "${peer.displayName}|$device".lowercase(Locale.ROOT)
+                    riderLines[key] = "• ${peer.displayName}\n  $device • Internet • ${qualityGlyphs(peer.qualityBars)}"
+                }
+            }
+            if (meshRunning) {
+                meshNode.directPeers().forEach { peer ->
+                    val device = peer.deviceName.ifBlank { "Android device" }
+                    val key = "${peer.displayName}|$device".lowercase(Locale.ROOT)
+                    if (!riderLines.containsKey(key)) {
+                        riderLines[key] = "• ${peer.displayName}\n  $device • Local mesh"
+                    }
+                }
+            }
+        }
+
+        val code = if (secondary) secondaryRideCode ?: "—" else primaryRideCode
+        val message = buildString {
+            appendLine(if (secondary) "SECONDARY GROUP • $code" else "PRIMARY GROUP • $code")
+            appendLine("YOU")
+            appendLine("• $me")
+            appendLine("  $meDevice")
+            appendLine()
+            append("CONNECTED RIDERS")
+            if (riderLines.isEmpty()) {
+                appendLine()
+                append("Waiting for another rider…")
+            } else {
+                appendLine(" (${riderLines.size})")
+                append(riderLines.values.joinToString("\n\n"))
+            }
         }
 
         AlertDialog.Builder(this)
-            .setTitle("Riders")
+            .setTitle("Riders • ${riderLines.size + 1} total")
             .setMessage(message)
-            .setPositiveButton("INVITE") { _, _ -> showLiveInviteOptions() }
+            .setPositiveButton("GROUPS") { _, _ -> showGroupsDialog() }
+            .setNeutralButton("INVITE") { _, _ -> showLiveInviteOptions() }
             .setNegativeButton("CLOSE", null)
             .show()
+    }
+
+    private fun showGroupsDialog() {
+        val secondary = secondaryRideCode
+        val primaryState = if (activeGroup == ActiveGroup.PRIMARY) "ACTIVE" else "BACKGROUND"
+        val secondaryState = if (secondary == null) "NOT SET" else if (activeGroup == ActiveGroup.SECONDARY) "ACTIVE" else "BACKGROUND"
+        val title = "Groups • Primary $primaryRideCode"
+        val message = buildString {
+            appendLine("PRIMARY  $primaryRideCode  •  $primaryState")
+            appendLine("SECONDARY  ${secondary ?: "—"}  •  $secondaryState")
+            appendLine()
+            append("Only one group owns your microphone and speaker at a time. The other Internet group stays connected in the background. Secondary local-mesh fallback is intentionally disabled in this Beta.")
+        }
+        val actions = if (secondary == null) {
+            arrayOf("CREATE SECOND GROUP", "JOIN SECOND GROUP", "CLOSE")
+        } else {
+            arrayOf(
+                if (activeGroup == ActiveGroup.PRIMARY) "SWITCH TO SECONDARY • $secondary" else "SWITCH TO PRIMARY • $primaryRideCode",
+                "LEAVE SECOND GROUP • $secondary",
+                "CLOSE",
+            )
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(message)
+            .setItems(actions) { dialog, which ->
+                if (secondary == null) {
+                    when (which) {
+                        0 -> createSecondaryGroup()
+                        1 -> promptJoinSecondaryGroup()
+                        else -> dialog.dismiss()
+                    }
+                } else {
+                    when (which) {
+                        0 -> switchActiveGroup(
+                            if (activeGroup == ActiveGroup.PRIMARY) ActiveGroup.SECONDARY else ActiveGroup.PRIMARY,
+                            "Group switched",
+                        )
+                        1 -> leaveSecondaryGroup()
+                        else -> dialog.dismiss()
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun createSecondaryGroup() {
+        var code = generateRideCode()
+        while (code.equals(primaryRideCode, true)) code = generateRideCode()
+        AlertDialog.Builder(this)
+            .setTitle("Create second group $code?")
+            .setMessage("Your primary group $primaryRideCode stays connected. The new secondary group uses Internet voice in this Beta.")
+            .setNegativeButton("CANCEL", null)
+            .setPositiveButton("CREATE & SWITCH") { _, _ -> startSecondaryGroup(code) }
+            .show()
+    }
+
+    private fun promptJoinSecondaryGroup() {
+        val input = EditText(this).apply {
+            hint = "RM1234"
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.white))
+            setHintTextColor(ContextCompat.getColor(this@MainActivity, R.color.muted))
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+            isSingleLine = true
+            setPadding(dp(18), dp(10), dp(18), dp(10))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Join second group")
+            .setMessage("Enter the ongoing RideMesh group code. Primary $primaryRideCode stays connected in the background.")
+            .setView(input)
+            .setNegativeButton("CANCEL", null)
+            .setPositiveButton("JOIN & SWITCH") { _, _ ->
+                val code = input.text?.toString().orEmpty().trim().uppercase().take(12)
+                if (code.isNotBlank() && !code.equals(primaryRideCode, true)) startSecondaryGroup(code)
+                else log("Second group code must be different from primary")
+            }
+            .show()
+    }
+
+    private fun startSecondaryGroup(codeRaw: String) {
+        if (!rideStarted) return
+        val code = codeRaw.trim().uppercase().replace(Regex("[^A-Z0-9_-]"), "_").take(12)
+        if (code.isBlank() || code.equals(primaryRideCode, true)) return
+        val rider = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
+
+        audioEngine.stopTransmit()
+        audioEngine.resetIncomingAudio()
+        secondaryInternetNode.stop()
+        secondaryRideCode = code
+        secondaryPeerCount = 0
+        secondaryHadConnection = false
+        activeGroup = ActiveGroup.SECONDARY
+        speakingUntilMs.clear()
+        secondaryInternetNode.start(code, rider, deviceLabel())
+        updateTransportStatus()
+        updateCapturePolicy()
+        log("Secondary group $code connecting • primary $primaryRideCode stays connected")
+    }
+
+    private fun switchActiveGroup(group: ActiveGroup, reason: String) {
+        if (!rideStarted || activeGroup == group) return
+        if (group == ActiveGroup.SECONDARY && secondaryRideCode == null) return
+        audioEngine.stopTransmit()
+        audioEngine.resetIncomingAudio()
+        speakingUntilMs.clear()
+        activeGroup = group
+        updateTransportStatus()
+        updateCapturePolicy()
+        log("$reason • ${if (group == ActiveGroup.PRIMARY) "primary $primaryRideCode" else "secondary ${secondaryRideCode ?: "—"}"}")
+    }
+
+    private fun leaveSecondaryGroup() {
+        if (activeGroup == ActiveGroup.SECONDARY) switchActiveGroup(ActiveGroup.PRIMARY, "Returned to primary")
+        secondaryInternetNode.stop()
+        secondaryRideCode = null
+        secondaryPeerCount = 0
+        secondaryHadConnection = false
+        updateTransportStatus()
+        log("Second group closed • primary continues")
+    }
+
+    private fun primaryPathAvailable(): Boolean = internetNode.isConnected() || directPeerCount > 0
+
+    private fun currentInviteCode(): String = if (rideStarted && activeGroup == ActiveGroup.SECONDARY) {
+        secondaryRideCode ?: primaryRideCode
+    } else if (rideStarted) {
+        primaryRideCode
+    } else {
+        normalizedRideCode()
     }
 
     private fun showAudioRouteDialog() {
@@ -890,26 +1365,39 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun showRideStatusDialog() {
-        val path = when {
+        val primaryPath = when {
             internetNode.isConnected() -> "Internet"
             directPeerCount > 0 -> "Local mesh"
             else -> "Reconnecting"
         }
+        val secondary = secondaryRideCode
+        val secondaryPath = when {
+            secondary == null -> "Not configured"
+            secondaryInternetNode.isConnected() -> "Internet connected"
+            else -> "Internet reconnecting"
+        }
+
+        val message = buildString {
+            appendLine("Active voice: ${if (activeGroup == ActiveGroup.PRIMARY) "PRIMARY $primaryRideCode" else "SECONDARY ${secondary ?: "—"}"}")
+            appendLine()
+            appendLine("Primary $primaryRideCode: $primaryPath")
+            appendLine("Primary Internet riders: ${if (internetNode.isConnected()) internetPeerCount + 1 else 0}")
+            appendLine("Direct local peers: $directPeerCount")
+            appendLine()
+            appendLine("Secondary ${secondary ?: "—"}: $secondaryPath")
+            appendLine("Secondary riders: ${if (secondaryInternetNode.isConnected()) secondaryPeerCount + 1 else 0}")
+            appendLine()
+            appendLine("Audio: ${binding.audioTile.text}")
+            appendLine("Noise reduction: ON")
+            appendLine("Power: ${binding.powerTile.text}")
+            append("Auto reconnect: ON")
+        }
 
         AlertDialog.Builder(this)
             .setTitle("Ride status")
-            .setMessage(
-                "Path: $path\n" +
-                    "Internet riders: ${if (internetNode.isConnected()) internetPeerCount + 1 else 0}\n" +
-                    "Direct local peers: $directPeerCount\n" +
-                    "Audio: ${binding.audioTile.text}\n" +
-                    "Noise reduction: ON\n" +
-                    "Power: ${binding.powerTile.text}\n" +
-                    "Auto reconnect: ON\n\n" +
-                    "INVITE can add more riders without stopping the current call."
-            )
-            .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
-            .setNeutralButton("INVITE") { _, _ -> showLiveInviteOptions() }
+            .setMessage(message)
+            .setPositiveButton("GROUPS") { _, _ -> showGroupsDialog() }
+            .setNeutralButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
             .setNegativeButton("CLOSE", null)
             .show()
     }
@@ -935,7 +1423,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private fun openDirectWhatsAppBugReport() {
         val message = buildString {
             append("RideMesh bug report\n")
-            append("Ride code: ${normalizedRideCode()}\n")
+            append("Active ride: ${currentInviteCode()}\n")
+            if (secondaryRideCode != null) append("Primary: $primaryRideCode • Secondary: $secondaryRideCode\n")
             append("Phone: ${Build.MANUFACTURER} ${Build.MODEL}\n")
             append("Android: ${Build.VERSION.RELEASE}\n")
             append("Current path: ${if (rideStarted) binding.networkTile.text else "Not riding"}\n")
@@ -991,11 +1480,15 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         mainHandler.removeCallbacks(rideWatchdog)
         if (::lobbyNode.isInitialized) lobbyNode.stop()
         if (::internetNode.isInitialized && !rideStarted) internetNode.stop()
+        if (::secondaryInternetNode.isInitialized && !rideStarted) secondaryInternetNode.stop()
         if (!rideStarted && ::audioEngine.isInitialized) audioEngine.release()
         super.onDestroy()
     }
 
     companion object {
+        private const val SELF_TILE_KEY = "self"
+        private const val MAX_VISIBLE_RIDER_TILES = 6
+        private const val SPEAKING_HOLD_MS = 560L
         private const val LOBBY_SCAN_WINDOW_MS = 20_000L
         private const val WATCHDOG_INTERVAL_MS = 5_000L
         private const val INTERNET_STABLE_BEFORE_MESH_SLEEP_MS = 15_000L
