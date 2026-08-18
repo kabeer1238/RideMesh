@@ -503,10 +503,11 @@ ONE CHANNEL."
             android:orientation="horizontal">
 
             <ImageView
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:contentDescription="Ride Mesh"
-                android:src="@drawable/ridemesh_icon" />
+                android:layout_width="112dp"
+                android:layout_height="42dp"
+                android:contentDescription="RideMesh by Autopilot India"
+                android:scaleType="centerInside"
+                android:src="@drawable/ridemesh_logo" />
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -568,6 +569,23 @@ ONE CHANNEL."
             android:text="CONNECTING…"
             android:textColor="@color/accent"
             android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/activeRiderNames"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/panel_bg"
+            android:gravity="center"
+            android:maxLines="3"
+            android:paddingStart="12dp"
+            android:paddingTop="9dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="9dp"
+            android:text=""
+            android:textColor="@color/white_soft"
+            android:textSize="11sp"
             android:textStyle="bold" />
 
         <LinearLayout

@@ -566,6 +566,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         binding.networkTile.text = "CONNECTING"
         binding.homeNetworkStatus.text = "●  READY TO RIDE"
         binding.activeRiders.text = "RIDERS"
+        binding.activeRiderNames.text = ""
         log("Ride stopped")
         showScreen(Screen.HOME)
     }
@@ -684,8 +685,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
     }
 
-    override fun onAudioPacket(audio: ByteArray) {
-        if (rideStarted) audioEngine.playIncoming(audio)
+    override fun onAudioPacket(sourceId: String, audio: ByteArray) {
+        if (rideStarted) audioEngine.playIncoming(sourceId, audio)
     }
 
     override fun onInternetState(connected: Boolean, message: String) {
@@ -709,8 +710,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         runOnUiThread { updateTransportStatus() }
     }
 
-    override fun onInternetAudio(audio: ByteArray) {
-        if (rideStarted) audioEngine.playIncoming(audio)
+    override fun onInternetAudio(sourceId: String, audio: ByteArray) {
+        if (rideStarted) audioEngine.playIncoming(sourceId, audio)
     }
 
     private fun updateTransportStatus() {
@@ -753,7 +754,24 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             else -> 1
         }
         binding.activeRiders.text = "RIDERS $visibleRiderTotal"
+        updateRiderRosterPreview()
         applyPowerUi()
+    }
+
+    private fun updateRiderRosterPreview() {
+        if (!rideStarted) return
+
+        val me = binding.riderName.text?.toString().orEmpty().ifBlank { Build.MODEL.take(18) }
+        val names = linkedSetOf<String>()
+        names.add(me)
+
+        if (internetNode.isConnected()) {
+            internetNode.remotePeers().forEach { names.add(it.displayName) }
+        } else if (meshRunning) {
+            meshNode.directPeers().forEach { names.add(it.displayName) }
+        }
+
+        binding.activeRiderNames.text = names.joinToString("   •   ")
     }
 
     private fun applyPowerUi() {
