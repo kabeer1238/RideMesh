@@ -10,7 +10,7 @@ on:
 permissions:
   contents: write
 
-# Beta 1.1 release gate: deterministic UI generation + unit tests + Android lint + APK packaging
+# RideMesh release gate: unit tests + Android lint + APK packaging
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -30,9 +30,6 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Apply Beta 1.1 landing/icon refresh
-        if: github.event_name == 'pull_request' && github.head_ref == 'beta1.1'
-        run: python3 tools/apply_beta11_landing.py
       - name: Test, lint and build Beta 1.1
         id: compile
         shell: bash
@@ -58,31 +55,16 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1.1-Landing-apk
+          name: RideMesh-Beta1.1-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Upload lint report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1.1-Landing-lint
+          name: RideMesh-Beta1.1-lint
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
-      - name: Persist validated Beta 1.1 source refresh
-        if: success() && github.event_name == 'pull_request' && github.head_ref == 'beta1.1'
-        shell: bash
-        run: |
-          git fetch origin beta1.1
-          git checkout -B beta1.1 origin/beta1.1
-          python3 tools/apply_beta11_landing.py
-          git rm -f .github/workflows/apply-beta11-landing.yml 2>/dev/null || true
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app BETA1_1_UI_REFRESH.md tools/apply_beta11_landing.py
-          if ! git diff --cached --quiet; then
-            git commit -m "Polish RideMesh Beta 1.1 landing and launcher icon [skip ci]"
-            git push origin beta1.1
-          fi
       - name: Publish build result
         if: always() && github.event_name != 'pull_request'
         shell: bash
