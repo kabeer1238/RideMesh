@@ -1,5 +1,5 @@
-RideMesh Beta 1 CI 2026-08-17T17:56:34Z
-Commit: d0242521137dc035f232585ab40b92e051d6f74e
+RideMesh Beta 1 CI 2026-08-18T08:29:30Z
+Commit: f10080f3ba41082015a86f7115bfeca7d01e5e87
 app/src/main/res/drawable-nodpi/ridemesh_logo.jpg: JPEG image data, JFIF standard 1.01, aspect ratio, density 1x1, segment length 16
 app/src/main/res/drawable-nodpi/ridemesh_icon.jpg: JPEG image data, JFIF standard 1.01, aspect ratio, density 1x1, segment length 16
 === UNIT TESTS ===
@@ -8,8 +8,8 @@ Daemon will be stopped at the end of the build
 > Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
 > Task :app:preBuild UP-TO-DATE
 > Task :app:preDebugBuild UP-TO-DATE
-> Task :app:generateDebugResValues
 > Task :app:dataBindingMergeDependencyArtifactsDebug
+> Task :app:generateDebugResValues
 > Task :app:generateDebugResources
 > Task :app:processDebugNavigationResources
 > Task :app:checkDebugAarMetadata
@@ -23,23 +23,23 @@ Daemon will be stopped at the end of the build
 > Task :app:parseDebugLocalResources
 > Task :app:processDebugManifest
 > Task :app:dataBindingGenBaseClassesDebug
-> Task :app:javaPreCompileDebug
 > Task :app:processDebugManifestForPackage
+> Task :app:javaPreCompileDebug
 > Task :app:preDebugUnitTestBuild UP-TO-DATE
 > Task :app:javaPreCompileDebugUnitTest
 > Task :app:processDebugResources
 > Task :app:compileDebugKotlin
 > Task :app:compileDebugJavaWithJavac
-> Task :app:bundleDebugClassesToRuntimeJar
 > Task :app:bundleDebugClassesToCompileJar
+> Task :app:bundleDebugClassesToRuntimeJar
 > Task :app:processDebugJavaRes
 > Task :app:compileDebugUnitTestKotlin
 > Task :app:compileDebugUnitTestJavaWithJavac NO-SOURCE
 > Task :app:processDebugUnitTestJavaRes
 > Task :app:testDebugUnitTest
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786989400396.json
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1787041775811.json
 
-BUILD SUCCESSFUL in 49s
+BUILD SUCCESSFUL in 50s
 27 actionable tasks: 27 executed
 === ANDROID LINT ===
 To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.13/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
@@ -83,7 +83,7 @@ Daemon will be stopped at the end of the build
 Wrote HTML report to file:///home/runner/work/RideMesh/RideMesh/app/build/reports/lint-results-debug.html
 
 > Task :app:lintDebug
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786989449756.json
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1787041826175.json
 
 BUILD SUCCESSFUL in 50s
 31 actionable tasks: 10 executed, 21 up-to-date
@@ -138,10 +138,10 @@ Daemon will be stopped at the end of the build
 > Task :app:packageDebug
 > Task :app:createDebugApkListingFileRedirect
 > Task :app:assembleDebug
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1786989500485.json
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/compile-1787041877014.json
 
-BUILD SUCCESSFUL in 32s
+BUILD SUCCESSFUL in 31s
 39 actionable tasks: 18 executed, 21 up-to-date
 
 RESULT: APK_BUILT
-ARTIFACT_ID: 9295280712
+ARTIFACT_ID: 9316989308
