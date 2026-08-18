@@ -1,11 +1,9 @@
-name: Build RideMesh AAB
+name: Build RideMesh Play AAB API 36
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "beta1.4" ]
-  pull_request:
-    branches: [ "main", "master" ]
+    branches: [ "play-release-api36" ]
 
 permissions:
   contents: read
@@ -26,8 +24,8 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android 35 SDK
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Install Android 16 API 36 SDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
       - name: Set up Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
@@ -45,9 +43,16 @@ jobs:
           test -s app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           test -s app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
-      - name: Verify second-group feature is absent
+      - name: Verify Play release configuration
         shell: bash
         run: |
+          grep -q 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
+          grep -q 'compileSdk = 36' app/build.gradle.kts
+          grep -q 'targetSdk = 36' app/build.gradle.kts
+          grep -q 'versionCode = 1' app/build.gradle.kts
+          grep -q 'versionName = "1.0.0-beta"' app/build.gradle.kts
+          grep -q 'android.permission.FOREGROUND_SERVICE_MICROPHONE' app/src/main/AndroidManifest.xml
+          grep -q 'android:foregroundServiceType="microphone|connectedDevice"' app/src/main/AndroidManifest.xml
           ! grep -R "secondaryInternetNode\|SECONDARY GROUP\|CREATE SECOND GROUP\|JOIN SECOND GROUP" app/src/main/java app/src/main/res/layout/activity_main.xml
 
       - name: Unit tests
@@ -59,20 +64,17 @@ jobs:
       - name: Build release AAB
         run: gradle --no-daemon bundleRelease
 
-      - name: Inspect AAB signing
+      - name: Verify AAB created
         shell: bash
         run: |
           AAB="app/build/outputs/bundle/release/app-release.aab"
           test -s "$AAB"
-          echo "=== AAB file ==="
           ls -lh "$AAB"
-          echo "=== Signature inspection ==="
-          jarsigner -verify -verbose -certs "$AAB" || true
 
-      - name: Upload Beta 1.4 release AAB
+      - name: Upload Play release AAB
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1.4-v0.4.8-release-aab
+          name: RideMesh-Play-1.0.0-beta-api36-aab
           path: app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
 
@@ -80,6 +82,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1.4-v0.4.8-aab-lint
+          name: RideMesh-Play-1.0.0-beta-api36-lint
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
