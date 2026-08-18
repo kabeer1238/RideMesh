@@ -39,13 +39,10 @@ jobs:
         run: |
           set -o pipefail
           {
-            echo "RideMesh Beta 1.1 branding CI $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RideMesh Beta 1.1 vector-branding CI $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo "Commit: $GITHUB_SHA"
-            mkdir -p app/src/main/res/drawable-nodpi
-            base64 -d branding/ridemesh_logo.jpg.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo.jpg
-            base64 -d branding/ridemesh_icon.jpg.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon.jpg
-            file app/src/main/res/drawable-nodpi/ridemesh_logo.jpg
-            file app/src/main/res/drawable-nodpi/ridemesh_icon.jpg
+            test -f app/src/main/res/drawable/ridemesh_brand_mark.xml
+            test -f app/src/main/res/drawable/ridemesh_app_icon.xml
             echo "=== UNIT TESTS ==="
             gradle --no-daemon testDebugUnitTest
             echo "=== ANDROID LINT ==="
