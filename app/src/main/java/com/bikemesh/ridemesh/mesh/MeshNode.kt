@@ -48,7 +48,7 @@ class MeshNode(
     interface Listener {
         fun onLog(message: String)
         fun onDirectPeerCount(count: Int)
-        fun onAudioPacket(audio: ByteArray)
+        fun onAudioPacket(sourceId: String, audio: ByteArray)
     }
 
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context)
@@ -85,7 +85,7 @@ class MeshNode(
                 }
 
                 if (packet.origin != nodeId && packet.audio.isNotEmpty()) {
-                    listener.onAudioPacket(packet.audio)
+                    listener.onAudioPacket(packet.origin.toString(), packet.audio)
                 }
 
                 if (packet.ttl > 0) {
