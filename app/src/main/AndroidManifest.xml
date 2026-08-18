@@ -23,10 +23,16 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
+    <!--
+      allowBackup is off: ride codes and rider settings live in SharedPreferences
+      and there is no reason for them to leave the device via adb/auto-backup.
+    -->
     <application
-        android:allowBackup="true"
-        android:icon="@drawable/ridemesh_icon"
-        android:roundIcon="@drawable/ridemesh_icon"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:logo="@drawable/ridemesh_logo"
         android:label="Ride Mesh"
         android:supportsRtl="true"
@@ -49,7 +55,8 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:screenOrientation="portrait">
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.RideMesh.Splash">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
+import kotlin.random.Random
 
 /**
  * Experimental Internet transport for field testing.
@@ -97,9 +98,13 @@ class InternetNode(private val listener: Listener) {
     }
 
     private fun connectionLoop() {
+        var backoffMs = RECONNECT_DELAY_MS
         while (running.get()) {
             try {
                 connectAndRead()
+                // Reached only after a session that actually connected and
+                // then ended, so the next retry starts from the floor again.
+                backoffMs = RECONNECT_DELAY_MS
             } catch (_: InterruptedException) {
                 break
             } catch (_: Throwable) {
@@ -109,11 +114,15 @@ class InternetNode(private val listener: Listener) {
             }
 
             if (running.get()) {
+                // Jitter spreads a group's reconnect attempts out instead of
+                // having every rider retry on the same tick.
+                val jitter = Random.nextLong(0L, backoffMs / 2 + 1L)
                 try {
-                    Thread.sleep(RECONNECT_DELAY_MS)
+                    Thread.sleep(backoffMs + jitter)
                 } catch (_: InterruptedException) {
                     break
                 }
+                backoffMs = (backoffMs * 2).coerceAtMost(RECONNECT_MAX_DELAY_MS)
                 listener.onInternetState(false, "Internet reconnecting… • local mesh available")
             }
         }
@@ -343,14 +352,14 @@ class InternetNode(private val listener: Listener) {
         }
     }
 
-    private data class InternetPacket(
+    internal data class InternetPacket(
         val origin: UUID,
         val sequence: Int,
         val timestampMs: Long,
         val audio: ByteArray,
     )
 
-    private fun encode(packet: InternetPacket): ByteArray {
+    internal fun encode(packet: InternetPacket): ByteArray {
         val buffer = ByteBuffer.allocate(HEADER_BYTES + packet.audio.size).order(ByteOrder.BIG_ENDIAN)
         buffer.putInt(MAGIC)
         buffer.put(VERSION)
@@ -359,10 +368,15 @@ class InternetNode(private val listener: Listener) {
         buffer.putInt(packet.sequence)
         buffer.putLong(packet.timestampMs)
         buffer.put(packet.audio)
+        // Guard against HEADER_BYTES drifting out of sync with the fields
+        // actually written above. Before v1.1 this constant was 37 while only
+        // 33 bytes were written, so every frame carried 4 stray zero bytes
+        // that the receiver decoded as trailing audio samples.
+        check(!buffer.hasRemaining()) { "InternetNode header size mismatch" }
         return buffer.array()
     }
 
-    private fun decode(bytes: ByteArray): InternetPacket? {
+    internal fun decode(bytes: ByteArray): InternetPacket? {
         if (bytes.size < HEADER_BYTES) return null
         return try {
             val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
@@ -387,10 +401,17 @@ class InternetNode(private val listener: Listener) {
         private const val PING_INTERVAL_MS = 15_000L
         private const val PRESENCE_INTERVAL_MS = 10_000L
         private const val PRESENCE_TIMEOUT_MS = 32_000L
+        // Reconnect backoff: starts at RECONNECT_DELAY_MS and doubles up to
+        // RECONNECT_MAX_DELAY_MS, with jitter. A flat 2s retry meant every
+        // rider in a group hammered the broker in lockstep after a tunnel or
+        // coverage drop, which is exactly when reconnection matters most.
         private const val RECONNECT_DELAY_MS = 2_000L
+        private const val RECONNECT_MAX_DELAY_MS = 30_000L
         private const val PRESENCE_BYTES = 24
         private const val MAGIC = 0x524D4931 // RMI1
         private const val VERSION: Byte = 1
-        private const val HEADER_BYTES = 37
+
+        // 4 (magic) + 1 (version) + 16 (origin UUID) + 4 (sequence) + 8 (timestamp)
+        private const val HEADER_BYTES = 4 + 1 + 16 + 4 + 8 // = 33
     }
 }
