@@ -59,7 +59,7 @@ new_header = '''            <LinearLayout
                     android:layout_height="62dp"
                     android:contentDescription="RideMesh logo"
                     android:scaleType="centerInside"
-                    android:src="@drawable/ridemesh_icon" />
+                    android:src="@drawable/ridemesh_brand_mark" />
 
                 <LinearLayout
                     android:layout_width="0dp"
@@ -101,7 +101,10 @@ changed = False
 if old_header in text:
     text = text.replace(old_header, new_header, 1)
     changed = True
-elif 'android:contentDescription="RideMesh logo"' not in text:
+elif 'android:contentDescription="RideMesh logo"' in text:
+    text = text.replace('@drawable/ridemesh_icon', '@drawable/ridemesh_brand_mark', 1)
+    changed = True
+else:
     raise SystemExit("Landing header marker not found")
 
 if hero_logo in text:
