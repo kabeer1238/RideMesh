@@ -73,7 +73,9 @@ jobs:
         shell: bash
         run: |
           git fetch origin beta1.1
+          git reset --hard
           git checkout -B beta1.1 origin/beta1.1
+          git reset --hard origin/beta1.1
           python3 tools/apply_field_audio_patch.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -96,7 +98,7 @@ jobs:
             echo "RESULT: APK_BUILT" >> dist/last-build.txt
             echo "ARTIFACT_ID: ${APK_ARTIFACT_ID}" >> dist/last-build.txt
           else
-            echo "" >> dist/last-build.txt
+            echo "" >> dist/last-build.txt"
             echo "RESULT: BUILD_FAILED" >> dist/last-build.txt
           fi
           git config user.name "github-actions[bot]"
