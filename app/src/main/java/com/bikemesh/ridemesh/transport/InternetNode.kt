@@ -11,6 +11,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.random.Random
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
@@ -44,6 +45,7 @@ class InternetNode(private val listener: Listener) {
     @Volatile private var socket: SSLSocket? = null
     @Volatile private var output: BufferedOutputStream? = null
     @Volatile private var worker: Thread? = null
+    private var reconnectAttempt = 0
 
     fun start(rideCode: String) {
         stop()
@@ -94,6 +96,7 @@ class InternetNode(private val listener: Listener) {
         closeSocket()
         worker?.interrupt()
         worker = null
+        reconnectAttempt = 0
     }
 
     private fun connectionLoop() {
@@ -109,8 +112,9 @@ class InternetNode(private val listener: Listener) {
             }
 
             if (running.get()) {
+                val delayMs = nextReconnectDelayMs()
                 try {
-                    Thread.sleep(RECONNECT_DELAY_MS)
+                    Thread.sleep(delayMs)
                 } catch (_: InterruptedException) {
                     break
                 }
@@ -137,6 +141,7 @@ class InternetNode(private val listener: Listener) {
 
         sendRaw(subscribePacket(subscriptionTopic))
         connected.set(true)
+        reconnectAttempt = 0
         clearPeers()
         listener.onInternetState(true, "Internet voice connected")
         publishPresence()
@@ -321,6 +326,18 @@ class InternetNode(private val listener: Listener) {
         write(bytes)
     }
 
+    /**
+     * Avoid a synchronized reconnect storm after a tunnel/cellular outage.
+     * Beta 1 used a flat 2 second retry; Beta 1.1 uses short exponential
+     * backoff with jitter, resetting immediately after a healthy connection.
+     */
+    private fun nextReconnectDelayMs(): Long {
+        val exponent = reconnectAttempt.coerceAtMost(3)
+        val base = (RECONNECT_BASE_DELAY_MS * (1L shl exponent)).coerceAtMost(RECONNECT_MAX_DELAY_MS)
+        reconnectAttempt = (reconnectAttempt + 1).coerceAtMost(8)
+        return base + Random.nextLong(0L, RECONNECT_JITTER_MS + 1L)
+    }
+
     private fun markDisconnected(message: String) {
         val wasConnected = connected.getAndSet(false)
         clearPeers()
@@ -343,14 +360,14 @@ class InternetNode(private val listener: Listener) {
         }
     }
 
-    private data class InternetPacket(
+    internal data class InternetPacket(
         val origin: UUID,
         val sequence: Int,
         val timestampMs: Long,
         val audio: ByteArray,
     )
 
-    private fun encode(packet: InternetPacket): ByteArray {
+    internal fun encode(packet: InternetPacket): ByteArray {
         val buffer = ByteBuffer.allocate(HEADER_BYTES + packet.audio.size).order(ByteOrder.BIG_ENDIAN)
         buffer.putInt(MAGIC)
         buffer.put(VERSION)
@@ -362,7 +379,7 @@ class InternetNode(private val listener: Listener) {
         return buffer.array()
     }
 
-    private fun decode(bytes: ByteArray): InternetPacket? {
+    internal fun decode(bytes: ByteArray): InternetPacket? {
         if (bytes.size < HEADER_BYTES) return null
         return try {
             val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
@@ -387,10 +404,12 @@ class InternetNode(private val listener: Listener) {
         private const val PING_INTERVAL_MS = 15_000L
         private const val PRESENCE_INTERVAL_MS = 10_000L
         private const val PRESENCE_TIMEOUT_MS = 32_000L
-        private const val RECONNECT_DELAY_MS = 2_000L
+        private const val RECONNECT_BASE_DELAY_MS = 2_000L
+        private const val RECONNECT_MAX_DELAY_MS = 15_000L
+        private const val RECONNECT_JITTER_MS = 750L
         private const val PRESENCE_BYTES = 24
         private const val MAGIC = 0x524D4931 // RMI1
         private const val VERSION: Byte = 1
-        private const val HEADER_BYTES = 37
+        private const val HEADER_BYTES = 33
     }
 }
