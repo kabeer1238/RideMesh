@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ "play-release-api36" ]
+  pull_request:
+    branches: [ "main" ]
 
 permissions:
   contents: read
