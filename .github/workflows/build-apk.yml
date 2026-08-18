@@ -36,7 +36,9 @@ jobs:
 
       - name: Apply Beta 1.3 approved UI and dual-group patch
         if: github.ref == 'refs/heads/beta1.3' || github.head_ref == 'beta1.3'
-        run: python3 tools/apply_beta13_patch.py
+        run: |
+          python3 tools/apply_beta13_patch.py
+          python3 tools/fix_beta13_strings.py
 
       - name: Verify exact supplied RideMesh branding
         if: github.ref == 'refs/heads/beta1.3' || github.head_ref == 'beta1.3'
