@@ -25,10 +25,10 @@
 
     <application
         android:allowBackup="false"
-        android:icon="@drawable/ridemesh_icon"
-        android:roundIcon="@drawable/ridemesh_icon"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:logo="@drawable/ridemesh_logo"
-        android:label="Ride Mesh"
+        android:label="RideMesh"
         android:supportsRtl="true"
         android:theme="@style/Theme.RideMesh">
 

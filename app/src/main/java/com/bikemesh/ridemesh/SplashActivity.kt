@@ -25,7 +25,7 @@ class SplashActivity : AppCompatActivity() {
             scaleX = 0.965f
             scaleY = 0.965f
         }
-        val size = (resources.displayMetrics.widthPixels * 0.68f).toInt()
+        val size = (resources.displayMetrics.widthPixels * 0.54f).toInt()
         root.addView(logo, FrameLayout.LayoutParams(size, size, Gravity.CENTER))
         setContentView(root)
 
@@ -44,7 +44,7 @@ class SplashActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val LOGO_REVEAL_MS = 620L
-        private const val HOLD_MS = 180L
+        private const val LOGO_REVEAL_MS = 540L
+        private const val HOLD_MS = 150L
     }
 }
