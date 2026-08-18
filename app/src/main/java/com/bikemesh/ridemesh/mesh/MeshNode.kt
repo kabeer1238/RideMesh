@@ -36,10 +36,19 @@ class MeshNode(
 ) {
     enum class LabRole { NORMAL, A, B, C }
 
+    data class RiderPeer(
+        val endpointId: String,
+        val riderName: String,
+        val deviceName: String,
+    ) {
+        val displayName: String
+            get() = riderName.ifBlank { deviceName.ifBlank { "Rider" } }
+    }
+
     interface Listener {
         fun onLog(message: String)
         fun onDirectPeerCount(count: Int)
-        fun onAudioPacket(audio: ByteArray)
+        fun onAudioPacket(sourceId: String, audio: ByteArray)
     }
 
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context)
@@ -50,6 +59,7 @@ class MeshNode(
     private val endpointNames = ConcurrentHashMap<String, String>()
 
     private var riderName: String = "Rider"
+    private var deviceName: String = "Android device"
     private var rideCode: String = "RIDE01"
     private var labRole: LabRole = LabRole.NORMAL
     @Volatile private var running = false
@@ -75,7 +85,7 @@ class MeshNode(
                 }
 
                 if (packet.origin != nodeId && packet.audio.isNotEmpty()) {
-                    listener.onAudioPacket(packet.audio)
+                    listener.onAudioPacket(packet.origin.toString(), packet.audio)
                 }
 
                 if (packet.ttl > 0) {
@@ -156,9 +166,15 @@ class MeshNode(
         }
     }
 
-    fun start(riderName: String, rideCode: String, labRole: LabRole = LabRole.NORMAL) {
+    fun start(
+        riderName: String,
+        rideCode: String,
+        labRole: LabRole = LabRole.NORMAL,
+        deviceName: String = "",
+    ) {
         stop()
-        this.riderName = riderName.trim().ifBlank { "Rider" }.take(18)
+        this.riderName = sanitizeEndpointPart(riderName).ifBlank { "Rider" }.take(18)
+        this.deviceName = sanitizeEndpointPart(deviceName).ifBlank { "Android device" }.take(40)
         this.rideCode = rideCode.trim().uppercase().ifBlank { "RIDE01" }.take(12)
         this.labRole = labRole
         running = true
@@ -197,6 +213,15 @@ class MeshNode(
         listener.onDirectPeerCount(0)
     }
 
+    fun directPeers(): List<RiderPeer> = connected.mapNotNull { endpointId ->
+        val endpointName = endpointNames[endpointId] ?: return@mapNotNull null
+        RiderPeer(
+            endpointId = endpointId,
+            riderName = parseRiderName(endpointName),
+            deviceName = parseDeviceName(endpointName),
+        )
+    }.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.displayName })
+
     fun sendLocalAudio(audio: ByteArray) {
         if (!running || audio.isEmpty() || connected.isEmpty()) return
         val packet = MeshPacket(
@@ -226,9 +251,22 @@ class MeshNode(
         }
     }
 
-    private fun advertisedName(): String = "$rideCode|$riderName|${labRole.name}|${nodeId.toString().take(8)}"
+    private fun advertisedName(): String =
+        "$rideCode|$riderName|${labRole.name}|${nodeId.toString().take(8)}|$deviceName"
 
     private fun parseRideCode(endpointName: String): String = endpointName.substringBefore('|').uppercase()
+
+    private fun parseRiderName(endpointName: String): String {
+        val parts = endpointName.split('|')
+        return if (parts.size >= 2) parts[1].trim() else endpointName.trim()
+    }
+
+    private fun parseDeviceName(endpointName: String): String {
+        val parts = endpointName.split('|')
+        return if (parts.size >= 5) parts[4].trim() else ""
+    }
+
+    private fun sanitizeEndpointPart(value: String): String = value.trim().replace('|', '/')
 
     private fun parseLabRole(endpointName: String): LabRole {
         val parts = endpointName.split('|')
@@ -248,8 +286,7 @@ class MeshNode(
     }
 
     private fun displayName(endpointName: String): String {
-        val parts = endpointName.split('|')
-        val name = if (parts.size >= 2) parts[1] else endpointName
+        val name = parseRiderName(endpointName)
         val role = parseLabRole(endpointName)
         return if (role == LabRole.NORMAL) name else "$name [${role.name}]"
     }

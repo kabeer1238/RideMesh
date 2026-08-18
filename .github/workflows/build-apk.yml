@@ -10,7 +10,7 @@ on:
 permissions:
   contents: write
 
-# Beta 1 release gate: unit tests + Android lint + APK packaging
+# RideMesh release gate: unit tests + Android lint + APK packaging
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -30,19 +30,19 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Test, lint and build Beta 1
+      - name: Apply landing branding patch
+        if: github.event_name == 'pull_request' && github.head_ref == 'beta1.1'
+        run: python3 tools/apply_landing_brand_patch.py
+      - name: Test, lint and build Beta 1.1
         id: compile
         shell: bash
         run: |
           set -o pipefail
           {
-            echo "RideMesh Beta 1 CI $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RideMesh Beta 1.1 vector-branding CI $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo "Commit: $GITHUB_SHA"
-            mkdir -p app/src/main/res/drawable-nodpi
-            base64 -d branding/ridemesh_logo.jpg.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo.jpg
-            base64 -d branding/ridemesh_icon.jpg.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon.jpg
-            file app/src/main/res/drawable-nodpi/ridemesh_logo.jpg
-            file app/src/main/res/drawable-nodpi/ridemesh_icon.jpg
+            test -f app/src/main/res/drawable/ridemesh_brand_mark.xml
+            test -f app/src/main/res/drawable/ridemesh_app_icon.xml
             echo "=== UNIT TESTS ==="
             gradle --no-daemon testDebugUnitTest
             echo "=== ANDROID LINT ==="
@@ -50,21 +50,37 @@ jobs:
             echo "=== APK BUILD ==="
             gradle --no-daemon assembleDebug
           } 2>&1 | tee build.log
-      - name: Upload Beta 1 APK
+      - name: Upload Beta 1.1 APK
         id: apk_artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1-apk
+          name: RideMesh-Beta1.1-v0.4.5-Branding-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Upload lint report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1-lint
+          name: RideMesh-Beta1.1-v0.4.5-Branding-lint
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
+      - name: Persist validated landing layout
+        if: success() && github.event_name == 'pull_request' && github.head_ref == 'beta1.1'
+        shell: bash
+        run: |
+          git fetch origin beta1.1
+          git reset --hard
+          git checkout -B beta1.1 origin/beta1.1
+          git reset --hard origin/beta1.1
+          python3 tools/apply_landing_brand_patch.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/res/layout/activity_main.xml
+          if ! git diff --cached --quiet; then
+            git commit -m "UI: place approved RideMesh logo in landing header [skip ci]"
+            git push origin beta1.1
+          fi
       - name: Publish build result
         if: always() && github.event_name != 'pull_request'
         shell: bash
@@ -74,7 +90,7 @@ jobs:
           mkdir -p dist
           cp build.log dist/last-build.txt 2>/dev/null || echo "Build ended before logged build step" > dist/last-build.txt
           if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            cp app/build/outputs/apk/debug/app-debug.apk dist/RideMesh-Beta1.apk
+            cp app/build/outputs/apk/debug/app-debug.apk dist/RideMesh-Beta1.1.apk
             echo "" >> dist/last-build.txt
             echo "RESULT: APK_BUILT" >> dist/last-build.txt
             echo "ARTIFACT_ID: ${APK_ARTIFACT_ID}" >> dist/last-build.txt
@@ -85,8 +101,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add dist/last-build.txt
-          if [ -f dist/RideMesh-Beta1.apk ]; then git add dist/RideMesh-Beta1.apk; fi
+          if [ -f dist/RideMesh-Beta1.1.apk ]; then git add dist/RideMesh-Beta1.1.apk; fi
           if ! git diff --cached --quiet; then
-            git commit -m "Publish RideMesh Beta 1 build result [skip ci]"
+            git commit -m "Publish RideMesh Beta 1.1 build result [skip ci]"
             git push
           fi
