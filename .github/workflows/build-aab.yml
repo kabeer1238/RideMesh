@@ -1,17 +1,17 @@
-name: Build RideMesh APK
+name: Build RideMesh AAB
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "master", "beta1.4" ]
+    branches: [ "beta1.4" ]
   pull_request:
     branches: [ "main", "master" ]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
+  build-aab:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -35,16 +35,12 @@ jobs:
           gradle-version: '8.13'
 
       - name: Materialize approved RideMesh branding
-        if: github.ref == 'refs/heads/beta1.4' || github.head_ref == 'beta1.4'
         shell: bash
         run: |
           mkdir -p app/src/main/res/drawable-nodpi
           base64 -d branding/ridemesh_logo_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
           base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
-          file app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
-          file app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
-          file app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
           test -s app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
           test -s app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           test -s app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
@@ -54,49 +50,36 @@ jobs:
         run: |
           ! grep -R "secondaryInternetNode\|SECONDARY GROUP\|CREATE SECOND GROUP\|JOIN SECOND GROUP" app/src/main/java app/src/main/res/layout/activity_main.xml
 
-      - name: Test, lint and build Beta 1.4
-        id: compile
+      - name: Unit tests
+        run: gradle --no-daemon testDebugUnitTest
+
+      - name: Android lint
+        run: gradle --no-daemon lintDebug
+
+      - name: Build release AAB
+        run: gradle --no-daemon bundleRelease
+
+      - name: Inspect AAB signing
         shell: bash
         run: |
-          set -o pipefail
-          {
-            echo "RideMesh Beta 1.4 CI $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            echo "Commit: $GITHUB_SHA"
-            echo "=== UNIT TESTS ==="
-            gradle --no-daemon testDebugUnitTest
-            echo "=== ANDROID LINT ==="
-            gradle --no-daemon lintDebug
-            echo "=== APK BUILD ==="
-            gradle --no-daemon assembleDebug
-          } 2>&1 | tee build.log
+          AAB="app/build/outputs/bundle/release/app-release.aab"
+          test -s "$AAB"
+          echo "=== AAB file ==="
+          ls -lh "$AAB"
+          echo "=== Signature inspection ==="
+          jarsigner -verify -verbose -certs "$AAB" || true
 
-      - name: Upload Beta 1.4 APK
-        if: success()
+      - name: Upload Beta 1.4 release AAB
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1.4-v0.4.8-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: RideMesh-Beta1.4-v0.4.8-release-aab
+          path: app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
 
       - name: Upload lint report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1.4-v0.4.8-lint
+          name: RideMesh-Beta1.4-v0.4.8-aab-lint
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
-
-      - name: Persist validated Beta 1.4 branding assets
-        if: success() && github.ref == 'refs/heads/beta1.4'
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp \
-            app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp \
-            app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
-          if ! git diff --cached --quiet; then
-            git commit -m "Beta 1.4: refresh approved branding assets [skip ci]"
-            git push origin beta1.4
-          fi

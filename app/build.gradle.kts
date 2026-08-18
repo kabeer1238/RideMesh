@@ -1,3 +1,4 @@
+// RideMesh Beta 1.4 — approved single-group branding release
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -13,8 +14,8 @@ android {
         applicationId = "com.bikemesh.ridemesh"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.4.0-beta1"
+        versionCode = 18
+        versionName = "0.4.8-beta1.4"
     }
 
     buildFeatures {
