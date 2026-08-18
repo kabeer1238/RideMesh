@@ -37,7 +37,10 @@ jobs:
 
       - name: Apply Beta 1.2 rider and audio patch
         if: github.ref == 'refs/heads/beta1.2' || github.head_ref == 'beta1.2'
-        run: python3 tools/apply_beta12_patch.py
+        shell: bash
+        run: |
+          python3 tools/apply_beta12_patch.py
+          python3 tools/fix_beta12_constants.py
 
       - name: Materialize exact supplied RideMesh branding
         if: github.ref == 'refs/heads/beta1.2' || github.head_ref == 'beta1.2'
