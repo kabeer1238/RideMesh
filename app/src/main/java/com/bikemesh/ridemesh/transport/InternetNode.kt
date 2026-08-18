@@ -11,6 +11,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.random.Random
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
@@ -25,7 +26,7 @@ import javax.net.ssl.SSLSocketFactory
 class InternetNode(private val listener: Listener) {
     interface Listener {
         fun onInternetState(connected: Boolean, message: String)
-        fun onInternetAudio(audio: ByteArray)
+        fun onInternetAudio(sourceId: String, audio: ByteArray)
         fun onInternetPeerCount(count: Int)
     }
 
@@ -34,9 +35,12 @@ class InternetNode(private val listener: Listener) {
     private val connected = AtomicBoolean(false)
     private val running = AtomicBoolean(false)
     private val outputLock = Any()
-    private val peers = ConcurrentHashMap<UUID, Long>()
+    private val peers = ConcurrentHashMap<UUID, RiderPeer>()
+    private val linkStats = ConcurrentHashMap<UUID, LinkStats>()
     private val reportedPeerCount = AtomicInteger(-1)
 
+    @Volatile private var riderName: String = "Rider"
+    @Volatile private var deviceName: String = "Android device"
     @Volatile private var baseTopic: String = ""
     @Volatile private var audioTopic: String = ""
     @Volatile private var presenceTopic: String = ""
@@ -44,9 +48,12 @@ class InternetNode(private val listener: Listener) {
     @Volatile private var socket: SSLSocket? = null
     @Volatile private var output: BufferedOutputStream? = null
     @Volatile private var worker: Thread? = null
+    private var reconnectAttempt = 0
 
-    fun start(rideCode: String) {
+    fun start(rideCode: String, riderName: String, deviceName: String) {
         stop()
+        this.riderName = sanitizeIdentity(riderName, "Rider", MAX_RIDER_NAME_BYTES)
+        this.deviceName = sanitizeIdentity(deviceName, "Android device", MAX_DEVICE_NAME_BYTES)
         val safeRide = rideCode.trim().uppercase().ifBlank { "RIDE01" }
             .replace(Regex("[^A-Z0-9_-]"), "_")
             .take(32)
@@ -66,6 +73,9 @@ class InternetNode(private val listener: Listener) {
     fun isConnected(): Boolean = connected.get()
 
     fun remotePeerCount(): Int = peers.size
+
+    fun remotePeers(): List<RiderPeer> = peers.values
+        .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.displayName })
 
     fun sendLocalAudio(audio: ByteArray): Boolean {
         if (audio.isEmpty() || !connected.get()) return false
@@ -94,6 +104,7 @@ class InternetNode(private val listener: Listener) {
         closeSocket()
         worker?.interrupt()
         worker = null
+        reconnectAttempt = 0
     }
 
     private fun connectionLoop() {
@@ -109,8 +120,9 @@ class InternetNode(private val listener: Listener) {
             }
 
             if (running.get()) {
+                val delayMs = nextReconnectDelayMs()
                 try {
-                    Thread.sleep(RECONNECT_DELAY_MS)
+                    Thread.sleep(delayMs)
                 } catch (_: InterruptedException) {
                     break
                 }
@@ -137,6 +149,7 @@ class InternetNode(private val listener: Listener) {
 
         sendRaw(subscribePacket(subscriptionTopic))
         connected.set(true)
+        reconnectAttempt = 0
         clearPeers()
         listener.onInternetState(true, "Internet voice connected")
         publishPresence()
@@ -176,8 +189,9 @@ class InternetNode(private val listener: Listener) {
             audioTopic -> {
                 val packet = decode(payload) ?: return
                 if (packet.origin == nodeId) return
-                markPeer(packet.origin)
-                listener.onInternetAudio(packet.audio)
+                updateLinkStats(packet)
+                touchPeer(packet.origin)
+                listener.onInternetAudio(packet.origin.toString(), packet.audio)
             }
             presenceTopic -> handlePresence(payload)
         }
@@ -185,39 +199,102 @@ class InternetNode(private val listener: Listener) {
 
     private fun publishPresence() {
         if (!connected.get()) return
-        val payload = ByteBuffer.allocate(PRESENCE_BYTES)
-            .order(ByteOrder.BIG_ENDIAN)
-            .putLong(nodeId.mostSignificantBits)
-            .putLong(nodeId.leastSignificantBits)
-            .putLong(System.currentTimeMillis())
-            .array()
-        sendMqttPublish(presenceTopic, payload)
+        sendMqttPublish(
+            presenceTopic,
+            encodePresence(
+                PresencePacket(
+                    origin = nodeId,
+                    timestampMs = System.currentTimeMillis(),
+                    riderName = riderName,
+                    deviceName = deviceName,
+                )
+            )
+        )
     }
 
     private fun handlePresence(payload: ByteArray) {
-        if (payload.size < PRESENCE_BYTES) return
-        try {
-            val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
-            val origin = UUID(buffer.long, buffer.long)
-            buffer.long // sender timestamp; local receive time is used for expiry
-            if (origin == nodeId) return
-            markPeer(origin)
-        } catch (_: Throwable) {
-        }
+        val presence = decodePresence(payload) ?: return
+        if (presence.origin == nodeId) return
+        markPeer(presence.origin, presence.riderName, presence.deviceName)
     }
 
-    private fun markPeer(id: UUID) {
-        peers[id] = System.currentTimeMillis()
-        notifyPeerCount()
+    private fun touchPeer(id: UUID) {
+        val now = System.currentTimeMillis()
+        var added = false
+        peers.compute(id) { _, current ->
+            if (current == null) {
+                added = true
+                RiderPeer(id = id, riderName = "", deviceName = "", lastSeenMs = now, qualityBars = qualityBarsFor(id))
+            } else {
+                current.copy(lastSeenMs = now, qualityBars = qualityBarsFor(id))
+            }
+        }
+        notifyPeerCount(force = added)
+    }
+
+    private fun markPeer(id: UUID, riderName: String, deviceName: String) {
+        val now = System.currentTimeMillis()
+        val previous = peers[id]
+        val resolvedRider = riderName.ifBlank { previous?.riderName.orEmpty() }
+        val resolvedDevice = deviceName.ifBlank { previous?.deviceName.orEmpty() }
+        peers[id] = RiderPeer(id, resolvedRider, resolvedDevice, now, previous?.qualityBars ?: qualityBarsFor(id))
+        val identityChanged = previous == null ||
+            previous.riderName != resolvedRider || previous.deviceName != resolvedDevice
+        notifyPeerCount(force = identityChanged)
+    }
+
+    private data class LinkStats(
+        var lastArrivalMs: Long = 0L,
+        var lastSequence: Int? = null,
+        var jitterEwmaMs: Double = 0.0,
+        var lossEwma: Double = 0.0,
+    )
+
+    private fun updateLinkStats(packet: InternetPacket) {
+        val now = System.currentTimeMillis()
+        val stats = linkStats.computeIfAbsent(packet.origin) { LinkStats() }
+
+        if (stats.lastArrivalMs > 0L) {
+            val interval = now - stats.lastArrivalMs
+            if (interval in 5L..400L) {
+                val deviation = kotlin.math.abs(interval.toDouble() - 20.0)
+                stats.jitterEwmaMs = (stats.jitterEwmaMs * 0.85) + (deviation * 0.15)
+            }
+        }
+
+        val previousSequence = stats.lastSequence
+        if (previousSequence != null) {
+            val delta = packet.sequence.toLong() - previousSequence.toLong()
+            if (delta in 1L..1000L) {
+                val missing = (delta - 1L).coerceAtLeast(0L)
+                val sampleLoss = missing.toDouble() / delta.toDouble()
+                stats.lossEwma = (stats.lossEwma * 0.90) + (sampleLoss * 0.10)
+            }
+        }
+
+        stats.lastArrivalMs = now
+        stats.lastSequence = packet.sequence
+        val quality = qualityBars(stats)
+        peers.computeIfPresent(packet.origin) { _, current -> current.copy(qualityBars = quality) }
+    }
+
+    private fun qualityBarsFor(id: UUID): Int = linkStats[id]?.let(::qualityBars) ?: 4
+
+    private fun qualityBars(stats: LinkStats): Int = when {
+        stats.lossEwma >= 0.15 || stats.jitterEwmaMs >= 75.0 -> 1
+        stats.lossEwma >= 0.08 || stats.jitterEwmaMs >= 45.0 -> 2
+        stats.lossEwma >= 0.03 || stats.jitterEwmaMs >= 22.0 -> 3
+        else -> 4
     }
 
     private fun prunePeers(now: Long) {
-        peers.entries.removeIf { now - it.value > PRESENCE_TIMEOUT_MS }
+        peers.entries.removeIf { now - it.value.lastSeenMs > PRESENCE_TIMEOUT_MS }
         notifyPeerCount()
     }
 
     private fun clearPeers() {
         peers.clear()
+        linkStats.clear()
         notifyPeerCount(force = true)
     }
 
@@ -321,6 +398,18 @@ class InternetNode(private val listener: Listener) {
         write(bytes)
     }
 
+    /**
+     * Avoid a synchronized reconnect storm after a tunnel/cellular outage.
+     * Beta 1 used a flat 2 second retry; Beta 1.1 uses short exponential
+     * backoff with jitter, resetting immediately after a healthy connection.
+     */
+    private fun nextReconnectDelayMs(): Long {
+        val exponent = reconnectAttempt.coerceAtMost(3)
+        val base = (RECONNECT_BASE_DELAY_MS * (1L shl exponent)).coerceAtMost(RECONNECT_MAX_DELAY_MS)
+        reconnectAttempt = (reconnectAttempt + 1).coerceAtMost(8)
+        return base + Random.nextLong(0L, RECONNECT_JITTER_MS + 1L)
+    }
+
     private fun markDisconnected(message: String) {
         val wasConnected = connected.getAndSet(false)
         clearPeers()
@@ -343,14 +432,94 @@ class InternetNode(private val listener: Listener) {
         }
     }
 
-    private data class InternetPacket(
+    data class RiderPeer(
+        val id: UUID,
+        val riderName: String,
+        val deviceName: String,
+        val lastSeenMs: Long,
+        val qualityBars: Int = 4,
+    ) {
+        val displayName: String
+            get() = riderName.ifBlank {
+                deviceName.ifBlank { "Rider ${id.toString().take(4).uppercase()}" }
+            }
+    }
+
+    internal data class PresencePacket(
+        val origin: UUID,
+        val timestampMs: Long,
+        val riderName: String,
+        val deviceName: String,
+    )
+
+    internal fun encodePresence(packet: PresencePacket): ByteArray {
+        val riderBytes = packet.riderName.toByteArray(Charsets.UTF_8).let {
+            if (it.size > MAX_RIDER_NAME_BYTES) it.copyOf(MAX_RIDER_NAME_BYTES) else it
+        }
+        val deviceBytes = packet.deviceName.toByteArray(Charsets.UTF_8).let {
+            if (it.size > MAX_DEVICE_NAME_BYTES) it.copyOf(MAX_DEVICE_NAME_BYTES) else it
+        }
+        return ByteBuffer.allocate(PRESENCE_BASE_BYTES + 1 + riderBytes.size + 1 + deviceBytes.size)
+            .order(ByteOrder.BIG_ENDIAN)
+            .putLong(packet.origin.mostSignificantBits)
+            .putLong(packet.origin.leastSignificantBits)
+            .putLong(packet.timestampMs)
+            .put(riderBytes.size.toByte())
+            .put(riderBytes)
+            .put(deviceBytes.size.toByte())
+            .put(deviceBytes)
+            .array()
+    }
+
+    internal fun decodePresence(payload: ByteArray): PresencePacket? {
+        if (payload.size < PRESENCE_BASE_BYTES) return null
+        return try {
+            val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+            val origin = UUID(buffer.long, buffer.long)
+            val timestamp = buffer.long
+
+            // Beta 1 / early Beta 1.1 presence was exactly 24 bytes. Keep it readable.
+            if (!buffer.hasRemaining()) {
+                return PresencePacket(origin, timestamp, "", "")
+            }
+
+            val riderLength = buffer.get().toInt() and 0xff
+            if (riderLength > buffer.remaining()) return PresencePacket(origin, timestamp, "", "")
+            val riderBytes = ByteArray(riderLength)
+            buffer.get(riderBytes)
+            val rider = riderBytes.toString(Charsets.UTF_8).trim()
+
+            if (!buffer.hasRemaining()) {
+                return PresencePacket(origin, timestamp, rider, "")
+            }
+            val deviceLength = buffer.get().toInt() and 0xff
+            if (deviceLength > buffer.remaining()) return PresencePacket(origin, timestamp, rider, "")
+            val deviceBytes = ByteArray(deviceLength)
+            buffer.get(deviceBytes)
+            val device = deviceBytes.toString(Charsets.UTF_8).trim()
+            PresencePacket(origin, timestamp, rider, device)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun sanitizeIdentity(value: String, fallback: String, maxBytes: Int): String {
+        val clean = value.trim().replace('|', '/').ifBlank { fallback }
+        var result = clean
+        while (result.toByteArray(Charsets.UTF_8).size > maxBytes && result.isNotEmpty()) {
+            result = result.dropLast(1)
+        }
+        return result.ifBlank { fallback }
+    }
+
+    internal data class InternetPacket(
         val origin: UUID,
         val sequence: Int,
         val timestampMs: Long,
         val audio: ByteArray,
     )
 
-    private fun encode(packet: InternetPacket): ByteArray {
+    internal fun encode(packet: InternetPacket): ByteArray {
         val buffer = ByteBuffer.allocate(HEADER_BYTES + packet.audio.size).order(ByteOrder.BIG_ENDIAN)
         buffer.putInt(MAGIC)
         buffer.put(VERSION)
@@ -362,7 +531,7 @@ class InternetNode(private val listener: Listener) {
         return buffer.array()
     }
 
-    private fun decode(bytes: ByteArray): InternetPacket? {
+    internal fun decode(bytes: ByteArray): InternetPacket? {
         if (bytes.size < HEADER_BYTES) return null
         return try {
             val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
@@ -387,10 +556,14 @@ class InternetNode(private val listener: Listener) {
         private const val PING_INTERVAL_MS = 15_000L
         private const val PRESENCE_INTERVAL_MS = 10_000L
         private const val PRESENCE_TIMEOUT_MS = 32_000L
-        private const val RECONNECT_DELAY_MS = 2_000L
-        private const val PRESENCE_BYTES = 24
+        private const val RECONNECT_BASE_DELAY_MS = 2_000L
+        private const val RECONNECT_MAX_DELAY_MS = 15_000L
+        private const val RECONNECT_JITTER_MS = 750L
+        private const val PRESENCE_BASE_BYTES = 24
+        private const val MAX_RIDER_NAME_BYTES = 48
+        private const val MAX_DEVICE_NAME_BYTES = 64
         private const val MAGIC = 0x524D4931 // RMI1
         private const val VERSION: Byte = 1
-        private const val HEADER_BYTES = 37
+        private const val HEADER_BYTES = 33
     }
 }
