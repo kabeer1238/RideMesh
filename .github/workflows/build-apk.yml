@@ -30,22 +30,17 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Apply field audio/icon/roster patch
-        if: github.event_name == 'pull_request' && github.head_ref == 'beta1.1'
-        run: python3 tools/apply_field_audio_patch.py
       - name: Test, lint and build Beta 1.1
         id: compile
         shell: bash
         run: |
           set -o pipefail
           {
-            echo "RideMesh Beta 1.1 field CI $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RideMesh Beta 1.1 clean CI $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo "Commit: $GITHUB_SHA"
             mkdir -p app/src/main/res/drawable-nodpi
             base64 -d branding/ridemesh_logo.jpg.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo.jpg
             base64 -d branding/ridemesh_icon.jpg.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon.jpg
-            file app/src/main/res/drawable-nodpi/ridemesh_logo.jpg
-            file app/src/main/res/drawable-nodpi/ridemesh_icon.jpg
             echo "=== UNIT TESTS ==="
             gradle --no-daemon testDebugUnitTest
             echo "=== ANDROID LINT ==="
@@ -58,32 +53,16 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1.1-Field-Audio-Fix-apk
+          name: RideMesh-Beta1.1-Field-Fix-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Upload lint report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1.1-Field-Audio-Fix-lint
+          name: RideMesh-Beta1.1-Field-Fix-lint
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
-      - name: Persist validated field patch
-        if: success() && github.event_name == 'pull_request' && github.head_ref == 'beta1.1'
-        shell: bash
-        run: |
-          git fetch origin beta1.1
-          git reset --hard
-          git checkout -B beta1.1 origin/beta1.1
-          git reset --hard origin/beta1.1
-          python3 tools/apply_field_audio_patch.py
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app
-          if ! git diff --cached --quiet; then
-            git commit -m "Field fix: icon, rider list, echo guard and multi-rider mixer [skip ci]"
-            git push origin beta1.1
-          fi
       - name: Publish build result
         if: always() && github.event_name != 'pull_request'
         shell: bash
@@ -98,7 +77,7 @@ jobs:
             echo "RESULT: APK_BUILT" >> dist/last-build.txt
             echo "ARTIFACT_ID: ${APK_ARTIFACT_ID}" >> dist/last-build.txt
           else
-            echo "" >> dist/last-build.txt"
+            echo "" >> dist/last-build.txt
             echo "RESULT: BUILD_FAILED" >> dist/last-build.txt
           fi
           git config user.name "github-actions[bot]"
