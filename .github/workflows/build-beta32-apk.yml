@@ -37,6 +37,9 @@ jobs:
       - name: Apply Beta3.2 offline recovery patch
         run: python tools/apply_beta32_offline_recovery.py
 
+      - name: Fix Beta3.2 restart syntax
+        run: python tools/fix_beta32_patch.py
+
       - name: Materialize approved RideMesh branding
         shell: bash
         run: |
@@ -67,6 +70,7 @@ jobs:
           grep -q 'CALL / OTHER AUDIO ACTIVE' app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt
           grep -q 'DURATION_DAYS = 60L' app/src/main/java/com/bikemesh/ridemesh/beta/BetaWindow.kt
           ! grep -R "secondaryInternetNode\|SECONDARY GROUP\|CREATE SECOND GROUP\|JOIN SECOND GROUP" app/src/main/java app/src/main/res/layout/activity_main.xml
+          ! grep -q $'    }\n    }\n\n    private fun applyBatteryPolicy() {' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
 
       - name: Unit tests
         run: gradle --no-daemon testDebugUnitTest
@@ -116,5 +120,3 @@ jobs:
           else
             echo "Validated Beta3.2 source already persisted"
           fi
-
-# PR validation trigger
