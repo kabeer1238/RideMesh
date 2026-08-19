@@ -82,15 +82,21 @@
                     android:text="YOUR GROUP.
 ONE CHANNEL."
                     android:textColor="@color/white"
-                    android:textSize="31sp"
+                    android:textSize="34sp"
                     android:textStyle="bold" />
+
+                <View
+                    android:layout_width="34dp"
+                    android:layout_height="2dp"
+                    android:layout_marginTop="14dp"
+                    android:background="@color/accent" />
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
                     android:lineSpacingExtra="3dp"
-                    android:text="Talk naturally while you ride. RideMesh uses Internet for distance and local mesh as the fallback when coverage disappears."
+                    android:text="RideMesh uses the Internet for long-distance connectivity and automatically switches to local mesh when you’re out of coverage."
                     android:textColor="@color/muted"
                     android:textSize="13.5sp" />
             </LinearLayout>
@@ -129,7 +135,7 @@ ONE CHANNEL."
                     android:layout_marginStart="6dp"
                     android:layout_weight="1"
                     android:text="JOIN A RIDE"
-                    android:textColor="@color/white"
+                    android:textColor="@color/accent"
                     android:textSize="11sp"
                     android:textStyle="bold"
                     app:backgroundTint="@android:color/transparent"
@@ -148,76 +154,171 @@ ONE CHANNEL."
                 android:layout_marginTop="22dp"
                 android:background="@drawable/status_card_bg"
                 android:orientation="vertical"
-                android:padding="18dp">
+                android:paddingStart="18dp"
+                android:paddingTop="18dp"
+                android:paddingEnd="18dp"
+                android:paddingBottom="16dp">
 
                 <TextView
-                    android:id="@+id/homeNetworkStatus"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="●  READY TO RIDE"
-                    android:textColor="@color/accent"
-                    android:textSize="13sp"
+                    android:fontFamily="sans-serif-condensed"
+                    android:letterSpacing="0.04"
+                    android:text="READY TO RIDE"
+                    android:textColor="@color/white"
+                    android:textSize="16sp"
                     android:textStyle="bold" />
-                <TextView
-                    android:id="@+id/homeAudioStatus"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="7dp"
-                    android:text="Phone audio ready • helmet optional"
-                    android:textColor="@color/white_soft"
-                    android:textSize="12sp" />
 
-                <TextView
-                    android:id="@+id/betaExpiryStatus"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="BETA ACCESS • 60 DAYS REMAINING"
-                    android:textColor="@color/accent"
-                    android:textSize="10sp"
-                    android:textStyle="bold" />
                 <View
-                    android:layout_width="match_parent"
-                    android:layout_height="1dp"
-                    android:layout_marginTop="15dp"
-                    android:layout_marginBottom="14dp"
-                    android:background="@color/border" />
+                    android:layout_width="26dp"
+                    android:layout_height="2dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@color/accent" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:gravity="center"
                     android:orientation="horizontal">
+
                     <LinearLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:orientation="vertical">
-                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="HYBRID" android:textColor="@color/white" android:textSize="10sp" android:textStyle="bold" />
-                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Internet + local" android:textColor="@color/faint_plus" android:textSize="9sp" />
+                        android:gravity="center"
+                        android:orientation="vertical"
+                        android:paddingHorizontal="4dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="≋"
+                            android:textColor="@color/accent"
+                            android:textSize="29sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="HYBRID"
+                            android:textColor="@color/accent"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/homeNetworkStatus"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:gravity="center"
+                            android:lineSpacingExtra="1dp"
+                            android:text="Internet + Mesh
+Ready"
+                            android:textColor="@color/white_soft"
+                            android:textSize="10sp" />
                     </LinearLayout>
+
+                    <View
+                        android:layout_width="1dp"
+                        android:layout_height="88dp"
+                        android:background="@color/border_strong" />
+
                     <LinearLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:orientation="vertical">
-                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="HELMET" android:textColor="@color/white" android:textSize="10sp" android:textStyle="bold" />
-                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Bluetooth ready" android:textColor="@color/faint_plus" android:textSize="9sp" />
+                        android:gravity="center"
+                        android:orientation="vertical"
+                        android:paddingHorizontal="4dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="◖"
+                            android:textColor="@color/accent"
+                            android:textSize="29sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="HELMET"
+                            android:textColor="@color/accent"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/homeAudioStatus"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:gravity="center"
+                            android:lineSpacingExtra="1dp"
+                            android:text="Bluetooth
+Ready"
+                            android:textColor="@color/white_soft"
+                            android:textSize="10sp" />
                     </LinearLayout>
+
+                    <View
+                        android:layout_width="1dp"
+                        android:layout_height="88dp"
+                        android:background="@color/border_strong" />
+
                     <LinearLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:orientation="vertical">
-                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="SMART POWER" android:textColor="@color/white" android:textSize="10sp" android:textStyle="bold" />
-                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:text="Battery aware" android:textColor="@color/faint_plus" android:textSize="9sp" />
+                        android:gravity="center"
+                        android:orientation="vertical"
+                        android:paddingHorizontal="4dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="ϟ"
+                            android:textColor="@color/accent"
+                            android:textSize="31sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="SMART POWER"
+                            android:textColor="@color/accent"
+                            android:textSize="11sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:gravity="center"
+                            android:lineSpacingExtra="1dp"
+                            android:text="Optimized
+Extended Battery"
+                            android:textColor="@color/white_soft"
+                            android:textSize="10sp" />
                     </LinearLayout>
                 </LinearLayout>
             </LinearLayout>
 
             <TextView
+                android:id="@+id/betaExpiryStatus"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
+                android:layout_marginTop="10dp"
+                android:gravity="center"
+                android:text="BETA ACCESS • 60 DAYS REMAINING"
+                android:textColor="@color/accent"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
                 android:gravity="center"
                 android:lineSpacingExtra="2dp"
                 android:text="Configure while stopped • Once the ride starts, normal voice mode is hands-free."
@@ -485,8 +586,8 @@ ONE CHANNEL."
         android:visibility="gone">
 
         <ImageView
-            android:layout_width="224dp"
-            android:layout_height="68dp"
+            android:layout_width="244dp"
+            android:layout_height="72dp"
             android:contentDescription="RideMesh by Autopilot India"
             android:scaleType="fitStart"
             android:src="@drawable/ridemesh_logo_exact" />
@@ -500,7 +601,7 @@ ONE CHANNEL."
             android:gravity="center"
             android:text="RIDE ACTIVE"
             android:textColor="@color/white"
-            android:textSize="22sp"
+            android:textSize="28sp"
             android:textStyle="bold" />
 
         <TextView
@@ -511,7 +612,7 @@ ONE CHANNEL."
             android:gravity="center"
             android:text="CONNECTING…"
             android:textColor="@color/accent"
-            android:textSize="11sp"
+            android:textSize="12sp"
             android:textStyle="bold" />
 
         <LinearLayout
@@ -564,8 +665,8 @@ ONE CHANNEL."
         <LinearLayout
             android:id="@+id/handsFreeIndicator"
             android:layout_width="match_parent"
-            android:layout_height="76dp"
-            android:layout_marginTop="10dp"
+            android:layout_height="82dp"
+            android:layout_marginTop="12dp"
             android:background="@drawable/live_panel_bg"
             android:gravity="center_vertical"
             android:orientation="horizontal"
@@ -612,7 +713,7 @@ ONE CHANNEL."
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/activeMute"
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="74dp"
+                android:layout_width="68dp"
                 android:layout_height="52dp"
                 android:minWidth="0dp"
                 android:paddingStart="4dp"
@@ -664,7 +765,7 @@ ONE CHANNEL."
             android:id="@+id/riderGrid"
             android:layout_width="match_parent"
             android:layout_height="0dp"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="10dp"
             android:layout_weight="1"
             android:alignmentMode="alignMargins"
             android:columnCount="3"

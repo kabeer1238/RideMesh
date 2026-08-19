@@ -599,7 +599,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         binding.riderCount.text = "RIDE ACTIVE"
         binding.meshStatus.text = "CONNECTING…"
         binding.networkTile.text = "CONNECTING"
-        binding.homeNetworkStatus.text = "●  READY TO RIDE"
+        binding.homeNetworkStatus.text = "Internet + Mesh\nReady"
         binding.activeRiders.text = "RIDERS"
         binding.riderGrid.removeAllViews()
         speakingUntilMs.clear()
@@ -623,10 +623,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private fun updateAudioUi(text: String) {
         binding.audioStatus.text = if (micMuted) "MIC MUTED • LISTENING ONLY" else text
         binding.homeAudioStatus.text = when {
-            micMuted -> "Microphone muted • incoming voice remains active"
-            text.contains("Bluetooth", true) || text.contains("headset", true) -> "Helmet audio • noise reduction ready"
-            text.contains("sleep", true) || text.contains("Reconnect", true) || text.contains("Waiting", true) -> "Audio waiting for connection"
-            else -> "Phone audio • noise reduction ready"
+            micMuted -> "Listening Only\nMic Muted"
+            text.contains("Bluetooth", true) || text.contains("headset", true) -> "Connected\nHelmet Audio"
+            text.contains("sleep", true) || text.contains("Reconnect", true) || text.contains("Waiting", true) -> "Audio Link\nWaiting"
+            else -> "Phone Audio\nReady"
         }
 
         binding.audioTile.text = when {
@@ -782,9 +782,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
         when {
             internetNode.isConnected() -> {
-                val total = internetPeerCount + 1
                 binding.networkTile.text = "INTERNET"
-                binding.riderCount.text = if (internetPeerCount > 0) "$total RIDERS CONNECTED" else "RIDE ACTIVE"
+                binding.riderCount.text = "RIDE ACTIVE"
                 binding.meshStatus.text = if (binding.batterySaver.isChecked && !meshRunning) {
                     "INTERNET VOICE • AUTO LOCAL FALLBACK"
                 } else {
@@ -793,23 +792,22 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             }
 
             directPeerCount > 0 -> {
-                val total = directPeerCount + 1
                 binding.networkTile.text = "LOCAL MESH"
-                binding.riderCount.text = "$total RIDERS NEARBY"
+                binding.riderCount.text = "RIDE ACTIVE"
                 binding.meshStatus.text = "LOCAL VOICE • AUTO RECONNECT ACTIVE"
             }
 
             else -> {
                 binding.networkTile.text = "SEARCHING"
-                binding.riderCount.text = "RECONNECTING…"
+                binding.riderCount.text = "RIDE ACTIVE"
                 binding.meshStatus.text = "AUTO RECONNECT • INTERNET + NEARBY SEARCH"
             }
         }
 
         binding.homeNetworkStatus.text = when {
-            internetNode.isConnected() -> "●  INTERNET VOICE ACTIVE"
-            directPeerCount > 0 -> "●  LOCAL MESH ACTIVE"
-            else -> "●  READY TO RIDE"
+            internetNode.isConnected() -> "Internet Voice\nActive"
+            directPeerCount > 0 -> "Local Mesh\nActive"
+            else -> "Internet + Mesh\nReady"
         }
         val visibleRiderTotal = when {
             internetNode.isConnected() -> internetPeerCount + 1
@@ -887,7 +885,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                 rowSpec = GridLayout.spec(row)
                 columnSpec = GridLayout.spec(col, 1f)
                 width = 0
-                height = dp(108)
+                height = dp(136)
                 setMargins(dp(3), dp(3), dp(3), dp(3))
             })
         }
@@ -904,7 +902,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         val avatar = TextView(this).apply {
             text = rider.name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "R"
             gravity = Gravity.CENTER
-            textSize = 22f
+            textSize = 30f
             setTextColor(ContextCompat.getColor(this@MainActivity, R.color.white))
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
             background = GradientDrawable().apply {
@@ -917,14 +915,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                 )
             }
         }
-        card.addView(avatar, LinearLayout.LayoutParams(dp(52), dp(52)))
+        card.addView(avatar, LinearLayout.LayoutParams(dp(72), dp(72)))
 
         val name = TextView(this).apply {
             text = rider.name.ifBlank { "Rider" }
             gravity = Gravity.CENTER
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
-            textSize = 10.5f
+            textSize = 14.5f
             setTextColor(
                 ContextCompat.getColor(
                     this@MainActivity,
@@ -933,17 +931,17 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             )
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
         }
-        card.addView(name, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(21)).apply {
-            topMargin = dp(3)
+        card.addView(name, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(26)).apply {
+            topMargin = dp(5)
         })
 
         val quality = TextView(this).apply {
             text = if (rider.self) "YOU  ${qualityGlyphs(rider.qualityBars)}" else qualityGlyphs(rider.qualityBars)
             gravity = Gravity.CENTER
-            textSize = 9.5f
+            textSize = 11.5f
             setTextColor(qualityColor(rider.qualityBars))
         }
-        card.addView(quality, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(18)))
+        card.addView(quality, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(20)))
         return card
     }
 
