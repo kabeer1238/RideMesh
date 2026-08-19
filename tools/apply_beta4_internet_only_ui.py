@@ -13,7 +13,9 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 
 
 def sub_once(text: str, pattern: str, replacement: str, label: str) -> str:
-    out, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+    # Use a callable replacement so regex does not reinterpret backslashes such as
+    # Kotlin string literals containing \\n.
+    out, count = re.subn(pattern, lambda _match: replacement, text, count=1, flags=re.S)
     if count != 1:
         raise SystemExit(f'{label}: pattern count {count}')
     return out
