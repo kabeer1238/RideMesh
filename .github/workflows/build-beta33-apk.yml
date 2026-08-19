@@ -37,6 +37,9 @@ jobs:
       - name: Apply Beta3.3 hybrid bridge patch
         run: python tools/apply_beta33_hybrid_bridge.py
 
+      - name: Remove legacy per-transport node IDs
+        run: python tools/fix_beta33_shared_ids.py
+
       - name: Materialize approved RideMesh branding
         shell: bash
         run: |
@@ -60,6 +63,8 @@ jobs:
           grep -q 'rememberFrame' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
           grep -q 'CALL / OTHER AUDIO ACTIVE' app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt
           grep -q 'DURATION_DAYS = 60L' app/src/main/java/com/bikemesh/ridemesh/beta/BetaWindow.kt
+          test "$(grep -c 'private val nodeId' app/src/main/java/com/bikemesh/ridemesh/mesh/MeshNode.kt)" -eq 1
+          test "$(grep -c 'private val nodeId' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt)" -eq 1
 
       - name: Unit tests and Kotlin compile
         run: gradle --no-daemon testDebugUnitTest
