@@ -1,89 +1,403 @@
 from pathlib import Path
-import re
 
-root=Path('.')
+root = Path(".")
+layout_path = root / "app/src/main/res/layout/activity_main.xml"
+activity_path = root / "app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt"
+build_path = root / "app/build.gradle.kts"
 
-# Idempotent: once CI has persisted the generated Beta2 source, future runs only validate/build it.
-build_probe = (root/'app/build.gradle.kts').read_text()
-layout_probe = (root/'app/src/main/res/layout/activity_main.xml').read_text()
-if 'versionName = "1.0.0-beta2"' in build_probe and 'android:id="@+id/activeMute"' in layout_probe and (root/'app/src/main/java/com/bikemesh/ridemesh/beta/BetaWindow.kt').exists():
-    print('RideMesh Beta2 patch already applied; nothing to change.')
-    raise SystemExit(0)
+build_text = build_path.read_text()
+layout = layout_path.read_text()
+activity = activity_path.read_text()
 
-# build.gradle.kts version bump
-p=root/'app/build.gradle.kts'
-s=p.read_text()
-s=s.replace('versionCode = 1\n        versionName = "1.0.0-beta"','versionCode = 2\n        versionName = "1.0.0-beta2"')
-p.write_text(s)
+if 'versionName = "1.0.0-beta2"' not in build_text:
+    raise SystemExit("Expected RideMesh 1.0.0-beta2 source before applying approved UI")
+if 'android:id="@+id/activeMute"' not in layout:
+    raise SystemExit("Expected Beta2 mute control before applying approved UI")
 
-# AudioEngine: user mute state and behavior
-p=root/'app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt'
-s=p.read_text()
-s=s.replace('    private val focusHeld = AtomicBoolean(false)\n', '    private val focusHeld = AtomicBoolean(false)\n    private val userMuted = AtomicBoolean(false)\n')
-s=s.replace('    fun setRoute(newRoute: AudioRoute) {\n        route = newRoute\n    }\n', '''    fun setRoute(newRoute: AudioRoute) {\n        route = newRoute\n    }\n\n    fun setUserMuted(muted: Boolean) {\n        userMuted.set(muted)\n        if (muted) {\n            onStatus("MIC MUTED • LISTENING ONLY")\n        } else {\n            onStatus("HANDS-FREE • MIC LIVE")\n        }\n    }\n\n    fun isUserMuted(): Boolean = userMuted.get()\n''')
-old='''                        val speechThreshold = if (farEndAudioActive) echoThreshold else normalThreshold\n                        val speech = rms >= speechThreshold\n\n                        // Do not learn loud far-end playback as the new road-noise floor.\n'''
-new='''                        val speechThreshold = if (farEndAudioActive) echoThreshold else normalThreshold\n                        val speech = rms >= speechThreshold\n\n                        // A manual mute keeps the recorder alive for instant recovery but sends no frames.\n                        // Clear pre-roll/hangover so speech recorded while muted can never leak after unmuting.\n                        if (userMuted.get()) {\n                            preRoll.clear()\n                            hangover = 0\n                            wasSending = false\n                            if (!farEndAudioActive) {\n                                noiseFloor = (noiseFloor * 0.985) + (rms * 0.015)\n                            }\n                            continue\n                        }\n\n                        // Do not learn loud far-end playback as the new road-noise floor.\n'''
-if old not in s: raise SystemExit('AudioEngine insertion anchor not found')
-s=s.replace(old,new)
-p.write_text(s)
+def replace_once(text: str, old: str, new: str, label: str) -> str:
+    if new in text:
+        return text
+    if old not in text:
+        raise SystemExit(f"{label} anchor not found")
+    return text.replace(old, new, 1)
 
-# MainActivity modifications
-p=root/'app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt'
-s=p.read_text()
-s=s.replace('import android.content.ClipData\n', 'import android.content.ClipData\nimport android.content.res.ColorStateList\n')
-s=s.replace('import com.bikemesh.ridemesh.audio.AudioEngine\n', 'import com.bikemesh.ridemesh.audio.AudioEngine\nimport com.bikemesh.ridemesh.beta.BetaWindow\n')
-s=s.replace('    private var lastMeshRefreshMs = 0L\n', '    private var lastMeshRefreshMs = 0L\n    private var micMuted = false\n    private var betaExpiredDialogShown = false\n')
-s=s.replace('''        override fun run() {\n            if (!rideStarted) return\n\n            val now = System.currentTimeMillis()\n''','''        override fun run() {\n            if (!rideStarted) return\n            if (isBetaExpired()) {\n                expireActiveRide()\n                return\n            }\n\n            val now = System.currentTimeMillis()\n''')
-s=s.replace('''        restoreSettings()\n\n        meshNode = MeshNode(applicationContext, this)\n''','''        restoreSettings()\n        ensureBetaFirstLaunch()\n\n        meshNode = MeshNode(applicationContext, this)\n''')
-s=s.replace('''        binding.createRide.setOnClickListener {\n            binding.setupTitle.text = "CREATE RIDE"\n''','''        binding.createRide.setOnClickListener {\n            if (!ensureBetaUsable()) return@setOnClickListener\n            binding.setupTitle.text = "CREATE RIDE"\n''')
-s=s.replace('''        binding.joinRide.setOnClickListener {\n            binding.setupTitle.text = "JOIN RIDE"\n''','''        binding.joinRide.setOnClickListener {\n            if (!ensureBetaUsable()) return@setOnClickListener\n            binding.setupTitle.text = "JOIN RIDE"\n''')
-s=s.replace('''        binding.activeStop.setOnClickListener { confirmStopRide() }\n        binding.activeRiders.setOnClickListener { showRidersDialog() }\n''','''        binding.activeStop.setOnClickListener { confirmStopRide() }\n        binding.activeMute.setOnClickListener { setMicMuted(!micMuted) }\n        binding.activeRiders.setOnClickListener { showRidersDialog() }\n''')
-s=s.replace('''        binding.showQr.setOnClickListener { showRideQr() }\n        binding.scanQr.setOnClickListener { scanRideQr() }\n    }\n\n    private fun showScreen(screen: Screen) {\n''','''        binding.showQr.setOnClickListener { showRideQr() }\n        binding.scanQr.setOnClickListener { scanRideQr() }\n\n        refreshBetaAccessUi(showWarning = true)\n        updateMuteUi()\n    }\n\n    private fun showScreen(screen: Screen) {\n''')
-s=s.replace('''    private fun ensurePermissionsAndRun(action: PendingAction) {\n        val missing = requiredPermissions().filter {\n''','''    private fun ensurePermissionsAndRun(action: PendingAction) {\n        if (action == PendingAction.START_RIDE && !ensureBetaUsable()) return\n        val missing = requiredPermissions().filter {\n''')
-s=s.replace('''    private fun startRideNow() {\n        if (rideStarted) return\n\n        val rider =''','''    private fun startRideNow() {\n        if (rideStarted || !ensureBetaUsable()) return\n\n        setMicMuted(false)\n        val rider =''')
-s=s.replace('''        speakingUntilMs.clear()\n        log("Ride stopped")\n        showScreen(Screen.HOME)\n    }\n''','''        speakingUntilMs.clear()\n        setMicMuted(false)\n        log("Ride stopped")\n        showScreen(Screen.HOME)\n        refreshBetaAccessUi(showWarning = false)\n    }\n''')
-old='''    private fun updateAudioUi(text: String) {\n        binding.audioStatus.text = text\n        binding.homeAudioStatus.text = when {\n            text.contains("Bluetooth", true) || text.contains("headset", true) -> "Helmet audio • noise reduction ready"\n            text.contains("sleep", true) || text.contains("Reconnect", true) || text.contains("Waiting", true) -> "Audio waiting for connection"\n            else -> "Phone audio • noise reduction ready"\n        }\n\n        binding.audioTile.text = when {\n            text.contains("Bluetooth", true) || text.contains("headset", true) -> "HELMET AUDIO"\n            text.contains("sleep", true) || text.contains("Reconnect", true) || text.contains("Waiting", true) -> "MIC STANDBY"\n            else -> "VOICE CLEAN"\n        }\n    }\n'''
-new='''    private fun updateAudioUi(text: String) {\n        binding.audioStatus.text = if (micMuted) "MIC MUTED • LISTENING ONLY" else text\n        binding.homeAudioStatus.text = when {\n            micMuted -> "Microphone muted • incoming voice remains active"\n            text.contains("Bluetooth", true) || text.contains("headset", true) -> "Helmet audio • noise reduction ready"\n            text.contains("sleep", true) || text.contains("Reconnect", true) || text.contains("Waiting", true) -> "Audio waiting for connection"\n            else -> "Phone audio • noise reduction ready"\n        }\n\n        binding.audioTile.text = when {\n            micMuted -> "MIC MUTED"\n            text.contains("Bluetooth", true) || text.contains("headset", true) -> "HELMET AUDIO"\n            text.contains("sleep", true) || text.contains("Reconnect", true) || text.contains("Waiting", true) -> "MIC STANDBY"\n            else -> "VOICE CLEAN"\n        }\n    }\n\n    private fun setMicMuted(muted: Boolean) {\n        micMuted = muted\n        if (::audioEngine.isInitialized) audioEngine.setUserMuted(muted)\n        if (::binding.isInitialized) updateMuteUi()\n    }\n\n    private fun updateMuteUi() {\n        val color = ContextCompat.getColor(this, if (micMuted) R.color.danger else R.color.panel2)\n        val stroke = ContextCompat.getColor(this, if (micMuted) R.color.danger else R.color.accent)\n        binding.activeMute.text = if (micMuted) "MIC MUTED" else "MUTE MIC"\n        binding.activeMute.backgroundTintList = ColorStateList.valueOf(color)\n        binding.activeMute.strokeColor = ColorStateList.valueOf(stroke)\n        binding.activeMute.setTextColor(ContextCompat.getColor(this, R.color.white))\n    }\n'''
-if old not in s: raise SystemExit('updateAudioUi anchor not found')
-s=s.replace(old,new)
-s=s.replace('''                "Noise reduction is always enabled for group voice. Battery Smart keeps local mesh warm during handover, then saves power when Internet is stable.\\n\\n" +\n                    "Bug reports: WhatsApp group or direct support +91 9188664823."\n''','''                "Noise reduction is always enabled for group voice. Battery Smart keeps local mesh warm during handover, then saves power when Internet is stable.\\n\\n" +\n                    betaStatusSentence() + "\\n\\n" +\n                    "Bug reports: WhatsApp group or direct support +91 9188664823."\n''')
-anchor='''    private fun showRideStatusDialog() {\n'''
-beta_funcs='''    private fun ensureBetaFirstLaunch(): Long {\n        val existing = prefs.getLong(BETA_FIRST_LAUNCH_KEY, 0L)\n        if (existing > 0L) return existing\n        val now = System.currentTimeMillis()\n        prefs.edit().putLong(BETA_FIRST_LAUNCH_KEY, now).apply()\n        return now\n    }\n\n    private fun betaFirstLaunchMs(): Long = ensureBetaFirstLaunch()\n\n    private fun betaRemainingDays(nowMs: Long = System.currentTimeMillis()): Long =\n        BetaWindow.remainingDays(betaFirstLaunchMs(), nowMs)\n\n    private fun isBetaExpired(nowMs: Long = System.currentTimeMillis()): Boolean =\n        BetaWindow.isExpired(betaFirstLaunchMs(), nowMs)\n\n    private fun betaStatusSentence(): String {\n        val days = betaRemainingDays()\n        return if (days <= 0L) {\n            "Beta access: expired"\n        } else {\n            "Beta access: $days day${if (days == 1L) "" else "s"} remaining"\n        }\n    }\n\n    private fun refreshBetaAccessUi(showWarning: Boolean) {\n        val days = betaRemainingDays()\n        val expired = days <= 0L\n        binding.betaExpiryStatus.text = if (expired) {\n            "BETA PERIOD ENDED • UPDATE REQUIRED"\n        } else {\n            "BETA ACCESS • $days DAY${if (days == 1L) "" else "S"} REMAINING"\n        }\n        binding.betaExpiryStatus.setTextColor(\n            ContextCompat.getColor(this, if (expired || days <= 3L) R.color.danger else if (days <= 14L) R.color.amber else R.color.accent)\n        )\n        binding.createRide.isEnabled = !expired\n        binding.joinRide.isEnabled = !expired\n        binding.startRide.isEnabled = !expired\n        binding.findNearby.isEnabled = !expired\n\n        if (expired) {\n            showBetaExpiredDialog()\n        } else if (showWarning) {\n            maybeShowBetaWarning(days)\n        }\n    }\n\n    private fun ensureBetaUsable(): Boolean {\n        if (!isBetaExpired()) return true\n        refreshBetaAccessUi(showWarning = false)\n        return false\n    }\n\n    private fun maybeShowBetaWarning(days: Long) {\n        val bucket = BetaWindow.warningBucket(days) ?: return\n        val lastBucket = prefs.getInt(BETA_WARNING_BUCKET_KEY, 0)\n        if (lastBucket == bucket) return\n        prefs.edit().putInt(BETA_WARNING_BUCKET_KEY, bucket).apply()\n        AlertDialog.Builder(this)\n            .setTitle("RideMesh Beta • $days day${if (days == 1L) "" else "s"} left")\n            .setMessage("This tester build expires 60 days after its first launch. Install the latest RideMesh build before the timer reaches zero.")\n            .setPositiveButton("OK", null)\n            .show()\n    }\n\n    private fun showBetaExpiredDialog() {\n        if (betaExpiredDialogShown || isFinishing || isDestroyed) return\n        betaExpiredDialogShown = true\n        AlertDialog.Builder(this)\n            .setTitle("BETA PERIOD ENDED")\n            .setMessage("This RideMesh Beta build has reached its 60-day test limit. Ride creation and joining are disabled. Please install the latest RideMesh version.")\n            .setPositiveButton("OK", null)\n            .setOnDismissListener { betaExpiredDialogShown = false }\n            .show()\n    }\n\n    private fun expireActiveRide() {\n        if (!rideStarted) {\n            refreshBetaAccessUi(showWarning = false)\n            return\n        }\n        stopRide()\n        showBetaExpiredDialog()\n    }\n\n'''
-if anchor not in s: raise SystemExit('status dialog anchor missing')
-s=s.replace(anchor,beta_funcs+anchor)
-s=s.replace('''                    "Audio: ${binding.audioTile.text}\\n" +\n                    "Noise reduction: ON\\n" +\n''','''                    "Audio: ${binding.audioTile.text}\\n" +\n                    "Microphone: ${if (micMuted) "MUTED" else "LIVE"}\\n" +\n                    "Noise reduction: ON\\n" +\n''')
-s=s.replace('''                    "Auto reconnect: ON\\n\\n" +\n                    "INVITE can add more riders without stopping the current call."\n''','''                    "Auto reconnect: ON\\n" +\n                    betaStatusSentence() + "\\n\\n" +\n                    "INVITE can add more riders without stopping the current call."\n''')
-s=s.replace('''        private const val LOCAL_MESH_REFRESH_MS = 25_000L\n''','''        private const val LOCAL_MESH_REFRESH_MS = 25_000L\n        private const val BETA_FIRST_LAUNCH_KEY = "beta_first_launch_ms_v2"\n        private const val BETA_WARNING_BUCKET_KEY = "beta_warning_bucket_v2"\n''')
-p.write_text(s)
+# HOME — match the approved black/cyan reference more closely.
+layout = replace_once(
+    layout,
+    'android:text="Talk naturally while you ride. RideMesh uses Internet for distance and local mesh as the fallback when coverage disappears."',
+    'android:text="RideMesh uses the Internet for long-distance connectivity and automatically switches to local mesh when you’re out of coverage."',
+    "home hero description",
+)
 
-# Layout: make both landing actions match the reference and add beta countdown + prominent mute.
-p=root/'app/src/main/res/layout/activity_main.xml'
-s=p.read_text()
-s=s.replace('''                <com.google.android.material.button.MaterialButton\n                    android:id="@+id/createRide"\n                    android:layout_width="0dp"\n''','''                <com.google.android.material.button.MaterialButton\n                    android:id="@+id/createRide"\n                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"\n                    android:layout_width="0dp"\n''')
-s=s.replace('''                    android:text="CREATE A RIDE"\n                    android:textColor="#00201D"\n''','''                    android:text="CREATE A RIDE"\n                    android:textColor="@color/accent"\n''')
-s=s.replace('''                    app:backgroundTint="@color/accent"\n                    app:cornerRadius="16dp"\n                    app:icon="@drawable/ic_add_ride"\n                    app:iconGravity="textStart"\n                    app:iconPadding="6dp"\n                    app:iconTint="#00201D" />\n''','''                    app:backgroundTint="@android:color/transparent"\n                    app:cornerRadius="16dp"\n                    app:icon="@drawable/ic_add_ride"\n                    app:iconGravity="textStart"\n                    app:iconPadding="6dp"\n                    app:iconTint="@color/accent"\n                    app:strokeColor="@color/accent"\n                    app:strokeWidth="1dp" />\n''',1)
-join_marker='''                    android:textStyle="bold"\n                    app:cornerRadius="16dp"\n                    app:icon="@drawable/ic_join_ride"\n'''
-s=s.replace(join_marker,'''                    android:textStyle="bold"\n                    app:backgroundTint="@android:color/transparent"\n                    app:cornerRadius="16dp"\n                    app:icon="@drawable/ic_join_ride"\n''',1)
-anchor='''                <TextView\n                    android:id="@+id/homeAudioStatus"\n                    android:layout_width="match_parent"\n                    android:layout_height="wrap_content"\n                    android:layout_marginTop="7dp"\n                    android:text="Phone audio ready • helmet optional"\n                    android:textColor="@color/white_soft"\n                    android:textSize="12sp" />\n                <View\n'''
-repl='''                <TextView\n                    android:id="@+id/homeAudioStatus"\n                    android:layout_width="match_parent"\n                    android:layout_height="wrap_content"\n                    android:layout_marginTop="7dp"\n                    android:text="Phone audio ready • helmet optional"\n                    android:textColor="@color/white_soft"\n                    android:textSize="12sp" />\n\n                <TextView\n                    android:id="@+id/betaExpiryStatus"\n                    android:layout_width="match_parent"\n                    android:layout_height="wrap_content"\n                    android:layout_marginTop="8dp"\n                    android:text="BETA ACCESS • 60 DAYS REMAINING"\n                    android:textColor="@color/accent"\n                    android:textSize="10sp"\n                    android:textStyle="bold" />\n                <View\n'''
-if anchor not in s: raise SystemExit('beta status layout anchor missing')
-s=s.replace(anchor,repl)
-s=s.replace('''            android:paddingStart="16dp"\n            android:paddingEnd="8dp">\n''','''            android:paddingStart="12dp"\n            android:paddingEnd="6dp">\n''',1)
-s=s.replace('''                    android:text="HANDS-FREE INTERCOM"\n                    android:textColor="@color/white"\n                    android:textSize="9.5sp"\n''','''                    android:text="HANDS-FREE INTERCOM"\n                    android:textColor="@color/white"\n                    android:textSize="8.5sp"\n''',1)
-anchor='''            </LinearLayout>\n\n            <View\n                android:layout_width="1dp"\n                android:layout_height="46dp"\n                android:layout_marginHorizontal="8dp"\n                android:background="@color/border_strong" />\n\n            <TextView\n                android:id="@+id/activeRideCode"\n                android:layout_width="78dp"\n'''
-repl='''            </LinearLayout>\n\n            <com.google.android.material.button.MaterialButton\n                android:id="@+id/activeMute"\n                style="@style/Widget.MaterialComponents.Button.OutlinedButton"\n                android:layout_width="74dp"\n                android:layout_height="52dp"\n                android:minWidth="0dp"\n                android:paddingStart="4dp"\n                android:paddingEnd="4dp"\n                android:text="MUTE MIC"\n                android:textColor="@color/white"\n                android:textSize="8.5sp"\n                android:textStyle="bold"\n                app:backgroundTint="@color/panel2"\n                app:cornerRadius="13dp"\n                app:strokeColor="@color/accent"\n                app:strokeWidth="1dp" />\n\n            <View\n                android:layout_width="1dp"\n                android:layout_height="46dp"\n                android:layout_marginHorizontal="4dp"\n                android:background="@color/border_strong" />\n\n            <TextView\n                android:id="@+id/activeRideCode"\n                android:layout_width="62dp"\n'''
-if anchor not in s: raise SystemExit('live panel mute anchor missing')
-s=s.replace(anchor,repl)
-s=s.replace('''                android:layout_marginHorizontal="5dp"\n''','''                android:layout_marginHorizontal="3dp"\n''',1)
-s=s.replace('''                android:layout_width="64dp"\n                android:layout_height="54dp"\n''','''                android:layout_width="52dp"\n                android:layout_height="54dp"\n''',1)
-p.write_text(s)
+layout = replace_once(
+    layout,
+    '''                    android:text="JOIN A RIDE"
+                    android:textColor="@color/white"
+                    android:textSize="11sp"''',
+    '''                    android:text="JOIN A RIDE"
+                    android:textColor="@color/accent"
+                    android:textSize="11sp"''',
+    "join ride cyan label",
+)
 
-beta_dir=root/'app/src/main/java/com/bikemesh/ridemesh/beta'
-beta_dir.mkdir(parents=True,exist_ok=True)
-(beta_dir/'BetaWindow.kt').write_text('''package com.bikemesh.ridemesh.beta\n\nobject BetaWindow {\n    const val DURATION_DAYS = 60L\n    const val DAY_MS = 24L * 60L * 60L * 1000L\n    const val DURATION_MS = DURATION_DAYS * DAY_MS\n\n    fun expiresAt(firstLaunchMs: Long): Long = firstLaunchMs + DURATION_MS\n\n    fun isExpired(firstLaunchMs: Long, nowMs: Long): Boolean =\n        firstLaunchMs > 0L && nowMs >= expiresAt(firstLaunchMs)\n\n    fun remainingDays(firstLaunchMs: Long, nowMs: Long): Long {\n        if (firstLaunchMs <= 0L) return DURATION_DAYS\n        val remainingMs = expiresAt(firstLaunchMs) - nowMs\n        if (remainingMs <= 0L) return 0L\n        return (remainingMs + DAY_MS - 1L) / DAY_MS\n    }\n\n    fun warningBucket(daysRemaining: Long): Int? = when {\n        daysRemaining <= 0L -> null\n        daysRemaining <= 1L -> 1\n        daysRemaining <= 3L -> 3\n        daysRemaining <= 7L -> 7\n        daysRemaining <= 14L -> 14\n        else -> null\n    }\n}\n''')
+# Add the short cyan underline beneath the hero title, as in the approved reference.
+hero_title_end = '''                    android:textColor="@color/white"
+                    android:textSize="31sp"
+                    android:textStyle="bold" />
 
-test_dir=root/'app/src/test/java/com/bikemesh/ridemesh/beta'
-test_dir.mkdir(parents=True,exist_ok=True)
-(test_dir/'BetaWindowTest.kt').write_text('''package com.bikemesh.ridemesh.beta\n\nimport org.junit.Assert.assertEquals\nimport org.junit.Assert.assertFalse\nimport org.junit.Assert.assertNull\nimport org.junit.Assert.assertTrue\nimport org.junit.Test\n\nclass BetaWindowTest {\n    private val start = 1_700_000_000_000L\n\n    @Test fun startsWithSixtyDays() {\n        assertEquals(60L, BetaWindow.remainingDays(start, start))\n        assertFalse(BetaWindow.isExpired(start, start))\n    }\n\n    @Test fun expiresAtExactlySixtyDays() {\n        val expiry = start + BetaWindow.DURATION_MS\n        assertEquals(0L, BetaWindow.remainingDays(start, expiry))\n        assertTrue(BetaWindow.isExpired(start, expiry))\n    }\n\n    @Test fun partialDayRoundsUpForUserCountdown() {\n        val now = start + 59L * BetaWindow.DAY_MS + 1L\n        assertEquals(1L, BetaWindow.remainingDays(start, now))\n    }\n\n    @Test fun warningBucketsMatchReleasePlan() {\n        assertEquals(14, BetaWindow.warningBucket(14))\n        assertEquals(7, BetaWindow.warningBucket(7))\n        assertEquals(3, BetaWindow.warningBucket(3))\n        assertEquals(1, BetaWindow.warningBucket(1))\n        assertNull(BetaWindow.warningBucket(15))\n        assertNull(BetaWindow.warningBucket(0))\n    }\n}\n''')
+                <TextView
+                    android:layout_width="match_parent"'''
+hero_title_new = '''                    android:textColor="@color/white"
+                    android:textSize="34sp"
+                    android:textStyle="bold" />
 
-print('RideMesh Beta2 UI/mute/expiry patch applied')
+                <View
+                    android:layout_width="34dp"
+                    android:layout_height="2dp"
+                    android:layout_marginTop="14dp"
+                    android:background="@color/accent" />
+
+                <TextView
+                    android:layout_width="match_parent"'''
+layout = replace_once(layout, hero_title_end, hero_title_new, "hero underline")
+
+# Replace the old status card with the approved READY TO RIDE three-column panel.
+status_start = layout.find('''            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="22dp"
+                android:background="@drawable/status_card_bg"
+                android:orientation="vertical"
+                android:padding="18dp">
+
+                <TextView
+                    android:id="@+id/homeNetworkStatus"''')
+footer_start = layout.find('''            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:gravity="center"
+                android:lineSpacingExtra="2dp"
+                android:text="Configure while stopped''')
+if status_start < 0 or footer_start < 0 or footer_start <= status_start:
+    raise SystemExit("READY TO RIDE card anchors not found")
+
+new_status = '''            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="22dp"
+                android:background="@drawable/status_card_bg"
+                android:orientation="vertical"
+                android:paddingStart="18dp"
+                android:paddingTop="18dp"
+                android:paddingEnd="18dp"
+                android:paddingBottom="16dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-condensed"
+                    android:letterSpacing="0.04"
+                    android:text="READY TO RIDE"
+                    android:textColor="@color/white"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <View
+                    android:layout_width="26dp"
+                    android:layout_height="2dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@color/accent" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:gravity="center"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:gravity="center"
+                        android:orientation="vertical"
+                        android:paddingHorizontal="4dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="≋"
+                            android:textColor="@color/accent"
+                            android:textSize="29sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="HYBRID"
+                            android:textColor="@color/accent"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/homeNetworkStatus"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:gravity="center"
+                            android:lineSpacingExtra="1dp"
+                            android:text="Internet + Mesh\nReady"
+                            android:textColor="@color/white_soft"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="1dp"
+                        android:layout_height="88dp"
+                        android:background="@color/border_strong" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:gravity="center"
+                        android:orientation="vertical"
+                        android:paddingHorizontal="4dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="◖"
+                            android:textColor="@color/accent"
+                            android:textSize="29sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="HELMET"
+                            android:textColor="@color/accent"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/homeAudioStatus"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:gravity="center"
+                            android:lineSpacingExtra="1dp"
+                            android:text="Bluetooth\nReady"
+                            android:textColor="@color/white_soft"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="1dp"
+                        android:layout_height="88dp"
+                        android:background="@color/border_strong" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:gravity="center"
+                        android:orientation="vertical"
+                        android:paddingHorizontal="4dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="ϟ"
+                            android:textColor="@color/accent"
+                            android:textSize="31sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="SMART POWER"
+                            android:textColor="@color/accent"
+                            android:textSize="11sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:gravity="center"
+                            android:lineSpacingExtra="1dp"
+                            android:text="Optimized\nExtended Battery"
+                            android:textColor="@color/white_soft"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/betaExpiryStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:gravity="center"
+                android:text="BETA ACCESS • 60 DAYS REMAINING"
+                android:textColor="@color/accent"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+'''
+layout = layout[:status_start] + new_status + layout[footer_start:]
+layout = layout.replace(
+    'android:layout_marginTop="16dp"\n                android:gravity="center"\n                android:lineSpacingExtra="2dp"\n                android:text="Configure while stopped',
+    'android:layout_marginTop="8dp"\n                android:gravity="center"\n                android:lineSpacingExtra="2dp"\n                android:text="Configure while stopped',
+    1,
+)
+
+# ACTIVE RIDE — preserve functionality while matching the reference scale/hierarchy.
+layout = replace_once(
+    layout,
+    '''        <ImageView
+            android:layout_width="224dp"
+            android:layout_height="68dp"''',
+    '''        <ImageView
+            android:layout_width="244dp"
+            android:layout_height="72dp"''',
+    "active logo size",
+)
+layout = replace_once(
+    layout,
+    '''            android:text="RIDE ACTIVE"
+            android:textColor="@color/white"
+            android:textSize="22sp"''',
+    '''            android:text="RIDE ACTIVE"
+            android:textColor="@color/white"
+            android:textSize="28sp"''',
+    "ride active title size",
+)
+layout = replace_once(
+    layout,
+    '''            android:text="CONNECTING…"
+            android:textColor="@color/accent"
+            android:textSize="11sp"''',
+    '''            android:text="CONNECTING…"
+            android:textColor="@color/accent"
+            android:textSize="12sp"''',
+    "mesh status size",
+)
+layout = replace_once(
+    layout,
+    '''            android:layout_height="76dp"
+            android:layout_marginTop="10dp"''',
+    '''            android:layout_height="82dp"
+            android:layout_marginTop="12dp"''',
+    "live panel size",
+)
+layout = replace_once(
+    layout,
+    '''                android:layout_width="74dp"
+                android:layout_height="52dp"''',
+    '''                android:layout_width="68dp"
+                android:layout_height="52dp"''',
+    "mute button width",
+)
+layout = replace_once(
+    layout,
+    '''            android:layout_marginTop="8dp"
+            android:layout_weight="1"''',
+    '''            android:layout_marginTop="10dp"
+            android:layout_weight="1"''',
+    "rider grid top spacing",
+)
+
+# MAIN ACTIVITY — keep the title fixed and enlarge rider avatars like the approved active screen.
+activity = activity.replace(
+    '''            internetNode.isConnected() -> {
+                val total = internetPeerCount + 1
+                binding.networkTile.text = "INTERNET"
+                binding.riderCount.text = if (internetPeerCount > 0) "$total RIDERS CONNECTED" else "RIDE ACTIVE"''',
+    '''            internetNode.isConnected() -> {
+                binding.networkTile.text = "INTERNET"
+                binding.riderCount.text = "RIDE ACTIVE"''',
+    1,
+)
+activity = activity.replace(
+    '''            directPeerCount > 0 -> {
+                val total = directPeerCount + 1
+                binding.networkTile.text = "LOCAL MESH"
+                binding.riderCount.text = "$total RIDERS NEARBY"''',
+    '''            directPeerCount > 0 -> {
+                binding.networkTile.text = "LOCAL MESH"
+                binding.riderCount.text = "RIDE ACTIVE"''',
+    1,
+)
+activity = activity.replace(
+    '''            else -> {
+                binding.networkTile.text = "SEARCHING"
+                binding.riderCount.text = "RECONNECTING…"''',
+    '''            else -> {
+                binding.networkTile.text = "SEARCHING"
+                binding.riderCount.text = "RIDE ACTIVE"''',
+    1,
+)
+
+activity = activity.replace(
+    '''        binding.homeNetworkStatus.text = when {
+            internetNode.isConnected() -> "●  INTERNET VOICE ACTIVE"
+            directPeerCount > 0 -> "●  LOCAL MESH ACTIVE"
+            else -> "●  READY TO RIDE"
+        }''',
+    '''        binding.homeNetworkStatus.text = when {
+            internetNode.isConnected() -> "Internet Voice\\nActive"
+            directPeerCount > 0 -> "Local Mesh\\nActive"
+            else -> "Internet + Mesh\\nReady"
+        }''',
+    1,
+)
+activity = activity.replace(
+    'binding.homeNetworkStatus.text = "●  READY TO RIDE"',
+    'binding.homeNetworkStatus.text = "Internet + Mesh\\nReady"',
+    1,
+)
+
+activity = activity.replace(
+    '''        binding.homeAudioStatus.text = when {
+            micMuted -> "Microphone muted • incoming voice remains active"
+            text.contains("Bluetooth", true) || text.contains("headset", true) -> "Helmet audio • noise reduction ready"
+            text.contains("sleep", true) || text.contains("Reconnect", true) || text.contains("Waiting", true) -> "Audio waiting for connection"
+            else -> "Phone audio • noise reduction ready"
+        }''',
+    '''        binding.homeAudioStatus.text = when {
+            micMuted -> "Listening Only\\nMic Muted"
+            text.contains("Bluetooth", true) || text.contains("headset", true) -> "Connected\\nHelmet Audio"
+            text.contains("sleep", true) || text.contains("Reconnect", true) || text.contains("Waiting", true) -> "Audio Link\\nWaiting"
+            else -> "Phone Audio\\nReady"
+        }''',
+    1,
+)
+
+activity = activity.replace('height = dp(108)', 'height = dp(136)', 1)
+activity = activity.replace('textSize = 22f', 'textSize = 30f', 1)
+activity = activity.replace(
+    'card.addView(avatar, LinearLayout.LayoutParams(dp(52), dp(52)))',
+    'card.addView(avatar, LinearLayout.LayoutParams(dp(72), dp(72)))',
+    1,
+)
+activity = activity.replace('textSize = 10.5f', 'textSize = 14.5f', 1)
+activity = activity.replace(
+    'LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(21))',
+    'LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(26))',
+    1,
+)
+activity = activity.replace('topMargin = dp(3)', 'topMargin = dp(5)', 1)
+activity = activity.replace('textSize = 9.5f', 'textSize = 11.5f', 1)
+activity = activity.replace(
+    'LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(18))',
+    'LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(20))',
+    1,
+)
+
+layout_path.write_text(layout)
+activity_path.write_text(activity)
+
+print("Applied approved RideMesh black/cyan reference UI refinements.")
