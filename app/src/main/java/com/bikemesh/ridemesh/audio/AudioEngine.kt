@@ -39,6 +39,7 @@ class AudioEngine(
     private val transmitDesired = AtomicBoolean(false)
     private val focusPaused = AtomicBoolean(false)
     private val focusHeld = AtomicBoolean(false)
+    private val userMuted = AtomicBoolean(false)
 
     /**
      * Incoming audio is kept per remote rider and mixed into one 20 ms output frame.
@@ -137,6 +138,17 @@ class AudioEngine(
     fun setRoute(newRoute: AudioRoute) {
         route = newRoute
     }
+
+    fun setUserMuted(muted: Boolean) {
+        userMuted.set(muted)
+        if (muted) {
+            onStatus("MIC MUTED • LISTENING ONLY")
+        } else {
+            onStatus("HANDS-FREE • MIC LIVE")
+        }
+    }
+
+    fun isUserMuted(): Boolean = userMuted.get()
 
     @SuppressLint("MissingPermission")
     fun selectCommunicationDevice(): String {
@@ -273,6 +285,18 @@ class AudioEngine(
                         }
                         val speechThreshold = if (farEndAudioActive) echoThreshold else normalThreshold
                         val speech = rms >= speechThreshold
+
+                        // A manual mute keeps the recorder alive for instant recovery but sends no frames.
+                        // Clear pre-roll/hangover so speech recorded while muted can never leak after unmuting.
+                        if (userMuted.get()) {
+                            preRoll.clear()
+                            hangover = 0
+                            wasSending = false
+                            if (!farEndAudioActive) {
+                                noiseFloor = (noiseFloor * 0.985) + (rms * 0.015)
+                            }
+                            continue
+                        }
 
                         // Do not learn loud far-end playback as the new road-noise floor.
                         if (!speech && !farEndAudioActive) {

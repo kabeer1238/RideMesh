@@ -103,20 +103,23 @@ ONE CHANNEL."
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/createRide"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                     android:layout_width="0dp"
                     android:layout_height="58dp"
                     android:layout_marginEnd="6dp"
                     android:layout_weight="1"
                     android:text="CREATE A RIDE"
-                    android:textColor="#00201D"
+                    android:textColor="@color/accent"
                     android:textSize="11sp"
                     android:textStyle="bold"
-                    app:backgroundTint="@color/accent"
+                    app:backgroundTint="@android:color/transparent"
                     app:cornerRadius="16dp"
                     app:icon="@drawable/ic_add_ride"
                     app:iconGravity="textStart"
                     app:iconPadding="6dp"
-                    app:iconTint="#00201D" />
+                    app:iconTint="@color/accent"
+                    app:strokeColor="@color/accent"
+                    app:strokeWidth="1dp" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/joinRide"
@@ -129,6 +132,7 @@ ONE CHANNEL."
                     android:textColor="@color/white"
                     android:textSize="11sp"
                     android:textStyle="bold"
+                    app:backgroundTint="@android:color/transparent"
                     app:cornerRadius="16dp"
                     app:icon="@drawable/ic_join_ride"
                     app:iconGravity="textStart"
@@ -162,6 +166,16 @@ ONE CHANNEL."
                     android:text="Phone audio ready • helmet optional"
                     android:textColor="@color/white_soft"
                     android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/betaExpiryStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="BETA ACCESS • 60 DAYS REMAINING"
+                    android:textColor="@color/accent"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
                 <View
                     android:layout_width="match_parent"
                     android:layout_height="1dp"
@@ -555,8 +569,8 @@ ONE CHANNEL."
             android:background="@drawable/live_panel_bg"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingStart="16dp"
-            android:paddingEnd="8dp">
+            android:paddingStart="12dp"
+            android:paddingEnd="6dp">
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -580,7 +594,7 @@ ONE CHANNEL."
                     android:layout_height="wrap_content"
                     android:text="HANDS-FREE INTERCOM"
                     android:textColor="@color/white"
-                    android:textSize="9.5sp"
+                    android:textSize="8.5sp"
                     android:textStyle="bold" />
 
                 <TextView
@@ -595,15 +609,32 @@ ONE CHANNEL."
                     android:textSize="7.5sp" />
             </LinearLayout>
 
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/activeMute"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="74dp"
+                android:layout_height="52dp"
+                android:minWidth="0dp"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:text="MUTE MIC"
+                android:textColor="@color/white"
+                android:textSize="8.5sp"
+                android:textStyle="bold"
+                app:backgroundTint="@color/panel2"
+                app:cornerRadius="13dp"
+                app:strokeColor="@color/accent"
+                app:strokeWidth="1dp" />
+
             <View
                 android:layout_width="1dp"
                 android:layout_height="46dp"
-                android:layout_marginHorizontal="8dp"
+                android:layout_marginHorizontal="4dp"
                 android:background="@color/border_strong" />
 
             <TextView
                 android:id="@+id/activeRideCode"
-                android:layout_width="78dp"
+                android:layout_width="62dp"
                 android:layout_height="match_parent"
                 android:gravity="center"
                 android:text="RM0000"
@@ -614,13 +645,13 @@ ONE CHANNEL."
             <View
                 android:layout_width="1dp"
                 android:layout_height="46dp"
-                android:layout_marginHorizontal="5dp"
+                android:layout_marginHorizontal="3dp"
                 android:background="@color/border_strong" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/activeStop"
                 style="@style/Widget.MaterialComponents.Button.TextButton"
-                android:layout_width="64dp"
+                android:layout_width="52dp"
                 android:layout_height="54dp"
                 android:minWidth="0dp"
                 android:text="END"

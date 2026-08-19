@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.bluetooth.BluetoothManager
 import android.content.ActivityNotFoundException
 import android.content.ClipData
+import android.content.res.ColorStateList
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -30,6 +31,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.bikemesh.ridemesh.audio.AudioEngine
+import com.bikemesh.ridemesh.beta.BetaWindow
 import com.bikemesh.ridemesh.audio.AudioRoute
 import com.bikemesh.ridemesh.databinding.ActivityMainBinding
 import com.bikemesh.ridemesh.mesh.LobbyNode
@@ -69,6 +71,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private var meshRunning = false
     private var internetConnectedSinceMs = 0L
     private var lastMeshRefreshMs = 0L
+    private var micMuted = false
+    private var betaExpiredDialogShown = false
 
     private enum class PendingAction { NONE, START_RIDE, FIND_RIDERS }
     private enum class Screen { HOME, SETUP, ACTIVE }
@@ -103,6 +107,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private val rideWatchdog = object : Runnable {
         override fun run() {
             if (!rideStarted) return
+            if (isBetaExpired()) {
+                expireActiveRide()
+                return
+            }
 
             val now = System.currentTimeMillis()
             if (internetNode.isConnected()) {
@@ -150,6 +158,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         restoreSettings()
+        ensureBetaFirstLaunch()
 
         meshNode = MeshNode(applicationContext, this)
         lobbyNode = LobbyNode(applicationContext, this)
@@ -166,12 +175,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         applyPowerUi()
 
         binding.createRide.setOnClickListener {
+            if (!ensureBetaUsable()) return@setOnClickListener
             binding.setupTitle.text = "CREATE RIDE"
             binding.rideCode.setText(generateRideCode())
             showScreen(Screen.SETUP)
         }
 
         binding.joinRide.setOnClickListener {
+            if (!ensureBetaUsable()) return@setOnClickListener
             binding.setupTitle.text = "JOIN RIDE"
             showScreen(Screen.SETUP)
             binding.rideCode.requestFocus()
@@ -184,6 +195,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
         binding.openSettings.setOnClickListener { showSettingsAndHelpDialog() }
         binding.activeStop.setOnClickListener { confirmStopRide() }
+        binding.activeMute.setOnClickListener { setMicMuted(!micMuted) }
         binding.activeRiders.setOnClickListener { showRidersDialog() }
         binding.activeInvite.setOnClickListener { showLiveInviteOptions() }
         binding.activeAudio.setOnClickListener { showAudioRouteDialog() }
@@ -209,6 +221,9 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
         binding.showQr.setOnClickListener { showRideQr() }
         binding.scanQr.setOnClickListener { scanRideQr() }
+
+        refreshBetaAccessUi(showWarning = true)
+        updateMuteUi()
     }
 
     private fun showScreen(screen: Screen) {
@@ -218,6 +233,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun ensurePermissionsAndRun(action: PendingAction) {
+        if (action == PendingAction.START_RIDE && !ensureBetaUsable()) return
         val missing = requiredPermissions().filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
@@ -404,8 +420,9 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }.getOrNull()
 
     private fun startRideNow() {
-        if (rideStarted) return
+        if (rideStarted || !ensureBetaUsable()) return
 
+        setMicMuted(false)
         val rider = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
         val code = normalizedRideCode()
         binding.riderName.setText(rider)
@@ -586,8 +603,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         binding.activeRiders.text = "RIDERS"
         binding.riderGrid.removeAllViews()
         speakingUntilMs.clear()
+        setMicMuted(false)
         log("Ride stopped")
         showScreen(Screen.HOME)
+        refreshBetaAccessUi(showWarning = false)
     }
 
     private fun applySelectedAudioRoute() {
@@ -602,18 +621,35 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun updateAudioUi(text: String) {
-        binding.audioStatus.text = text
+        binding.audioStatus.text = if (micMuted) "MIC MUTED • LISTENING ONLY" else text
         binding.homeAudioStatus.text = when {
+            micMuted -> "Microphone muted • incoming voice remains active"
             text.contains("Bluetooth", true) || text.contains("headset", true) -> "Helmet audio • noise reduction ready"
             text.contains("sleep", true) || text.contains("Reconnect", true) || text.contains("Waiting", true) -> "Audio waiting for connection"
             else -> "Phone audio • noise reduction ready"
         }
 
         binding.audioTile.text = when {
+            micMuted -> "MIC MUTED"
             text.contains("Bluetooth", true) || text.contains("headset", true) -> "HELMET AUDIO"
             text.contains("sleep", true) || text.contains("Reconnect", true) || text.contains("Waiting", true) -> "MIC STANDBY"
             else -> "VOICE CLEAN"
         }
+    }
+
+    private fun setMicMuted(muted: Boolean) {
+        micMuted = muted
+        if (::audioEngine.isInitialized) audioEngine.setUserMuted(muted)
+        if (::binding.isInitialized) updateMuteUi()
+    }
+
+    private fun updateMuteUi() {
+        val color = ContextCompat.getColor(this, if (micMuted) R.color.danger else R.color.panel2)
+        val stroke = ContextCompat.getColor(this, if (micMuted) R.color.danger else R.color.accent)
+        binding.activeMute.text = if (micMuted) "MIC MUTED" else "MUTE MIC"
+        binding.activeMute.backgroundTintList = ColorStateList.valueOf(color)
+        binding.activeMute.strokeColor = ColorStateList.valueOf(stroke)
+        binding.activeMute.setTextColor(ContextCompat.getColor(this, R.color.white))
     }
 
     private fun restoreSettings() {
@@ -1110,12 +1146,99 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             }
             .setMessage(
                 "Noise reduction is always enabled for group voice. Battery Smart keeps local mesh warm during handover, then saves power when Internet is stable.\n\n" +
+                    betaStatusSentence() + "\n\n" +
                     "Bug reports: WhatsApp group or direct support +91 9188664823."
             )
             .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
             .setNeutralButton("COMMUNITY") { _, _ -> openRideMeshCommunity() }
             .setNegativeButton("CLOSE", null)
             .show()
+    }
+
+    private fun ensureBetaFirstLaunch(): Long {
+        val existing = prefs.getLong(BETA_FIRST_LAUNCH_KEY, 0L)
+        if (existing > 0L) return existing
+        val now = System.currentTimeMillis()
+        prefs.edit().putLong(BETA_FIRST_LAUNCH_KEY, now).apply()
+        return now
+    }
+
+    private fun betaFirstLaunchMs(): Long = ensureBetaFirstLaunch()
+
+    private fun betaRemainingDays(nowMs: Long = System.currentTimeMillis()): Long =
+        BetaWindow.remainingDays(betaFirstLaunchMs(), nowMs)
+
+    private fun isBetaExpired(nowMs: Long = System.currentTimeMillis()): Boolean =
+        BetaWindow.isExpired(betaFirstLaunchMs(), nowMs)
+
+    private fun betaStatusSentence(): String {
+        val days = betaRemainingDays()
+        return if (days <= 0L) {
+            "Beta access: expired"
+        } else {
+            "Beta access: $days day${if (days == 1L) "" else "s"} remaining"
+        }
+    }
+
+    private fun refreshBetaAccessUi(showWarning: Boolean) {
+        val days = betaRemainingDays()
+        val expired = days <= 0L
+        binding.betaExpiryStatus.text = if (expired) {
+            "BETA PERIOD ENDED • UPDATE REQUIRED"
+        } else {
+            "BETA ACCESS • $days DAY${if (days == 1L) "" else "S"} REMAINING"
+        }
+        binding.betaExpiryStatus.setTextColor(
+            ContextCompat.getColor(this, if (expired || days <= 3L) R.color.danger else if (days <= 14L) R.color.amber else R.color.accent)
+        )
+        binding.createRide.isEnabled = !expired
+        binding.joinRide.isEnabled = !expired
+        binding.startRide.isEnabled = !expired
+        binding.findNearby.isEnabled = !expired
+
+        if (expired) {
+            showBetaExpiredDialog()
+        } else if (showWarning) {
+            maybeShowBetaWarning(days)
+        }
+    }
+
+    private fun ensureBetaUsable(): Boolean {
+        if (!isBetaExpired()) return true
+        refreshBetaAccessUi(showWarning = false)
+        return false
+    }
+
+    private fun maybeShowBetaWarning(days: Long) {
+        val bucket = BetaWindow.warningBucket(days) ?: return
+        val lastBucket = prefs.getInt(BETA_WARNING_BUCKET_KEY, 0)
+        if (lastBucket == bucket) return
+        prefs.edit().putInt(BETA_WARNING_BUCKET_KEY, bucket).apply()
+        AlertDialog.Builder(this)
+            .setTitle("RideMesh Beta • $days day${if (days == 1L) "" else "s"} left")
+            .setMessage("This tester build expires 60 days after its first launch. Install the latest RideMesh build before the timer reaches zero.")
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
+    private fun showBetaExpiredDialog() {
+        if (betaExpiredDialogShown || isFinishing || isDestroyed) return
+        betaExpiredDialogShown = true
+        AlertDialog.Builder(this)
+            .setTitle("BETA PERIOD ENDED")
+            .setMessage("This RideMesh Beta build has reached its 60-day test limit. Ride creation and joining are disabled. Please install the latest RideMesh version.")
+            .setPositiveButton("OK", null)
+            .setOnDismissListener { betaExpiredDialogShown = false }
+            .show()
+    }
+
+    private fun expireActiveRide() {
+        if (!rideStarted) {
+            refreshBetaAccessUi(showWarning = false)
+            return
+        }
+        stopRide()
+        showBetaExpiredDialog()
     }
 
     private fun showRideStatusDialog() {
@@ -1132,9 +1255,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                     "Internet riders: ${if (internetNode.isConnected()) internetPeerCount + 1 else 0}\n" +
                     "Direct local peers: $directPeerCount\n" +
                     "Audio: ${binding.audioTile.text}\n" +
+                    "Microphone: ${if (micMuted) "MUTED" else "LIVE"}\n" +
                     "Noise reduction: ON\n" +
                     "Power: ${binding.powerTile.text}\n" +
-                    "Auto reconnect: ON\n\n" +
+                    "Auto reconnect: ON\n" +
+                    betaStatusSentence() + "\n\n" +
                     "INVITE can add more riders without stopping the current call."
             )
             .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
@@ -1232,6 +1357,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         private const val WATCHDOG_INTERVAL_MS = 5_000L
         private const val INTERNET_STABLE_BEFORE_MESH_SLEEP_MS = 15_000L
         private const val LOCAL_MESH_REFRESH_MS = 25_000L
+        private const val BETA_FIRST_LAUNCH_KEY = "beta_first_launch_ms_v2"
+        private const val BETA_WARNING_BUCKET_KEY = "beta_warning_bucket_v2"
         private const val SUPPORT_WHATSAPP = "919188664823"
         private const val BUG_REPORT_GROUP_URL = "https://chat.whatsapp.com/CGToJCBDG6XFGUpeTp7uKW"
         private const val COMMUNITY_URL = "https://chat.whatsapp.com/GTH7FA1uTUFGRXElnfDfdE"
