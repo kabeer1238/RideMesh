@@ -1,3 +1,4 @@
+// RideMesh Play release — single-group Android 16 target
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -7,14 +8,14 @@ plugins {
 
 android {
     namespace = "com.bikemesh.ridemesh"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.bikemesh.ridemesh"
+        applicationId = "in.autopilotindia.ridemesh"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 10
-        versionName = "0.4.0-beta1"
+        targetSdk = 36
+        versionCode = 2
+        versionName = "1.0.0-beta2"
     }
 
     buildFeatures {
