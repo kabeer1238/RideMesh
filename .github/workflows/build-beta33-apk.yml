@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ "beta3.3-hybrid-bridge" ]
+  pull_request:
+    branches: [ "main" ]
 
 permissions:
   contents: read
