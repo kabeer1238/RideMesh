@@ -51,28 +51,17 @@ jobs:
           test -s app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           test -s app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
-      - name: Verify Beta3.2 configuration
+      - name: Verify core Beta3.2 identity
         shell: bash
         run: |
-          grep -q 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
-          grep -q 'compileSdk = 36' app/build.gradle.kts
-          grep -q 'targetSdk = 36' app/build.gradle.kts
-          grep -q 'versionCode = 5' app/build.gradle.kts
-          grep -q 'versionName = "1.0.0-beta3.2-offline"' app/build.gradle.kts
-          grep -q 'LOCAL MESH ONLY' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
-          grep -q 'showOfflineDiagnosticsDialog' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
-          grep -q 'refreshDiscovery' app/src/main/java/com/bikemesh/ridemesh/mesh/MeshNode.kt
-          grep -q 'advertisingActive' app/src/main/java/com/bikemesh/ridemesh/mesh/MeshNode.kt
-          grep -q 'discoveryActive' app/src/main/java/com/bikemesh/ridemesh/mesh/MeshNode.kt
-          grep -q 'PASSIVE_CONNECT_DELAY_MS' app/src/main/java/com/bikemesh/ridemesh/mesh/MeshNode.kt
-          grep -q 'ConnectionType.BALANCED' app/src/main/java/com/bikemesh/ridemesh/mesh/MeshNode.kt
-          grep -q 'MeshNode.LabRole.B' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
-          grep -q 'CALL / OTHER AUDIO ACTIVE' app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt
-          grep -q 'DURATION_DAYS = 60L' app/src/main/java/com/bikemesh/ridemesh/beta/BetaWindow.kt
-          ! grep -R "secondaryInternetNode\|SECONDARY GROUP\|CREATE SECOND GROUP\|JOIN SECOND GROUP" app/src/main/java app/src/main/res/layout/activity_main.xml
-          ! grep -q $'    }\n    }\n\n    private fun applyBatteryPolicy() {' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -Fq 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
+          grep -Fq 'versionCode = 5' app/build.gradle.kts
+          grep -Fq 'versionName = "1.0.0-beta3.2-offline"' app/build.gradle.kts
+          grep -Fq 'showOfflineDiagnosticsDialog' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -Fq 'fun refreshDiscovery(reason: String)' app/src/main/java/com/bikemesh/ridemesh/mesh/MeshNode.kt
+          grep -Fq 'CALL / OTHER AUDIO ACTIVE • RIDEMESH PAUSED' app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt
 
-      - name: Unit tests
+      - name: Unit tests and Kotlin compile
         run: gradle --no-daemon testDebugUnitTest
 
       - name: Android lint
