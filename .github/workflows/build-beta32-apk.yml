@@ -116,3 +116,5 @@ jobs:
           else
             echo "Validated Beta3.2 source already persisted"
           fi
+
+# PR validation trigger
