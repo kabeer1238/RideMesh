@@ -44,6 +44,7 @@ jobs:
             grep -q 'private val sourceStates' app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt
             grep -q 'AudioRecord.READ_BLOCKING' app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt
           fi
+          python tools/fix_beta3_audio_cleanup.py
 
       - name: Materialize approved RideMesh branding
         shell: bash
@@ -69,6 +70,7 @@ jobs:
           grep -q 'AudioRecord.READ_BLOCKING' app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt
           grep -q 'targetPrimeFrames' app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt
           grep -q 'concealFrame' app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt
+          grep -q 'sourceStates.clear()' app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt
           grep -q 'tcpNoDelay = true' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
           ! grep -R "secondaryInternetNode\|SECONDARY GROUP\|CREATE SECOND GROUP\|JOIN SECOND GROUP" app/src/main/java app/src/main/res/layout/activity_main.xml
 
