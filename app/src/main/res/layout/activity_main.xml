@@ -96,7 +96,7 @@ ONE CHANNEL."
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
                     android:lineSpacingExtra="3dp"
-                    android:text="RideMesh uses the Internet for long-distance connectivity and automatically switches to local mesh when you’re out of coverage."
+                    android:text="RideMesh uses low-latency WebRTC Internet voice with Opus for clear group communication across distance."
                     android:textColor="@color/muted"
                     android:textSize="13.5sp" />
             </LinearLayout>
@@ -201,7 +201,7 @@ ONE CHANNEL."
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="2dp"
-                            android:text="HYBRID"
+                            android:text="INTERNET"
                             android:textColor="@color/accent"
                             android:textSize="12sp"
                             android:textStyle="bold" />
@@ -213,7 +213,7 @@ ONE CHANNEL."
                             android:layout_marginTop="4dp"
                             android:gravity="center"
                             android:lineSpacingExtra="1dp"
-                            android:text="Internet + Mesh
+                            android:text="WebRTC Voice
 Ready"
                             android:textColor="@color/white_soft"
                             android:textSize="10sp" />

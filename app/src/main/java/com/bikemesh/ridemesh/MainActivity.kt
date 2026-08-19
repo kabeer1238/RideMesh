@@ -180,7 +180,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
         meshNode = MeshNode(applicationContext, this)
         lobbyNode = LobbyNode(applicationContext, this)
-        internetNode = InternetNode(this)
+        internetNode = InternetNode(this, applicationContext)
         audioEngine = AudioEngine(
             context = applicationContext,
             onCapturedFrame = ::sendHybridAudio,
@@ -233,9 +233,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             if (rideStarted) stopRide() else ensurePermissionsAndRun(PendingAction.START_RIDE)
         }
 
-        binding.findNearby.setOnClickListener {
-            ensurePermissionsAndRun(PendingAction.FIND_RIDERS)
-        }
+        binding.findNearby.visibility = View.GONE
+        binding.nearbyUsers.visibility = View.GONE
 
         binding.showQr.setOnClickListener { showRideQr() }
         binding.scanQr.setOnClickListener { scanRideQr() }
@@ -314,15 +313,13 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         val options = arrayOf(
             "Show QR code",
             "Share QR code",
-            "Find nearby RideMesh riders",
         )
         AlertDialog.Builder(this)
-            .setTitle("Add riders without ending the call")
+            .setTitle("Invite riders")
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> showRideQr()
                     1 -> shareRideQr()
-                    2 -> ensurePermissionsAndRun(PendingAction.FIND_RIDERS)
                 }
             }
             .setNegativeButton("CLOSE", null)
@@ -445,6 +442,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         val code = normalizedRideCode()
         binding.riderName.setText(rider)
         binding.rideCode.setText(code)
+        transportMode = TransportMode.INTERNET_ONLY
+        meshLabRole = MeshNode.LabRole.NORMAL
         saveSettings()
 
         try {
@@ -458,23 +457,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             internetConnectedSinceMs = 0L
             lastMeshRefreshMs = 0L
 
+            // Beta4 voice is captured and rendered directly by WebRTC. The old PCM
+            // AudioEngine stays idle so it cannot create a second microphone/audio path.
+            internetNode.start(code, rider, deviceLabel())
+            internetNode.setMuted(micMuted)
             applySelectedAudioRoute()
-            audioEngine.selectCommunicationDevice()
-
-            when (transportMode) {
-                TransportMode.AUTO -> {
-                    ensureLocalMeshRunning("initial fallback")
-                    internetNode.start(code, rider, deviceLabel())
-                }
-                TransportMode.LOCAL_ONLY -> {
-                    ensureLocalMeshRunning("offline test mode")
-                    log("LOCAL MESH ONLY • Internet voice disabled • A/B/C relay test ready")
-                }
-                TransportMode.INTERNET_ONLY -> {
-                    internetNode.start(code, rider, deviceLabel())
-                    log("INTERNET ONLY • local mesh disabled for diagnostics")
-                }
-            }
 
             binding.activeRideCode.text = code
             showScreen(Screen.ACTIVE)
@@ -483,35 +470,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
             mainHandler.removeCallbacks(rideWatchdog)
             mainHandler.postDelayed(rideWatchdog, WATCHDOG_INTERVAL_MS)
-            log("Ride started • ${transportModeLabel()} • call-safe audio focus enabled")
+            log("Ride started • INTERNET WEBRTC + OPUS • call-safe audio focus enabled")
         } catch (t: Throwable) {
             recoverFromStartFailure(t)
         }
     }
 
     private fun sendHybridAudio(audio: ByteArray) {
-        if (!rideStarted || audio.isEmpty()) return
-
-        when (transportMode) {
-            TransportMode.LOCAL_ONLY -> {
-                ensureLocalMeshRunning("local voice path")
-                meshNode.sendLocalAudio(audio)
-            }
-            TransportMode.INTERNET_ONLY -> {
-                if (internetNode.isConnected()) internetNode.sendLocalAudio(audio)
-            }
-            TransportMode.AUTO -> {
-                if (internetNode.isConnected()) {
-                    if (!internetNode.sendLocalAudio(audio)) {
-                        ensureLocalMeshRunning("Internet send failed")
-                        meshNode.sendLocalAudio(audio)
-                    }
-                } else {
-                    ensureLocalMeshRunning("local voice path")
-                    meshNode.sendLocalAudio(audio)
-                }
-            }
-        }
+        // Beta4 does not send PCM frames from this legacy engine. WebRTC owns voice capture.
     }
 
     private fun ensureLocalMeshRunning(reason: String) {
@@ -592,17 +558,13 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private fun updateCapturePolicy() {
         if (!rideStarted) return
-        val voicePathReady = when (transportMode) {
-            TransportMode.LOCAL_ONLY -> directPeerCount > 0
-            TransportMode.INTERNET_ONLY -> internetNode.isConnected()
-            TransportMode.AUTO -> internetNode.isConnected() || directPeerCount > 0
+        val status = when {
+            micMuted -> "MIC MUTED • LISTENING ONLY"
+            internetNode.voicePeerCount() > 0 -> internetNode.currentAudioStatus()
+            internetNode.isConnected() -> "WEBRTC SIGNALING READY • WAITING FOR RIDERS"
+            else -> "WEBRTC CONNECTING • MIC READY"
         }
-        if (voicePathReady) {
-            audioEngine.startTransmit()
-        } else {
-            audioEngine.stopTransmit()
-            updateAudioUi("Reconnecting • microphone sleeping")
-        }
+        updateAudioUi(status)
     }
 
     private fun startRideServiceSafely() {
@@ -630,7 +592,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
         AlertDialog.Builder(this)
             .setTitle("Could not start ride")
-            .setMessage("RideMesh stayed open. Check Bluetooth, Wi-Fi and permissions, then try again.")
+            .setMessage("RideMesh stayed open. Check Internet access and microphone permission, then try again.")
             .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
             .setNegativeButton("CLOSE", null)
             .show()
@@ -682,7 +644,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         binding.riderCount.text = "RIDE ACTIVE"
         binding.meshStatus.text = "CONNECTING…"
         binding.networkTile.text = "CONNECTING"
-        binding.homeNetworkStatus.text = "Internet + Mesh\nReady"
+        binding.homeNetworkStatus.text = "WebRTC Voice\nReady"
         binding.activeRiders.text = "RIDERS"
         binding.riderGrid.removeAllViews()
         speakingUntilMs.clear()
@@ -693,14 +655,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun applySelectedAudioRoute() {
-        if (!::audioEngine.isInitialized) return
+        if (!::internetNode.isInitialized) return
         val route = when (binding.audioRoute.checkedRadioButtonId) {
-            R.id.routePhone -> AudioRoute.PHONE
-            R.id.routeHelmet -> AudioRoute.HELMET
-            else -> AudioRoute.AUTO
+            R.id.routePhone -> "PHONE"
+            R.id.routeHelmet -> "HELMET"
+            else -> "AUTO"
         }
-        audioEngine.setRoute(route)
-        if (rideStarted) updateAudioUi(audioEngine.selectCommunicationDevice())
+        if (rideStarted) updateAudioUi(internetNode.setAudioRoute(route))
+        else internetNode.setAudioRoute(route)
     }
 
     private fun updateAudioUi(text: String) {
@@ -722,7 +684,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private fun setMicMuted(muted: Boolean) {
         micMuted = muted
-        if (::audioEngine.isInitialized) audioEngine.setUserMuted(muted)
+        if (::internetNode.isInitialized) internetNode.setMuted(muted)
         if (::binding.isInitialized) updateMuteUi()
     }
 
@@ -742,12 +704,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         )
         binding.rideCode.setText(prefs.getString("code", "RIDE01"))
         binding.batterySaver.isChecked = prefs.getBoolean("battery_smart", true)
-        transportMode = runCatching {
-            TransportMode.valueOf(prefs.getString("transport_mode", TransportMode.AUTO.name).orEmpty())
-        }.getOrDefault(TransportMode.AUTO)
-        meshLabRole = runCatching {
-            MeshNode.LabRole.valueOf(prefs.getString("mesh_lab_role", MeshNode.LabRole.NORMAL.name).orEmpty())
-        }.getOrDefault(MeshNode.LabRole.NORMAL)
+        transportMode = TransportMode.INTERNET_ONLY
+        meshLabRole = MeshNode.LabRole.NORMAL
 
         when (prefs.getString("audio_route", "AUTO")) {
             "PHONE" -> binding.routePhone.isChecked = true
@@ -801,23 +759,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private fun requiredPermissions(): List<String> = buildList {
         add(Manifest.permission.RECORD_AUDIO)
-        when {
-            Build.VERSION.SDK_INT >= 33 -> {
-                add(Manifest.permission.BLUETOOTH_SCAN)
-                add(Manifest.permission.BLUETOOTH_CONNECT)
-                add(Manifest.permission.BLUETOOTH_ADVERTISE)
-                add(Manifest.permission.NEARBY_WIFI_DEVICES)
-            }
-
-            Build.VERSION.SDK_INT >= 31 -> {
-                add(Manifest.permission.BLUETOOTH_SCAN)
-                add(Manifest.permission.BLUETOOTH_CONNECT)
-                add(Manifest.permission.BLUETOOTH_ADVERTISE)
-                add(Manifest.permission.ACCESS_FINE_LOCATION)
-            }
-
-            Build.VERSION.SDK_INT >= 29 -> add(Manifest.permission.ACCESS_FINE_LOCATION)
-            else -> add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            add(Manifest.permission.BLUETOOTH_CONNECT)
         }
     }
 
@@ -844,15 +787,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     override fun onInternetState(connected: Boolean, message: String) {
         runOnUiThread {
             log(message)
-            if (connected) {
-                if (internetConnectedSinceMs == 0L) internetConnectedSinceMs = System.currentTimeMillis()
-            } else {
-                internetConnectedSinceMs = 0L
-                stopLobbyDiscovery()
-                if (rideStarted && transportMode == TransportMode.AUTO) {
-                    ensureLocalMeshRunning("Internet path lost")
-                }
-            }
+            internetConnectedSinceMs = if (connected) System.currentTimeMillis() else 0L
             updateTransportStatus()
             updateCapturePolicy()
         }
@@ -864,76 +799,38 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     override fun onInternetAudio(sourceId: String, sequence: Int, timestampMs: Long, audio: ByteArray) {
-        if (!rideStarted) return
-        markRiderSpeaking(sourceId)
-        audioEngine.playIncoming(sourceId, sequence, timestampMs, audio)
+        // Beta4 WebRTC renders remote audio internally. Legacy PCM callback is intentionally unused.
+    }
+
+    override fun onInternetAudioStatus(message: String) {
+        runOnUiThread {
+            if (rideStarted) updateAudioUi(message)
+        }
     }
 
     private fun updateTransportStatus() {
         if (!rideStarted) return
+        val diag = internetNode.diagnostics()
 
-        when (transportMode) {
-            TransportMode.LOCAL_ONLY -> {
-                binding.networkTile.text = if (directPeerCount > 0) "LOCAL MESH" else "MESH SEARCH"
-                binding.riderCount.text = "RIDE ACTIVE"
-                val diag = meshNode.diagnostics()
-                binding.meshStatus.text = if (directPeerCount > 0) {
-                    "OFFLINE LOCAL VOICE • ROLE ${meshLabRole.name}"
-                } else if (diag.advertisingActive && diag.discoveryActive) {
-                    "OFFLINE SEARCH ACTIVE • ROLE ${meshLabRole.name} • TAP STATUS"
-                } else {
-                    "OFFLINE LINK NEEDS ATTENTION • TAP STATUS"
-                }
-            }
-            TransportMode.INTERNET_ONLY -> {
-                binding.networkTile.text = if (internetNode.isConnected()) "INTERNET" else "NET SEARCH"
-                binding.riderCount.text = "RIDE ACTIVE"
-                binding.meshStatus.text = "INTERNET ONLY • LOCAL MESH DISABLED"
-            }
-            TransportMode.AUTO -> {
-                when {
-                    internetNode.isConnected() -> {
-                        binding.networkTile.text = "INTERNET"
-                        binding.riderCount.text = "RIDE ACTIVE"
-                        binding.meshStatus.text = if (binding.batterySaver.isChecked && !meshRunning) {
-                            "INTERNET VOICE • AUTO LOCAL FALLBACK"
-                        } else {
-                            "INTERNET VOICE • LOCAL MESH WARM"
-                        }
-                    }
-                    directPeerCount > 0 -> {
-                        binding.networkTile.text = "LOCAL MESH"
-                        binding.riderCount.text = "RIDE ACTIVE"
-                        binding.meshStatus.text = "LOCAL VOICE • AUTO RECONNECT ACTIVE"
-                    }
-                    else -> {
-                        binding.networkTile.text = "SEARCHING"
-                        binding.riderCount.text = "RIDE ACTIVE"
-                        binding.meshStatus.text = "AUTO RECONNECT • INTERNET + NEARBY SEARCH"
-                    }
-                }
-            }
+        binding.networkTile.text = when {
+            diag.voicePeersConnected > 0 -> "WEBRTC"
+            diag.signalingConnected -> "INTERNET"
+            else -> "NET SEARCH"
+        }
+        binding.riderCount.text = "RIDE ACTIVE"
+        binding.meshStatus.text = when {
+            diag.voicePeersConnected > 0 ->
+                "OPUS VOICE • ${diag.voicePeersConnected} DIRECT PEER${if (diag.voicePeersConnected == 1) "" else "S"}"
+            diag.signalingConnected -> "SIGNALING READY • WAITING FOR RIDERS"
+            else -> "INTERNET RECONNECTING • WEBRTC AUTO RETRY"
+        }
+        binding.homeNetworkStatus.text = if (internetNode.isConnected()) {
+            "WebRTC Voice\nActive"
+        } else {
+            "WebRTC Voice\nReady"
         }
 
-        binding.homeNetworkStatus.text = when (transportMode) {
-            TransportMode.LOCAL_ONLY -> "Offline Mesh\n${if (directPeerCount > 0) "Active" else "Ready"}"
-            TransportMode.INTERNET_ONLY -> "Internet Only\n${if (internetNode.isConnected()) "Active" else "Ready"}"
-            TransportMode.AUTO -> when {
-                internetNode.isConnected() -> "Internet Voice\nActive"
-                directPeerCount > 0 -> "Local Mesh\nActive"
-                else -> "Internet + Mesh\nReady"
-            }
-        }
-
-        val visibleRiderTotal = when (transportMode) {
-            TransportMode.LOCAL_ONLY -> if (directPeerCount > 0) directPeerCount + 1 else 1
-            TransportMode.INTERNET_ONLY -> if (internetNode.isConnected()) internetPeerCount + 1 else 1
-            TransportMode.AUTO -> when {
-                internetNode.isConnected() -> internetPeerCount + 1
-                directPeerCount > 0 -> directPeerCount + 1
-                else -> 1
-            }
-        }
+        val visibleRiderTotal = if (internetNode.isConnected()) internetPeerCount + 1 else 1
         binding.activeRiders.text = "RIDERS $visibleRiderTotal"
         renderRiderGrid()
         applyPowerUi()
@@ -1247,37 +1144,16 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             .show()
     }
 
-    private fun transportModeLabel(): String = when (transportMode) {
-        TransportMode.AUTO -> "AUTO HYBRID"
-        TransportMode.LOCAL_ONLY -> "LOCAL MESH ONLY"
-        TransportMode.INTERNET_ONLY -> "INTERNET ONLY"
-    }
+    private fun transportModeLabel(): String = "INTERNET • WEBRTC OPUS"
 
     private fun showTransportModeDialog() {
-        val choices = arrayOf(
-            "AUTO HYBRID — Internet first + local fallback",
-            "LOCAL MESH ONLY — offline / multi-hop test",
-            "INTERNET ONLY — isolate Internet audio",
-        )
-        val checked = when (transportMode) {
-            TransportMode.AUTO -> 0
-            TransportMode.LOCAL_ONLY -> 1
-            TransportMode.INTERNET_ONLY -> 2
-        }
+        transportMode = TransportMode.INTERNET_ONLY
+        meshLabRole = MeshNode.LabRole.NORMAL
+        saveSettings()
         AlertDialog.Builder(this)
-            .setTitle("Transport test mode")
-            .setSingleChoiceItems(choices, checked) { dialog, which ->
-                transportMode = when (which) {
-                    1 -> TransportMode.LOCAL_ONLY
-                    2 -> TransportMode.INTERNET_ONLY
-                    else -> TransportMode.AUTO
-                }
-                saveSettings()
-                if (rideStarted) applyTransportModeChange()
-                dialog.dismiss()
-            }
-            .setNeutralButton("A / B / C ROLE") { _, _ -> showMeshLabRoleDialog() }
-            .setNegativeButton("CANCEL", null)
+            .setTitle("Internet voice engine")
+            .setMessage("Beta4 uses Internet-only WebRTC + Opus. Offline / multi-hop modes are not active in this package so voice stability can be tested independently.")
+            .setPositiveButton("OK", null)
             .show()
     }
 
@@ -1316,60 +1192,33 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun applyTransportModeChange() {
+        transportMode = TransportMode.INTERNET_ONLY
+        meshLabRole = MeshNode.LabRole.NORMAL
+        saveSettings()
         if (!rideStarted) return
-        val rider = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
-        val code = normalizedRideCode()
-        audioEngine.stopTransmit()
 
-        when (transportMode) {
-            TransportMode.LOCAL_ONLY -> {
-                internetNode.stop()
-                internetPeerCount = 0
-                internetConnectedSinceMs = 0L
-                restartLocalMeshForRoleOrMode("switched to LOCAL MESH ONLY")
-            }
-            TransportMode.INTERNET_ONLY -> {
-                if (meshRunning) sleepLocalMesh("switched to INTERNET ONLY")
-                internetNode.stop()
-                internetPeerCount = 0
-                internetNode.start(code, rider, deviceLabel())
-            }
-            TransportMode.AUTO -> {
-                restartLocalMeshForRoleOrMode("switched to AUTO HYBRID")
-                internetNode.stop()
-                internetPeerCount = 0
-                internetNode.start(code, rider, deviceLabel())
-            }
-        }
-        log("Transport mode: ${transportModeLabel()} • role ${meshLabRole.name}")
+        val rider = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
+        internetNode.stop()
+        internetPeerCount = 0
+        internetNode.start(normalizedRideCode(), rider, deviceLabel())
+        internetNode.setMuted(micMuted)
+        applySelectedAudioRoute()
         updateTransportStatus()
         updateCapturePolicy()
     }
 
     private fun showSettingsAndHelpDialog() {
-        val modes = arrayOf(
-            "Battery Smart — recommended",
-            "Max Link — keep Internet + local mesh active",
-        )
-        val checked = if (binding.batterySaver.isChecked) 0 else 1
-
         AlertDialog.Builder(this)
-            .setTitle("RideMesh settings & help")
-            .setSingleChoiceItems(modes, checked) { dialog, which ->
-                binding.batterySaver.isChecked = which == 0
-                saveSettings()
-                applyBatteryPolicy()
-                dialog.dismiss()
-            }
+            .setTitle("RideMesh Beta4 settings & help")
             .setMessage(
-                "Transport: ${transportModeLabel()} • Mesh role ${meshLabRole.name}\n\n" +
-                    "RideMesh automatically pauses microphone and playback when a phone/WhatsApp/VoIP call takes Android audio focus, then resumes after the call.\n\n" +
-                    "LOCAL MESH ONLY keeps Internet voice off and prevents mesh sleeping for offline testing. Wi-Fi + Bluetooth should be ON; Internet may be OFF. Use RIDE STATUS → OFFLINE DIAG to see advertising, discovery, handshake and relay state.\n\n" +
+                "Voice engine: WebRTC + Opus over Internet\n\n" +
+                    "RideMesh automatically yields microphone and playback when a normal phone call, WhatsApp call or another VoIP app takes Android audio focus, then resumes after the call.\n\n" +
+                    "Offline / multi-hop is intentionally disabled in this Beta4 package while we prioritize clear, stable group voice.\n\n" +
                     betaStatusSentence() + "\n\n" +
                     "Bug reports: WhatsApp group or direct support +91 9188664823."
             )
-            .setPositiveButton("OFFLINE DIAG") { _, _ -> showOfflineDiagnosticsDialog() }
-            .setNeutralButton("TRANSPORT") { _, _ -> showTransportModeDialog() }
+            .setPositiveButton("VOICE STATUS") { _, _ -> showRideStatusDialog() }
+            .setNeutralButton("ENGINE INFO") { _, _ -> showTransportModeDialog() }
             .setNegativeButton("CLOSE", null)
             .show()
     }
@@ -1461,82 +1310,31 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun showOfflineDiagnosticsDialog() {
-        val diag = meshNode.diagnostics()
-        val message = buildString {
-            append("${localRadioSummary()}\n\n")
-            append("Mesh running: ${if (meshRunning) "YES" else "NO"}\n")
-            append("Profile: ${diag.profile}\n")
-            append("Advertising: ${if (diag.advertisingActive) "ACTIVE" else "NOT ACTIVE"}\n")
-            append("Discovery: ${if (diag.discoveryActive) "ACTIVE" else "NOT ACTIVE"}\n")
-            append("Endpoints discovered: ${diag.discoveredEndpoints}\n")
-            append("Connection attempts: ${diag.connectionAttempts}\n")
-            append("Successful connections: ${diag.successfulConnections}\n")
-            append("Failed connections: ${diag.failedConnections}\n")
-            append("Pending handshakes: ${diag.pendingRequests}\n")
-            append("Direct peers: ${diag.directPeers}\n")
-            append("Packets received: ${diag.receivedPackets}\n")
-            append("Packets relayed: ${diag.relayedPackets}\n")
-            append("Max observed hops: ${diag.maxObservedHops}\n")
-            append("Send failures: ${diag.sendFailures}\n")
-            append("Last Nearby error: ${diag.lastError.ifBlank { "none" }}\n\n")
-            append("For offline testing use the SAME ride code on every phone, Wi-Fi + Bluetooth ON, and LOCAL MESH ONLY. Internet/mobile data may be OFF.")
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("Offline mesh diagnostics • role ${meshLabRole.name}")
-            .setMessage(message)
-            .setPositiveButton("RETRY MESH") { _, _ ->
-                if (!rideStarted || transportMode == TransportMode.INTERNET_ONLY) {
-                    log("Start a LOCAL/AUTO ride before retrying mesh")
-                } else if (!radiosReady()) {
-                    log("Cannot retry mesh • ${localRadioSummary()}")
-                } else if (meshRunning) {
-                    meshNode.refreshDiscovery("manual diagnostic retry")
-                    lastMeshRefreshMs = System.currentTimeMillis()
-                } else {
-                    ensureLocalMeshRunning("manual diagnostic retry")
-                }
-            }
-            .setNeutralButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
-            .setNegativeButton("CLOSE", null)
-            .show()
+        showRideStatusDialog()
     }
 
     private fun showRideStatusDialog() {
-        val path = when (transportMode) {
-            TransportMode.LOCAL_ONLY -> if (directPeerCount > 0) "Offline local mesh" else "Offline mesh searching"
-            TransportMode.INTERNET_ONLY -> if (internetNode.isConnected()) "Internet only" else "Internet reconnecting"
-            TransportMode.AUTO -> when {
-                internetNode.isConnected() -> "Internet"
-                directPeerCount > 0 -> "Local mesh"
-                else -> "Reconnecting"
-            }
-        }
-        val diag = meshNode.diagnostics()
-
+        val diag = internetNode.diagnostics()
         AlertDialog.Builder(this)
-            .setTitle("Ride status • ${transportModeLabel()}")
+            .setTitle("Ride status • WebRTC + Opus")
             .setMessage(
-                "Path: $path\n" +
-                    "Mesh role: ${meshLabRole.name}\n" +
-                    "Direct local peers: $directPeerCount\n" +
-                    "Mesh profile: ${diag.profile}\n" +
-                    "Advertising: ${if (diag.advertisingActive) "ACTIVE" else "OFF"} • Discovery: ${if (diag.discoveryActive) "ACTIVE" else "OFF"}\n" +
-                    "Endpoints found: ${diag.discoveredEndpoints} • Attempts: ${diag.connectionAttempts} • Failures: ${diag.failedConnections}\n" +
-                    "Last mesh error: ${diag.lastError.ifBlank { "none" }}\n" +
-                    "Mesh packets received: ${diag.receivedPackets}\n" +
-                    "Packets relayed by this phone: ${diag.relayedPackets}\n" +
-                    "Max observed hops: ${diag.maxObservedHops}\n" +
-                    "Internet riders: ${if (internetNode.isConnected()) internetPeerCount + 1 else 0}\n" +
+                "Path: Internet WebRTC\n" +
+                    "Codec: ${diag.codec}\n" +
+                    "Signaling: ${if (diag.signalingConnected) "CONNECTED" else "RECONNECTING"}\n" +
+                    "Known riders: ${diag.knownRiders + 1}\n" +
+                    "Voice peers connected: ${diag.voicePeersConnected}\n" +
+                    "SDP offers sent: ${diag.offersSent} • answers: ${diag.answersSent}\n" +
+                    "ICE candidates sent: ${diag.candidatesSent}\n" +
+                    "ICE reconnects: ${diag.reconnects}\n" +
+                    "TURN relay: ${if (diag.turnConfigured) "CONFIGURED" else "NOT CONFIGURED IN THIS BETA"}\n" +
+                    "Last network error: ${diag.lastError.ifBlank { "none" }}\n\n" +
+                    "PEER STATES\n${diag.peerStates}\n\n" +
                     "Audio: ${binding.audioTile.text}\n" +
                     "Microphone: ${if (micMuted) "MUTED" else "LIVE"}\n" +
                     "Call-safe audio focus: ON\n" +
-                    "Power: ${binding.powerTile.text}\n" +
-                    betaStatusSentence() + "\n\n" +
-                    "A→B→C test: set LOCAL MESH ONLY on all three phones, then roles A, B and C. C should hear A only through B."
+                    betaStatusSentence()
             )
             .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
-            .setNeutralButton("TRANSPORT") { _, _ -> showTransportModeDialog() }
             .setNegativeButton("CLOSE", null)
             .show()
     }
@@ -1566,10 +1364,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             append("Phone: ${Build.MANUFACTURER} ${Build.MODEL}\n")
             append("Android: ${Build.VERSION.RELEASE}\n")
             append("Current path: ${if (rideStarted) binding.networkTile.text else "Not riding"}\n")
-            append("Transport mode: ${transportModeLabel()} • role ${meshLabRole.name}\n")
-            if (::meshNode.isInitialized) {
-                val d = meshNode.diagnostics()
-                append("Mesh: adv=${d.advertisingActive}, disc=${d.discoveryActive}, found=${d.discoveredEndpoints}, attempts=${d.connectionAttempts}, success=${d.successfulConnections}, failures=${d.failedConnections}, peers=${d.directPeers}, relayed=${d.relayedPackets}, hops=${d.maxObservedHops}, error=${d.lastError.ifBlank { "none" }}\n")
+            append("Voice engine: WebRTC + Opus\n")
+            if (::internetNode.isInitialized) {
+                val d = internetNode.diagnostics()
+                append("WebRTC: signaling=${d.signalingConnected}, voicePeers=${d.voicePeersConnected}, riders=${d.knownRiders}, offers=${d.offersSent}, answers=${d.answersSent}, iceCandidates=${d.candidatesSent}, reconnects=${d.reconnects}, TURN=${d.turnConfigured}, error=${d.lastError.ifBlank { "none" }}\n")
+                append("Peer states: ${d.peerStates.replace('\n', ';')}\n")
             }
             append("Problem: ")
         }
