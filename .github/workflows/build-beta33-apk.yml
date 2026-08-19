@@ -1,0 +1,101 @@
+name: Build RideMesh Beta3.3 Hybrid Bridge APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "beta3.3-hybrid-bridge" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 16 API 36 SDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Apply Beta3.3 hybrid bridge patch
+        run: python tools/apply_beta33_hybrid_bridge.py
+
+      - name: Remove legacy per-transport node IDs
+        run: python tools/fix_beta33_shared_ids.py
+
+      - name: Materialize approved RideMesh branding
+        shell: bash
+        run: |
+          mkdir -p app/src/main/res/drawable-nodpi
+          base64 -d branding/ridemesh_logo_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
+          base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
+          test -s app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
+          test -s app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          test -s app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
+
+      - name: Verify Beta3.3 identity
+        shell: bash
+        run: |
+          grep -q 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
+          grep -q 'versionCode = 6' app/build.gradle.kts
+          grep -q 'versionName = "1.0.0-beta3.3-hybridbridge"' app/build.gradle.kts
+          grep -q 'AUTO simultaneous voice' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -q 'Bridge local' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -q 'sendAudioFrame' app/src/main/java/com/bikemesh/ridemesh/mesh/MeshNode.kt
+          grep -q 'rememberFrame' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
+          grep -q 'CALL / OTHER AUDIO ACTIVE' app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt
+          grep -q 'DURATION_DAYS = 60L' app/src/main/java/com/bikemesh/ridemesh/beta/BetaWindow.kt
+          test "$(grep -c 'private val nodeId' app/src/main/java/com/bikemesh/ridemesh/mesh/MeshNode.kt)" -eq 1
+          test "$(grep -c 'private val nodeId' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt)" -eq 1
+
+      - name: Unit tests and Kotlin compile
+        run: gradle --no-daemon testDebugUnitTest
+
+      - name: Android lint
+        run: gradle --no-daemon lintDebug
+
+      - name: Build installable Beta3.3 APK only
+        run: gradle --no-daemon assembleDebug
+
+      - name: Prepare tester APK
+        shell: bash
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          mkdir -p dist
+          cp "$APK" dist/RideMesh-Beta3.3-HybridBridge-Test.apk
+          sha256sum dist/RideMesh-Beta3.3-HybridBridge-Test.apk
+          ls -lh dist/RideMesh-Beta3.3-HybridBridge-Test.apk
+
+      - name: Upload Beta3.3 tester APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideMesh-Beta3.3-HybridBridge-Test-APK
+          path: dist/RideMesh-Beta3.3-HybridBridge-Test.apk
+          if-no-files-found: error
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideMesh-Beta3.3-HybridBridge-Lint
+          path: app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
