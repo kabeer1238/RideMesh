@@ -515,7 +515,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun ensureLocalMeshRunning(reason: String) {
-        if (!rideStarted || transportMode == TransportMode.INTERNET_ONLY || meshRunning || !radiosReady()) return
+        if (!rideStarted || transportMode == TransportMode.INTERNET_ONLY || meshRunning) return
+        if (!radiosReady()) {
+            log("LOCAL MESH BLOCKED • ${localRadioSummary()}")
+            return
+        }
         meshNode.start(
             binding.riderName.text?.toString().orEmpty(),
             normalizedRideCode(),
@@ -539,11 +543,13 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private fun restartLocalMesh() {
         if (!rideStarted || transportMode == TransportMode.INTERNET_ONLY || !radiosReady()) return
         if (transportMode == TransportMode.AUTO && internetNode.isConnected()) return
-        log("Refreshing local discovery for automatic reconnect")
-        meshRunning = false
-        meshNode.stop()
-        directPeerCount = 0
-        ensureLocalMeshRunning("automatic reconnect refresh")
+        if (meshRunning) {
+            meshNode.refreshDiscovery("automatic reconnect")
+            lastMeshRefreshMs = System.currentTimeMillis()
+            log("Refreshing local advertising/discovery without dropping endpoints")
+        } else {
+            ensureLocalMeshRunning("automatic reconnect")
+        }
     }
 
     private fun restartLocalMeshForRoleOrMode(reason: String) {
@@ -552,8 +558,16 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             meshRunning = false
             meshNode.stop()
             directPeerCount = 0
+            mainHandler.postDelayed({
+                if (rideStarted && transportMode != TransportMode.INTERNET_ONLY) {
+                    ensureLocalMeshRunning(reason)
+                    updateTransportStatus()
+                    updateCapturePolicy()
+                }
+            }, LOCAL_MESH_RESTART_SETTLE_MS)
+        } else {
+            ensureLocalMeshRunning(reason)
         }
-        ensureLocalMeshRunning(reason)
     }
 
     private fun applyBatteryPolicy() {
@@ -622,20 +636,25 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             .show()
     }
 
-    private fun radiosReady(): Boolean {
-        val bluetoothOn = try {
-            getSystemService(BluetoothManager::class.java).adapter?.isEnabled == true
-        } catch (_: Throwable) {
-            false
-        }
+    private fun bluetoothReady(): Boolean = try {
+        getSystemService(BluetoothManager::class.java).adapter?.isEnabled == true
+    } catch (_: Throwable) {
+        false
+    }
 
-        val wifiOn = try {
-            applicationContext.getSystemService(WifiManager::class.java).isWifiEnabled
-        } catch (_: Throwable) {
-            false
-        }
+    private fun wifiReady(): Boolean = try {
+        applicationContext.getSystemService(WifiManager::class.java).isWifiEnabled
+    } catch (_: Throwable) {
+        false
+    }
 
-        return bluetoothOn && wifiOn
+    private fun radiosReady(): Boolean = bluetoothReady() && wifiReady()
+
+    private fun localRadioSummary(): String {
+        val missing = requiredPermissions().filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }.map { it.substringAfterLast('.') }
+        return "Wi-Fi ${if (wifiReady()) "ON" else "OFF"} • Bluetooth ${if (bluetoothReady()) "ON" else "OFF"} • Permissions ${if (missing.isEmpty()) "OK" else "MISSING ${missing.joinToString()}"}"
     }
 
     private fun confirmStopRide() {
@@ -857,10 +876,13 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             TransportMode.LOCAL_ONLY -> {
                 binding.networkTile.text = if (directPeerCount > 0) "LOCAL MESH" else "MESH SEARCH"
                 binding.riderCount.text = "RIDE ACTIVE"
+                val diag = meshNode.diagnostics()
                 binding.meshStatus.text = if (directPeerCount > 0) {
                     "OFFLINE LOCAL VOICE • ROLE ${meshLabRole.name}"
+                } else if (diag.advertisingActive && diag.discoveryActive) {
+                    "OFFLINE SEARCH ACTIVE • ROLE ${meshLabRole.name} • TAP STATUS"
                 } else {
-                    "OFFLINE SEARCH • WIFI + BLUETOOTH • ROLE ${meshLabRole.name}"
+                    "OFFLINE LINK NEEDS ATTENTION • TAP STATUS"
                 }
             }
             TransportMode.INTERNET_ONLY -> {
@@ -1342,11 +1364,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             .setMessage(
                 "Transport: ${transportModeLabel()} • Mesh role ${meshLabRole.name}\n\n" +
                     "RideMesh automatically pauses microphone and playback when a phone/WhatsApp/VoIP call takes Android audio focus, then resumes after the call.\n\n" +
-                    "LOCAL MESH ONLY keeps Internet voice off and prevents mesh sleeping for offline testing. Wi-Fi + Bluetooth should be ON; Internet may be OFF.\n\n" +
+                    "LOCAL MESH ONLY keeps Internet voice off and prevents mesh sleeping for offline testing. Wi-Fi + Bluetooth should be ON; Internet may be OFF. Use RIDE STATUS → OFFLINE DIAG to see advertising, discovery, handshake and relay state.\n\n" +
                     betaStatusSentence() + "\n\n" +
                     "Bug reports: WhatsApp group or direct support +91 9188664823."
             )
-            .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
+            .setPositiveButton("OFFLINE DIAG") { _, _ -> showOfflineDiagnosticsDialog() }
             .setNeutralButton("TRANSPORT") { _, _ -> showTransportModeDialog() }
             .setNegativeButton("CLOSE", null)
             .show()
@@ -1438,6 +1460,48 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         showBetaExpiredDialog()
     }
 
+    private fun showOfflineDiagnosticsDialog() {
+        val diag = meshNode.diagnostics()
+        val message = buildString {
+            append("${localRadioSummary()}\n\n")
+            append("Mesh running: ${if (meshRunning) "YES" else "NO"}\n")
+            append("Profile: ${diag.profile}\n")
+            append("Advertising: ${if (diag.advertisingActive) "ACTIVE" else "NOT ACTIVE"}\n")
+            append("Discovery: ${if (diag.discoveryActive) "ACTIVE" else "NOT ACTIVE"}\n")
+            append("Endpoints discovered: ${diag.discoveredEndpoints}\n")
+            append("Connection attempts: ${diag.connectionAttempts}\n")
+            append("Successful connections: ${diag.successfulConnections}\n")
+            append("Failed connections: ${diag.failedConnections}\n")
+            append("Pending handshakes: ${diag.pendingRequests}\n")
+            append("Direct peers: ${diag.directPeers}\n")
+            append("Packets received: ${diag.receivedPackets}\n")
+            append("Packets relayed: ${diag.relayedPackets}\n")
+            append("Max observed hops: ${diag.maxObservedHops}\n")
+            append("Send failures: ${diag.sendFailures}\n")
+            append("Last Nearby error: ${diag.lastError.ifBlank { "none" }}\n\n")
+            append("For offline testing use the SAME ride code on every phone, Wi-Fi + Bluetooth ON, and LOCAL MESH ONLY. Internet/mobile data may be OFF.")
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Offline mesh diagnostics • role ${meshLabRole.name}")
+            .setMessage(message)
+            .setPositiveButton("RETRY MESH") { _, _ ->
+                if (!rideStarted || transportMode == TransportMode.INTERNET_ONLY) {
+                    log("Start a LOCAL/AUTO ride before retrying mesh")
+                } else if (!radiosReady()) {
+                    log("Cannot retry mesh • ${localRadioSummary()}")
+                } else if (meshRunning) {
+                    meshNode.refreshDiscovery("manual diagnostic retry")
+                    lastMeshRefreshMs = System.currentTimeMillis()
+                } else {
+                    ensureLocalMeshRunning("manual diagnostic retry")
+                }
+            }
+            .setNeutralButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
+            .setNegativeButton("CLOSE", null)
+            .show()
+    }
+
     private fun showRideStatusDialog() {
         val path = when (transportMode) {
             TransportMode.LOCAL_ONLY -> if (directPeerCount > 0) "Offline local mesh" else "Offline mesh searching"
@@ -1457,6 +1521,9 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                     "Mesh role: ${meshLabRole.name}\n" +
                     "Direct local peers: $directPeerCount\n" +
                     "Mesh profile: ${diag.profile}\n" +
+                    "Advertising: ${if (diag.advertisingActive) "ACTIVE" else "OFF"} • Discovery: ${if (diag.discoveryActive) "ACTIVE" else "OFF"}\n" +
+                    "Endpoints found: ${diag.discoveredEndpoints} • Attempts: ${diag.connectionAttempts} • Failures: ${diag.failedConnections}\n" +
+                    "Last mesh error: ${diag.lastError.ifBlank { "none" }}\n" +
                     "Mesh packets received: ${diag.receivedPackets}\n" +
                     "Packets relayed by this phone: ${diag.relayedPackets}\n" +
                     "Max observed hops: ${diag.maxObservedHops}\n" +
@@ -1499,6 +1566,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             append("Phone: ${Build.MANUFACTURER} ${Build.MODEL}\n")
             append("Android: ${Build.VERSION.RELEASE}\n")
             append("Current path: ${if (rideStarted) binding.networkTile.text else "Not riding"}\n")
+            append("Transport mode: ${transportModeLabel()} • role ${meshLabRole.name}\n")
+            if (::meshNode.isInitialized) {
+                val d = meshNode.diagnostics()
+                append("Mesh: adv=${d.advertisingActive}, disc=${d.discoveryActive}, found=${d.discoveredEndpoints}, attempts=${d.connectionAttempts}, success=${d.successfulConnections}, failures=${d.failedConnections}, peers=${d.directPeers}, relayed=${d.relayedPackets}, hops=${d.maxObservedHops}, error=${d.lastError.ifBlank { "none" }}\n")
+            }
             append("Problem: ")
         }
         val url = "https://wa.me/$SUPPORT_WHATSAPP?text=${Uri.encode(message)}"
@@ -1562,7 +1634,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         private const val LOBBY_SCAN_WINDOW_MS = 20_000L
         private const val WATCHDOG_INTERVAL_MS = 5_000L
         private const val INTERNET_STABLE_BEFORE_MESH_SLEEP_MS = 15_000L
-        private const val LOCAL_MESH_REFRESH_MS = 25_000L
+        private const val LOCAL_MESH_REFRESH_MS = 8_000L
+        private const val LOCAL_MESH_RESTART_SETTLE_MS = 700L
         private const val BETA_FIRST_LAUNCH_KEY = "beta_first_launch_ms_v2"
         private const val BETA_WARNING_BUCKET_KEY = "beta_warning_bucket_v2"
         private const val SUPPORT_WHATSAPP = "919188664823"

@@ -14,8 +14,8 @@ android {
         applicationId = "in.autopilotindia.ridemesh"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.0.0-beta3.1-mesh"
+        versionCode = 5
+        versionName = "1.0.0-beta3.2-offline"
     }
 
     buildFeatures {
