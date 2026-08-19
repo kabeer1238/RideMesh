@@ -34,7 +34,7 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Apply approved Beta2 UI mute expiry patch
+      - name: Validate approved Beta2 UI mute expiry source
         run: python tools/apply_beta2_mute_expiry_patch.py
 
       - name: Materialize approved RideMesh branding
@@ -58,6 +58,7 @@ jobs:
           grep -q 'versionName = "1.0.0-beta2"' app/build.gradle.kts
           grep -q 'android:id="@+id/activeMute"' app/src/main/res/layout/activity_main.xml
           grep -q 'BETA ACCESS' app/src/main/res/layout/activity_main.xml
+          grep -q 'android:text="READY TO RIDE"' app/src/main/res/layout/activity_main.xml
           grep -q 'DURATION_DAYS = 60L' app/src/main/java/com/bikemesh/ridemesh/beta/BetaWindow.kt
           grep -q 'setUserMuted' app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt
           grep -q 'android.permission.FOREGROUND_SERVICE_MICROPHONE' app/src/main/AndroidManifest.xml
@@ -70,22 +71,25 @@ jobs:
       - name: Android lint
         run: gradle --no-daemon lintDebug
 
-      - name: Build release APK + AAB
-        run: gradle --no-daemon assembleRelease bundleRelease
+      - name: Build installable test APK + release APK + AAB
+        run: gradle --no-daemon assembleDebug assembleRelease bundleRelease
 
       - name: Verify artifacts
         shell: bash
         run: |
+          test -s app/build/outputs/apk/debug/app-debug.apk
           test -s app/build/outputs/apk/release/app-release-unsigned.apk
           test -s app/build/outputs/bundle/release/app-release.aab
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
           ls -lh app/build/outputs/apk/release/app-release-unsigned.apk
           ls -lh app/build/outputs/bundle/release/app-release.aab
 
-      - name: Upload Beta2 APK + AAB
+      - name: Upload Beta2 install pack
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-1.0.0-beta2-api36-pack
+          name: RideMesh-1.0.0-beta2-api36-install-pack
           path: |
+            app/build/outputs/apk/debug/app-debug.apk
             app/build/outputs/apk/release/app-release-unsigned.apk
             app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
@@ -113,6 +117,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "Validated Beta2 source already persisted"
           else
-            git commit -m "Apply RideMesh 1.0.0-beta2 mute and 60-day expiry"
+            git commit -m "Apply RideMesh 1.0.0-beta2 approved UI, mute and 60-day expiry"
             git push origin HEAD:beta2-mute-expiry-ui
           fi
