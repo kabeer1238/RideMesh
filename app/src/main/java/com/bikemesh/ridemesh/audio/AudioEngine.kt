@@ -127,25 +127,50 @@ class AudioEngine(
     }
 
     private fun pauseForAudioFocus() {
-        focusPaused.set(true)
+        if (!focusPaused.compareAndSet(false, true)) return
         capturing.set(false)
+        // Stop the recorder immediately so RideMesh cannot leak a phone/WhatsApp call
+        // into the ride while another communication app owns audio focus.
+        try { audioRecord?.stop() } catch (_: Throwable) {}
         clearRemoteAudio()
         audioTrack?.let {
             try { it.pause() } catch (_: Throwable) {}
             try { it.flush() } catch (_: Throwable) {}
         }
-        onStatus("PAUSED FOR PHONE CALL • AUTO RESUME")
+        releaseCommunicationRouteForExternalCall()
+        onStatus("CALL / OTHER AUDIO ACTIVE • RIDEMESH PAUSED")
     }
 
     private fun resumeAfterAudioFocus() {
         focusHeld.set(true)
-        focusPaused.set(false)
-        selectCommunicationDevice()
-        audioTrack?.let {
-            try { it.play() } catch (_: Throwable) {}
+        if (!focusPaused.compareAndSet(true, false)) return
+        Thread({
+            try { Thread.sleep(CALL_RESUME_SETTLE_MS) } catch (_: InterruptedException) { return@Thread }
+            if (focusPaused.get()) return@Thread
+            selectCommunicationDevice()
+            audioTrack?.let {
+                try { it.play() } catch (_: Throwable) {}
+            }
+            onStatus("HANDS-FREE • AUDIO RESUMED")
+            if (transmitDesired.get()) startRecorder()
+        }, "RideMesh-CallResume").apply { isDaemon = true; start() }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun releaseCommunicationRouteForExternalCall() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                audioManager.clearCommunicationDevice()
+            } else {
+                runCatching { audioManager.stopBluetoothSco() }
+                audioManager.isBluetoothScoOn = false
+                audioManager.isSpeakerphoneOn = false
+            }
+            audioManager.mode = AudioManager.MODE_NORMAL
+        } catch (_: Throwable) {
+            // The external call already has priority; failing to clear one route must not
+            // cause RideMesh to fight for audio.
         }
-        onStatus("HANDS-FREE • AUDIO RESUMED")
-        if (transmitDesired.get()) startRecorder()
     }
 
     private fun clearRemoteAudio() {
@@ -358,7 +383,9 @@ class AudioEngine(
                         wasSending = sending
                     }
                 } catch (t: Throwable) {
-                    onStatus("Microphone stream error: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
+                    if (!focusPaused.get()) {
+                        onStatus("Microphone stream error: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
+                    }
                 } finally {
                     try { activeRecorder.stop() } catch (_: Throwable) {}
                     aec?.release()
@@ -380,6 +407,12 @@ class AudioEngine(
     fun stopTransmit() {
         transmitDesired.set(false)
         capturing.set(false)
+        try { audioRecord?.stop() } catch (_: Throwable) {}
+        clearRemoteAudio()
+        releaseCommunicationRouteForExternalCall()
+        if (focusHeld.getAndSet(false)) {
+            runCatching { audioManager.abandonAudioFocusRequest(audioFocusRequest) }
+        }
     }
 
     /**
@@ -775,6 +808,7 @@ class AudioEngine(
         private const val SOURCE_SILENCE_HOLD_MS = 320L
         private const val LATE_PACKET_GRACE_MS = 45L
         private const val PLAYBACK_IDLE_SLEEP_MS = 3L
+        private const val CALL_RESUME_SETTLE_MS = 350L
         private const val ECHO_GUARD_AFTER_PLAYBACK_MS = 100L
         private const val FRAME_NS = FRAME_MS * 1_000_000L
         private val SILENCE_FRAME = ByteArray(FRAME_BYTES)

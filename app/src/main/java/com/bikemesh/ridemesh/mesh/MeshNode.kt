@@ -36,6 +36,14 @@ class MeshNode(
 ) {
     enum class LabRole { NORMAL, A, B, C }
 
+    data class Diagnostics(
+        val directPeers: Int,
+        val receivedPackets: Int,
+        val relayedPackets: Int,
+        val maxObservedHops: Int,
+        val profile: String,
+    )
+
     data class RiderPeer(
         val endpointId: String,
         val riderName: String,
@@ -55,6 +63,9 @@ class MeshNode(
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context)
     private val nodeId = UUID.randomUUID()
     private val sequence = AtomicInteger(0)
+    private val receivedPackets = AtomicInteger(0)
+    private val relayedPackets = AtomicInteger(0)
+    private val maxObservedHops = AtomicInteger(0)
     private val connected = ConcurrentHashMap.newKeySet<String>()
     private val requested = ConcurrentHashMap.newKeySet<String>()
     private val endpointNames = ConcurrentHashMap<String, String>()
@@ -64,6 +75,7 @@ class MeshNode(
     private var deviceName: String = "Android device"
     private var rideCode: String = "RIDE01"
     private var labRole: LabRole = LabRole.NORMAL
+    private var offlinePreferred = false
     @Volatile private var running = false
 
     private val seenPackets: MutableMap<UUID, Boolean> = Collections.synchronizedMap(
@@ -80,6 +92,9 @@ class MeshNode(
                 if (payload.type != Payload.Type.BYTES) return
                 val raw = payload.asBytes() ?: return
                 val packet = MeshPacket.decode(raw) ?: return
+                receivedPackets.incrementAndGet()
+                val observedHops = (MAX_TTL - packet.ttl + 1).coerceIn(1, MAX_TTL + 1)
+                maxObservedHops.updateAndGet { previous -> maxOf(previous, observedHops) }
 
                 synchronized(seenPackets) {
                     if (seenPackets.containsKey(packet.packetId)) return
@@ -93,6 +108,7 @@ class MeshNode(
                 }
 
                 if (packet.ttl > 0) {
+                    relayedPackets.incrementAndGet()
                     relay(packet.nextHop(), excludeEndpoint = endpointId)
                 }
             } catch (t: Throwable) {
@@ -154,7 +170,7 @@ class MeshNode(
                     endpointId,
                     lifecycleCallback,
                     ConnectionOptions.Builder()
-                        .setConnectionType(ConnectionType.NON_DISRUPTIVE)
+                        .setConnectionType(connectionType())
                         .build(),
                 ).addOnFailureListener {
                     requested.remove(endpointId)
@@ -176,18 +192,23 @@ class MeshNode(
         rideCode: String,
         labRole: LabRole = LabRole.NORMAL,
         deviceName: String = "",
+        preferOffline: Boolean = false,
     ) {
         stop()
         this.riderName = sanitizeEndpointPart(riderName).ifBlank { "Rider" }.take(18)
         this.deviceName = sanitizeEndpointPart(deviceName).ifBlank { "Android device" }.take(40)
         this.rideCode = rideCode.trim().uppercase().ifBlank { "RIDE01" }.take(12)
         this.labRole = labRole
+        this.offlinePreferred = preferOffline
+        receivedPackets.set(0)
+        relayedPackets.set(0)
+        maxObservedHops.set(0)
         running = true
-        listener.onLog("Starting local mesh for ride ${this.rideCode}")
+        listener.onLog("Starting local mesh for ride ${this.rideCode} • ${if (preferOffline) "OFFLINE BALANCED" else "HYBRID"}")
 
         val advertising = AdvertisingOptions.Builder()
             .setStrategy(STRATEGY)
-            .setConnectionType(ConnectionType.NON_DISRUPTIVE)
+            .setConnectionType(connectionType())
             .build()
         val discovery = DiscoveryOptions.Builder()
             .setStrategy(STRATEGY)
@@ -217,6 +238,20 @@ class MeshNode(
         endpointNames.clear()
         originEndpoints.clear()
         listener.onDirectPeerCount(0)
+    }
+
+    fun diagnostics(): Diagnostics = Diagnostics(
+        directPeers = connected.size,
+        receivedPackets = receivedPackets.get(),
+        relayedPackets = relayedPackets.get(),
+        maxObservedHops = maxObservedHops.get(),
+        profile = if (offlinePreferred) "OFFLINE BALANCED" else "HYBRID NON-DISRUPTIVE",
+    )
+
+    private fun connectionType(): Int = if (offlinePreferred) {
+        ConnectionType.BALANCED
+    } else {
+        ConnectionType.NON_DISRUPTIVE
     }
 
     fun endpointIdForSource(sourceId: String): String? = runCatching {

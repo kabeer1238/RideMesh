@@ -73,7 +73,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private var lastMeshRefreshMs = 0L
     private var micMuted = false
     private var betaExpiredDialogShown = false
+    private var transportMode = TransportMode.AUTO
+    private var meshLabRole = MeshNode.LabRole.NORMAL
 
+    private enum class TransportMode { AUTO, LOCAL_ONLY, INTERNET_ONLY }
     private enum class PendingAction { NONE, START_RIDE, FIND_RIDERS }
     private enum class Screen { HOME, SETUP, ACTIVE }
 
@@ -113,17 +116,32 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             }
 
             val now = System.currentTimeMillis()
-            if (internetNode.isConnected()) {
-                val stableFor = now - internetConnectedSinceMs
-                if (binding.batterySaver.isChecked && stableFor >= INTERNET_STABLE_BEFORE_MESH_SLEEP_MS) {
-                    sleepLocalMesh("Internet stable")
-                } else {
-                    ensureLocalMeshRunning("warm handover fallback")
+            when (transportMode) {
+                TransportMode.LOCAL_ONLY -> {
+                    ensureLocalMeshRunning("LOCAL MESH ONLY")
+                    if (meshRunning && directPeerCount == 0 && now - lastMeshRefreshMs >= LOCAL_MESH_REFRESH_MS) {
+                        restartLocalMesh()
+                    }
                 }
-            } else {
-                ensureLocalMeshRunning("Internet unavailable")
-                if (meshRunning && directPeerCount == 0 && now - lastMeshRefreshMs >= LOCAL_MESH_REFRESH_MS) {
-                    restartLocalMesh()
+
+                TransportMode.INTERNET_ONLY -> {
+                    if (meshRunning) sleepLocalMesh("INTERNET ONLY")
+                }
+
+                TransportMode.AUTO -> {
+                    if (internetNode.isConnected()) {
+                        val stableFor = now - internetConnectedSinceMs
+                        if (binding.batterySaver.isChecked && stableFor >= INTERNET_STABLE_BEFORE_MESH_SLEEP_MS) {
+                            sleepLocalMesh("Internet stable")
+                        } else {
+                            ensureLocalMeshRunning("warm handover fallback")
+                        }
+                    } else {
+                        ensureLocalMeshRunning("Internet unavailable")
+                        if (meshRunning && directPeerCount == 0 && now - lastMeshRefreshMs >= LOCAL_MESH_REFRESH_MS) {
+                            restartLocalMesh()
+                        }
+                    }
                 }
             }
 
@@ -443,8 +461,20 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             applySelectedAudioRoute()
             audioEngine.selectCommunicationDevice()
 
-            ensureLocalMeshRunning("initial fallback")
-            internetNode.start(code, rider, deviceLabel())
+            when (transportMode) {
+                TransportMode.AUTO -> {
+                    ensureLocalMeshRunning("initial fallback")
+                    internetNode.start(code, rider, deviceLabel())
+                }
+                TransportMode.LOCAL_ONLY -> {
+                    ensureLocalMeshRunning("offline test mode")
+                    log("LOCAL MESH ONLY • Internet voice disabled • A/B/C relay test ready")
+                }
+                TransportMode.INTERNET_ONLY -> {
+                    internetNode.start(code, rider, deviceLabel())
+                    log("INTERNET ONLY • local mesh disabled for diagnostics")
+                }
+            }
 
             binding.activeRideCode.text = code
             showScreen(Screen.ACTIVE)
@@ -453,7 +483,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
             mainHandler.removeCallbacks(rideWatchdog)
             mainHandler.postDelayed(rideWatchdog, WATCHDOG_INTERVAL_MS)
-            log("Ride started • noise reduction + automatic Internet / local reconnect enabled")
+            log("Ride started • ${transportModeLabel()} • call-safe audio focus enabled")
         } catch (t: Throwable) {
             recoverFromStartFailure(t)
         }
@@ -462,28 +492,40 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private fun sendHybridAudio(audio: ByteArray) {
         if (!rideStarted || audio.isEmpty()) return
 
-        if (internetNode.isConnected()) {
-            if (!internetNode.sendLocalAudio(audio)) {
-                ensureLocalMeshRunning("Internet send failed")
+        when (transportMode) {
+            TransportMode.LOCAL_ONLY -> {
+                ensureLocalMeshRunning("local voice path")
                 meshNode.sendLocalAudio(audio)
             }
-        } else {
-            ensureLocalMeshRunning("local voice path")
-            meshNode.sendLocalAudio(audio)
+            TransportMode.INTERNET_ONLY -> {
+                if (internetNode.isConnected()) internetNode.sendLocalAudio(audio)
+            }
+            TransportMode.AUTO -> {
+                if (internetNode.isConnected()) {
+                    if (!internetNode.sendLocalAudio(audio)) {
+                        ensureLocalMeshRunning("Internet send failed")
+                        meshNode.sendLocalAudio(audio)
+                    }
+                } else {
+                    ensureLocalMeshRunning("local voice path")
+                    meshNode.sendLocalAudio(audio)
+                }
+            }
         }
     }
 
     private fun ensureLocalMeshRunning(reason: String) {
-        if (!rideStarted || meshRunning || !radiosReady()) return
+        if (!rideStarted || transportMode == TransportMode.INTERNET_ONLY || meshRunning || !radiosReady()) return
         meshNode.start(
             binding.riderName.text?.toString().orEmpty(),
             normalizedRideCode(),
-            MeshNode.LabRole.NORMAL,
+            meshLabRole,
             deviceLabel(),
+            preferOffline = transportMode == TransportMode.LOCAL_ONLY,
         )
         meshRunning = true
         lastMeshRefreshMs = System.currentTimeMillis()
-        log("Local mesh awake • $reason")
+        log("Local mesh awake • $reason • role ${meshLabRole.name}")
     }
 
     private fun sleepLocalMesh(reason: String) {
@@ -495,7 +537,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun restartLocalMesh() {
-        if (!rideStarted || internetNode.isConnected() || !radiosReady()) return
+        if (!rideStarted || transportMode == TransportMode.INTERNET_ONLY || !radiosReady()) return
+        if (transportMode == TransportMode.AUTO && internetNode.isConnected()) return
         log("Refreshing local discovery for automatic reconnect")
         meshRunning = false
         meshNode.stop()
@@ -503,14 +546,30 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         ensureLocalMeshRunning("automatic reconnect refresh")
     }
 
+    private fun restartLocalMeshForRoleOrMode(reason: String) {
+        if (!rideStarted || transportMode == TransportMode.INTERNET_ONLY) return
+        if (meshRunning) {
+            meshRunning = false
+            meshNode.stop()
+            directPeerCount = 0
+        }
+        ensureLocalMeshRunning(reason)
+    }
+
     private fun applyBatteryPolicy() {
         applyPowerUi()
         if (!rideStarted) return
 
-        if (!binding.batterySaver.isChecked) {
-            ensureLocalMeshRunning("Max Link selected")
-        } else if (!internetNode.isConnected()) {
-            ensureLocalMeshRunning("Internet unavailable")
+        when (transportMode) {
+            TransportMode.LOCAL_ONLY -> ensureLocalMeshRunning("LOCAL ONLY ignores mesh sleep")
+            TransportMode.INTERNET_ONLY -> if (meshRunning) sleepLocalMesh("INTERNET ONLY")
+            TransportMode.AUTO -> {
+                if (!binding.batterySaver.isChecked) {
+                    ensureLocalMeshRunning("Max Link selected")
+                } else if (!internetNode.isConnected()) {
+                    ensureLocalMeshRunning("Internet unavailable")
+                }
+            }
         }
 
         updateTransportStatus()
@@ -519,7 +578,12 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private fun updateCapturePolicy() {
         if (!rideStarted) return
-        if (internetNode.isConnected() || directPeerCount > 0) {
+        val voicePathReady = when (transportMode) {
+            TransportMode.LOCAL_ONLY -> directPeerCount > 0
+            TransportMode.INTERNET_ONLY -> internetNode.isConnected()
+            TransportMode.AUTO -> internetNode.isConnected() || directPeerCount > 0
+        }
+        if (voicePathReady) {
             audioEngine.startTransmit()
         } else {
             audioEngine.stopTransmit()
@@ -659,6 +723,12 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         )
         binding.rideCode.setText(prefs.getString("code", "RIDE01"))
         binding.batterySaver.isChecked = prefs.getBoolean("battery_smart", true)
+        transportMode = runCatching {
+            TransportMode.valueOf(prefs.getString("transport_mode", TransportMode.AUTO.name).orEmpty())
+        }.getOrDefault(TransportMode.AUTO)
+        meshLabRole = runCatching {
+            MeshNode.LabRole.valueOf(prefs.getString("mesh_lab_role", MeshNode.LabRole.NORMAL.name).orEmpty())
+        }.getOrDefault(MeshNode.LabRole.NORMAL)
 
         when (prefs.getString("audio_route", "AUTO")) {
             "PHONE" -> binding.routePhone.isChecked = true
@@ -679,6 +749,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             .putString("code", normalizedRideCode())
             .putString("audio_route", audioRoute)
             .putBoolean("battery_smart", binding.batterySaver.isChecked)
+            .putString("transport_mode", transportMode.name)
+            .putString("mesh_lab_role", meshLabRole.name)
             .apply()
     }
 
@@ -757,9 +829,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                 if (internetConnectedSinceMs == 0L) internetConnectedSinceMs = System.currentTimeMillis()
             } else {
                 internetConnectedSinceMs = 0L
-                // If an invite scan was using Nearby, stop it before waking the local voice mesh.
                 stopLobbyDiscovery()
-                if (rideStarted) ensureLocalMeshRunning("Internet path lost")
+                if (rideStarted && transportMode == TransportMode.AUTO) {
+                    ensureLocalMeshRunning("Internet path lost")
+                }
             }
             updateTransportStatus()
             updateCapturePolicy()
@@ -780,39 +853,64 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private fun updateTransportStatus() {
         if (!rideStarted) return
 
-        when {
-            internetNode.isConnected() -> {
-                binding.networkTile.text = "INTERNET"
+        when (transportMode) {
+            TransportMode.LOCAL_ONLY -> {
+                binding.networkTile.text = if (directPeerCount > 0) "LOCAL MESH" else "MESH SEARCH"
                 binding.riderCount.text = "RIDE ACTIVE"
-                binding.meshStatus.text = if (binding.batterySaver.isChecked && !meshRunning) {
-                    "INTERNET VOICE • AUTO LOCAL FALLBACK"
+                binding.meshStatus.text = if (directPeerCount > 0) {
+                    "OFFLINE LOCAL VOICE • ROLE ${meshLabRole.name}"
                 } else {
-                    "INTERNET VOICE • LOCAL MESH WARM"
+                    "OFFLINE SEARCH • WIFI + BLUETOOTH • ROLE ${meshLabRole.name}"
                 }
             }
-
-            directPeerCount > 0 -> {
-                binding.networkTile.text = "LOCAL MESH"
+            TransportMode.INTERNET_ONLY -> {
+                binding.networkTile.text = if (internetNode.isConnected()) "INTERNET" else "NET SEARCH"
                 binding.riderCount.text = "RIDE ACTIVE"
-                binding.meshStatus.text = "LOCAL VOICE • AUTO RECONNECT ACTIVE"
+                binding.meshStatus.text = "INTERNET ONLY • LOCAL MESH DISABLED"
             }
-
-            else -> {
-                binding.networkTile.text = "SEARCHING"
-                binding.riderCount.text = "RIDE ACTIVE"
-                binding.meshStatus.text = "AUTO RECONNECT • INTERNET + NEARBY SEARCH"
+            TransportMode.AUTO -> {
+                when {
+                    internetNode.isConnected() -> {
+                        binding.networkTile.text = "INTERNET"
+                        binding.riderCount.text = "RIDE ACTIVE"
+                        binding.meshStatus.text = if (binding.batterySaver.isChecked && !meshRunning) {
+                            "INTERNET VOICE • AUTO LOCAL FALLBACK"
+                        } else {
+                            "INTERNET VOICE • LOCAL MESH WARM"
+                        }
+                    }
+                    directPeerCount > 0 -> {
+                        binding.networkTile.text = "LOCAL MESH"
+                        binding.riderCount.text = "RIDE ACTIVE"
+                        binding.meshStatus.text = "LOCAL VOICE • AUTO RECONNECT ACTIVE"
+                    }
+                    else -> {
+                        binding.networkTile.text = "SEARCHING"
+                        binding.riderCount.text = "RIDE ACTIVE"
+                        binding.meshStatus.text = "AUTO RECONNECT • INTERNET + NEARBY SEARCH"
+                    }
+                }
             }
         }
 
-        binding.homeNetworkStatus.text = when {
-            internetNode.isConnected() -> "Internet Voice\nActive"
-            directPeerCount > 0 -> "Local Mesh\nActive"
-            else -> "Internet + Mesh\nReady"
+        binding.homeNetworkStatus.text = when (transportMode) {
+            TransportMode.LOCAL_ONLY -> "Offline Mesh\n${if (directPeerCount > 0) "Active" else "Ready"}"
+            TransportMode.INTERNET_ONLY -> "Internet Only\n${if (internetNode.isConnected()) "Active" else "Ready"}"
+            TransportMode.AUTO -> when {
+                internetNode.isConnected() -> "Internet Voice\nActive"
+                directPeerCount > 0 -> "Local Mesh\nActive"
+                else -> "Internet + Mesh\nReady"
+            }
         }
-        val visibleRiderTotal = when {
-            internetNode.isConnected() -> internetPeerCount + 1
-            directPeerCount > 0 -> directPeerCount + 1
-            else -> 1
+
+        val visibleRiderTotal = when (transportMode) {
+            TransportMode.LOCAL_ONLY -> if (directPeerCount > 0) directPeerCount + 1 else 1
+            TransportMode.INTERNET_ONLY -> if (internetNode.isConnected()) internetPeerCount + 1 else 1
+            TransportMode.AUTO -> when {
+                internetNode.isConnected() -> internetPeerCount + 1
+                directPeerCount > 0 -> directPeerCount + 1
+                else -> 1
+            }
         }
         binding.activeRiders.text = "RIDERS $visibleRiderTotal"
         renderRiderGrid()
@@ -1127,6 +1225,105 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             .show()
     }
 
+    private fun transportModeLabel(): String = when (transportMode) {
+        TransportMode.AUTO -> "AUTO HYBRID"
+        TransportMode.LOCAL_ONLY -> "LOCAL MESH ONLY"
+        TransportMode.INTERNET_ONLY -> "INTERNET ONLY"
+    }
+
+    private fun showTransportModeDialog() {
+        val choices = arrayOf(
+            "AUTO HYBRID — Internet first + local fallback",
+            "LOCAL MESH ONLY — offline / multi-hop test",
+            "INTERNET ONLY — isolate Internet audio",
+        )
+        val checked = when (transportMode) {
+            TransportMode.AUTO -> 0
+            TransportMode.LOCAL_ONLY -> 1
+            TransportMode.INTERNET_ONLY -> 2
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Transport test mode")
+            .setSingleChoiceItems(choices, checked) { dialog, which ->
+                transportMode = when (which) {
+                    1 -> TransportMode.LOCAL_ONLY
+                    2 -> TransportMode.INTERNET_ONLY
+                    else -> TransportMode.AUTO
+                }
+                saveSettings()
+                if (rideStarted) applyTransportModeChange()
+                dialog.dismiss()
+            }
+            .setNeutralButton("A / B / C ROLE") { _, _ -> showMeshLabRoleDialog() }
+            .setNegativeButton("CANCEL", null)
+            .show()
+    }
+
+    private fun showMeshLabRoleDialog() {
+        val choices = arrayOf(
+            "NORMAL — normal riding group",
+            "A — connects only to B",
+            "B — relay between A and C",
+            "C — connects only to B",
+        )
+        val checked = when (meshLabRole) {
+            MeshNode.LabRole.NORMAL -> 0
+            MeshNode.LabRole.A -> 1
+            MeshNode.LabRole.B -> 2
+            MeshNode.LabRole.C -> 3
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Offline multi-hop lab role")
+            .setSingleChoiceItems(choices, checked) { dialog, which ->
+                meshLabRole = when (which) {
+                    1 -> MeshNode.LabRole.A
+                    2 -> MeshNode.LabRole.B
+                    3 -> MeshNode.LabRole.C
+                    else -> MeshNode.LabRole.NORMAL
+                }
+                saveSettings()
+                if (rideStarted && transportMode != TransportMode.INTERNET_ONLY) {
+                    restartLocalMeshForRoleOrMode("lab role changed to ${meshLabRole.name}")
+                    updateTransportStatus()
+                    updateCapturePolicy()
+                }
+                dialog.dismiss()
+            }
+            .setNegativeButton("CANCEL", null)
+            .show()
+    }
+
+    private fun applyTransportModeChange() {
+        if (!rideStarted) return
+        val rider = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
+        val code = normalizedRideCode()
+        audioEngine.stopTransmit()
+
+        when (transportMode) {
+            TransportMode.LOCAL_ONLY -> {
+                internetNode.stop()
+                internetPeerCount = 0
+                internetConnectedSinceMs = 0L
+                restartLocalMeshForRoleOrMode("switched to LOCAL MESH ONLY")
+            }
+            TransportMode.INTERNET_ONLY -> {
+                if (meshRunning) sleepLocalMesh("switched to INTERNET ONLY")
+                internetNode.stop()
+                internetPeerCount = 0
+                internetNode.start(code, rider, deviceLabel())
+            }
+            TransportMode.AUTO -> {
+                restartLocalMeshForRoleOrMode("switched to AUTO HYBRID")
+                internetNode.stop()
+                internetPeerCount = 0
+                internetNode.start(code, rider, deviceLabel())
+            }
+        }
+        log("Transport mode: ${transportModeLabel()} • role ${meshLabRole.name}")
+        updateTransportStatus()
+        updateCapturePolicy()
+    }
+
     private fun showSettingsAndHelpDialog() {
         val modes = arrayOf(
             "Battery Smart — recommended",
@@ -1143,12 +1340,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                 dialog.dismiss()
             }
             .setMessage(
-                "Noise reduction is always enabled for group voice. Battery Smart keeps local mesh warm during handover, then saves power when Internet is stable.\n\n" +
+                "Transport: ${transportModeLabel()} • Mesh role ${meshLabRole.name}\n\n" +
+                    "RideMesh automatically pauses microphone and playback when a phone/WhatsApp/VoIP call takes Android audio focus, then resumes after the call.\n\n" +
+                    "LOCAL MESH ONLY keeps Internet voice off and prevents mesh sleeping for offline testing. Wi-Fi + Bluetooth should be ON; Internet may be OFF.\n\n" +
                     betaStatusSentence() + "\n\n" +
                     "Bug reports: WhatsApp group or direct support +91 9188664823."
             )
             .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
-            .setNeutralButton("COMMUNITY") { _, _ -> openRideMeshCommunity() }
+            .setNeutralButton("TRANSPORT") { _, _ -> showTransportModeDialog() }
             .setNegativeButton("CLOSE", null)
             .show()
     }
@@ -1240,28 +1439,37 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun showRideStatusDialog() {
-        val path = when {
-            internetNode.isConnected() -> "Internet"
-            directPeerCount > 0 -> "Local mesh"
-            else -> "Reconnecting"
+        val path = when (transportMode) {
+            TransportMode.LOCAL_ONLY -> if (directPeerCount > 0) "Offline local mesh" else "Offline mesh searching"
+            TransportMode.INTERNET_ONLY -> if (internetNode.isConnected()) "Internet only" else "Internet reconnecting"
+            TransportMode.AUTO -> when {
+                internetNode.isConnected() -> "Internet"
+                directPeerCount > 0 -> "Local mesh"
+                else -> "Reconnecting"
+            }
         }
+        val diag = meshNode.diagnostics()
 
         AlertDialog.Builder(this)
-            .setTitle("Ride status")
+            .setTitle("Ride status • ${transportModeLabel()}")
             .setMessage(
                 "Path: $path\n" +
-                    "Internet riders: ${if (internetNode.isConnected()) internetPeerCount + 1 else 0}\n" +
+                    "Mesh role: ${meshLabRole.name}\n" +
                     "Direct local peers: $directPeerCount\n" +
+                    "Mesh profile: ${diag.profile}\n" +
+                    "Mesh packets received: ${diag.receivedPackets}\n" +
+                    "Packets relayed by this phone: ${diag.relayedPackets}\n" +
+                    "Max observed hops: ${diag.maxObservedHops}\n" +
+                    "Internet riders: ${if (internetNode.isConnected()) internetPeerCount + 1 else 0}\n" +
                     "Audio: ${binding.audioTile.text}\n" +
                     "Microphone: ${if (micMuted) "MUTED" else "LIVE"}\n" +
-                    "Noise reduction: ON\n" +
+                    "Call-safe audio focus: ON\n" +
                     "Power: ${binding.powerTile.text}\n" +
-                    "Auto reconnect: ON\n" +
                     betaStatusSentence() + "\n\n" +
-                    "INVITE can add more riders without stopping the current call."
+                    "A→B→C test: set LOCAL MESH ONLY on all three phones, then roles A, B and C. C should hear A only through B."
             )
             .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
-            .setNeutralButton("INVITE") { _, _ -> showLiveInviteOptions() }
+            .setNeutralButton("TRANSPORT") { _, _ -> showTransportModeDialog() }
             .setNegativeButton("CLOSE", null)
             .show()
     }
