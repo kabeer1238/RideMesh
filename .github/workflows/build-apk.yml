@@ -3,46 +3,65 @@ name: Build RideMesh APK
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "beta1.4" ]
   pull_request:
     branches: [ "main", "master" ]
 
 permissions:
   contents: write
 
-# Beta 1 release gate: unit tests + Android lint + APK packaging
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+
       - name: Install Android 35 SDK
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
       - name: Set up Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Test, lint and build Beta 1
+
+      - name: Materialize approved RideMesh branding
+        if: github.ref == 'refs/heads/beta1.4' || github.head_ref == 'beta1.4'
+        shell: bash
+        run: |
+          mkdir -p app/src/main/res/drawable-nodpi
+          base64 -d branding/ridemesh_logo_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
+          base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
+          file app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
+          file app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          file app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
+          test -s app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
+          test -s app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          test -s app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
+
+      - name: Verify second-group feature is absent
+        shell: bash
+        run: |
+          ! grep -R "secondaryInternetNode\|SECONDARY GROUP\|CREATE SECOND GROUP\|JOIN SECOND GROUP" app/src/main/java app/src/main/res/layout/activity_main.xml
+
+      - name: Test, lint and build Beta 1.4
         id: compile
         shell: bash
         run: |
           set -o pipefail
           {
-            echo "RideMesh Beta 1 CI $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "RideMesh Beta 1.4 CI $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo "Commit: $GITHUB_SHA"
-            mkdir -p app/src/main/res/drawable-nodpi
-            base64 -d branding/ridemesh_logo.jpg.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo.jpg
-            base64 -d branding/ridemesh_icon.jpg.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon.jpg
-            file app/src/main/res/drawable-nodpi/ridemesh_logo.jpg
-            file app/src/main/res/drawable-nodpi/ridemesh_icon.jpg
             echo "=== UNIT TESTS ==="
             gradle --no-daemon testDebugUnitTest
             echo "=== ANDROID LINT ==="
@@ -50,43 +69,34 @@ jobs:
             echo "=== APK BUILD ==="
             gradle --no-daemon assembleDebug
           } 2>&1 | tee build.log
-      - name: Upload Beta 1 APK
-        id: apk_artifact
+
+      - name: Upload Beta 1.4 APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1-apk
+          name: RideMesh-Beta1.4-v0.4.8-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
       - name: Upload lint report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta1-lint
+          name: RideMesh-Beta1.4-v0.4.8-lint
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
-      - name: Publish build result
-        if: always() && github.event_name != 'pull_request'
+
+      - name: Persist validated Beta 1.4 branding assets
+        if: success() && github.ref == 'refs/heads/beta1.4'
         shell: bash
-        env:
-          APK_ARTIFACT_ID: ${{ steps.apk_artifact.outputs.artifact-id }}
         run: |
-          mkdir -p dist
-          cp build.log dist/last-build.txt 2>/dev/null || echo "Build ended before logged build step" > dist/last-build.txt
-          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            cp app/build/outputs/apk/debug/app-debug.apk dist/RideMesh-Beta1.apk
-            echo "" >> dist/last-build.txt
-            echo "RESULT: APK_BUILT" >> dist/last-build.txt
-            echo "ARTIFACT_ID: ${APK_ARTIFACT_ID}" >> dist/last-build.txt
-          else
-            echo "" >> dist/last-build.txt
-            echo "RESULT: BUILD_FAILED" >> dist/last-build.txt
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/last-build.txt
-          if [ -f dist/RideMesh-Beta1.apk ]; then git add dist/RideMesh-Beta1.apk; fi
+          git add \
+            app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp \
+            app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp \
+            app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
           if ! git diff --cached --quiet; then
-            git commit -m "Publish RideMesh Beta 1 build result [skip ci]"
-            git push
+            git commit -m "Beta 1.4: refresh approved branding assets [skip ci]"
+            git push origin beta1.4
           fi
