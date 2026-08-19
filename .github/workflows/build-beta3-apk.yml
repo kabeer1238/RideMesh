@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ "beta3-low-latency-audio" ]
+  pull_request:
+    branches: [ "main" ]
 
 permissions:
   contents: write
@@ -104,7 +106,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Persist validated Beta3 source
-        if: success()
+        if: success() && github.event_name == 'push'
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
