@@ -743,11 +743,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
     }
 
-    override fun onAudioPacket(sourceId: String, audio: ByteArray) {
+    override fun onAudioPacket(sourceId: String, sequence: Int, timestampMs: Long, audio: ByteArray) {
         if (!rideStarted) return
         val tileKey = meshNode.endpointIdForSource(sourceId) ?: sourceId
         markRiderSpeaking(tileKey)
-        audioEngine.playIncoming(sourceId, audio)
+        audioEngine.playIncoming(sourceId, sequence, timestampMs, audio)
     }
 
     override fun onInternetState(connected: Boolean, message: String) {
@@ -771,10 +771,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         runOnUiThread { updateTransportStatus() }
     }
 
-    override fun onInternetAudio(sourceId: String, audio: ByteArray) {
+    override fun onInternetAudio(sourceId: String, sequence: Int, timestampMs: Long, audio: ByteArray) {
         if (!rideStarted) return
         markRiderSpeaking(sourceId)
-        audioEngine.playIncoming(sourceId, audio)
+        audioEngine.playIncoming(sourceId, sequence, timestampMs, audio)
     }
 
     private fun updateTransportStatus() {

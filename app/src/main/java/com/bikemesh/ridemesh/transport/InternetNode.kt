@@ -26,7 +26,7 @@ import javax.net.ssl.SSLSocketFactory
 class InternetNode(private val listener: Listener) {
     interface Listener {
         fun onInternetState(connected: Boolean, message: String)
-        fun onInternetAudio(sourceId: String, audio: ByteArray)
+        fun onInternetAudio(sourceId: String, sequence: Int, timestampMs: Long, audio: ByteArray)
         fun onInternetPeerCount(count: Int)
     }
 
@@ -135,6 +135,7 @@ class InternetNode(private val listener: Listener) {
         val tls = (SSLSocketFactory.getDefault()
             .createSocket(PUBLIC_BROKER, PUBLIC_BROKER_TLS_PORT) as SSLSocket).apply {
             soTimeout = SOCKET_TIMEOUT_MS
+            tcpNoDelay = true
             startHandshake()
         }
         socket = tls
@@ -191,7 +192,7 @@ class InternetNode(private val listener: Listener) {
                 if (packet.origin == nodeId) return
                 updateLinkStats(packet)
                 touchPeer(packet.origin)
-                listener.onInternetAudio(packet.origin.toString(), packet.audio)
+                listener.onInternetAudio(packet.origin.toString(), packet.sequence, packet.timestampMs, packet.audio)
             }
             presenceTopic -> handlePresence(payload)
         }
