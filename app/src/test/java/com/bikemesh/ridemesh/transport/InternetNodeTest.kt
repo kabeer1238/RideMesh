@@ -12,7 +12,7 @@ import java.util.UUID
 class InternetNodeTest {
     private val listener = object : InternetNode.Listener {
         override fun onInternetState(connected: Boolean, message: String) = Unit
-        override fun onInternetAudio(sourceId: String, audio: ByteArray) = Unit
+        override fun onInternetAudio(sourceId: String, sequence: Int, timestampMs: Long, audio: ByteArray) = Unit
         override fun onInternetPeerCount(count: Int) = Unit
     }
 
