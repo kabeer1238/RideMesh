@@ -1,13 +1,15 @@
-name: Build RideMesh Play-Signed AAB API 36
+name: Build RideMesh Beta4 Google Play Pack
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ "beta4-internet-webrtc-opus" ]
 
 permissions:
   contents: read
 
 jobs:
-  build-play-signed-aab:
+  build-play-pack:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -30,7 +32,7 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Verify signing secrets are configured
+      - name: Verify Play upload signing secrets
         shell: bash
         env:
           KEYSTORE_B64: ${{ secrets.RIDEMESH_UPLOAD_KEYSTORE_B64 }}
@@ -43,6 +45,9 @@ jobs:
           test -n "$KEY_ALIAS" || (echo "Missing RIDEMESH_UPLOAD_KEY_ALIAS" && exit 1)
           test -n "$KEY_PASSWORD" || (echo "Missing RIDEMESH_UPLOAD_KEY_PASSWORD" && exit 1)
 
+      - name: Apply validated Beta4 Internet-only WebRTC runtime
+        run: python tools/apply_beta4_internet_only_ui.py
+
       - name: Materialize approved RideMesh branding
         shell: bash
         run: |
@@ -54,19 +59,30 @@ jobs:
           test -s app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           test -s app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
-      - name: Verify Play release configuration
+      - name: Verify Google Play release identity
         shell: bash
         run: |
-          grep -q 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
-          grep -q 'compileSdk = 36' app/build.gradle.kts
-          grep -q 'targetSdk = 36' app/build.gradle.kts
-          grep -q 'versionCode = 1' app/build.gradle.kts
-          grep -q 'versionName = "1.0.0-beta"' app/build.gradle.kts
-          grep -q 'android.permission.FOREGROUND_SERVICE_MICROPHONE' app/src/main/AndroidManifest.xml
-          grep -q 'android:foregroundServiceType="microphone|connectedDevice"' app/src/main/AndroidManifest.xml
-          ! grep -R "secondaryInternetNode\|SECONDARY GROUP\|CREATE SECOND GROUP\|JOIN SECOND GROUP" app/src/main/java app/src/main/res/layout/activity_main.xml
+          grep -Fq 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
+          grep -Fq 'compileSdk = 36' app/build.gradle.kts
+          grep -Fq 'targetSdk = 36' app/build.gradle.kts
+          grep -Fq 'versionCode = 7' app/build.gradle.kts
+          grep -Fq 'versionName = "1.0.0-beta4-webrtc-opus"' app/build.gradle.kts
+          grep -Fq 'io.github.webrtc-sdk:android:144.7559.09' app/build.gradle.kts
+          grep -Fq 'WEBRTC OPUS' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
+          grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -Fq 'DURATION_DAYS = 60L' app/src/main/java/com/bikemesh/ridemesh/beta/BetaWindow.kt
+          grep -Fq 'android.permission.FOREGROUND_SERVICE_MICROPHONE' app/src/main/AndroidManifest.xml
+          grep -Fq 'android:foregroundServiceType="microphone|connectedDevice"' app/src/main/AndroidManifest.xml
+          if grep -Fq 'android:debuggable="true"' app/src/main/AndroidManifest.xml; then
+            echo 'ERROR: debuggable=true is not allowed in Play release manifest'
+            exit 1
+          fi
+          if grep -Fq 'sendMqttPublish(audioTopic' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt; then
+            echo 'ERROR: raw PCM MQTT audio publishing is still present'
+            exit 1
+          fi
 
-      - name: Restore upload keystore
+      - name: Restore RideMesh upload keystore
         shell: bash
         env:
           KEYSTORE_B64: ${{ secrets.RIDEMESH_UPLOAD_KEYSTORE_B64 }}
@@ -78,19 +94,20 @@ jobs:
       - name: Unit tests
         run: gradle --no-daemon testDebugUnitTest
 
-      - name: Android lint
-        run: gradle --no-daemon lintDebug
+      - name: Android release lint
+        run: gradle --no-daemon lintRelease
 
-      - name: Build release AAB
-        run: gradle --no-daemon bundleRelease
+      - name: Build release AAB and APK
+        run: gradle --no-daemon bundleRelease assembleRelease
 
-      - name: Sign AAB with RideMesh upload key
+      - name: Sign and verify Google Play AAB
         shell: bash
         env:
           STORE_PASSWORD: ${{ secrets.RIDEMESH_UPLOAD_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.RIDEMESH_UPLOAD_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.RIDEMESH_UPLOAD_KEY_PASSWORD }}
         run: |
+          mkdir -p dist
           AAB="app/build/outputs/bundle/release/app-release.aab"
           test -s "$AAB"
           jarsigner \
@@ -102,24 +119,103 @@ jobs:
             "$AAB" "$KEY_ALIAS"
           jarsigner -verify -verbose -certs "$AAB" | tee "$RUNNER_TEMP/aab-verify.txt"
           grep -qi "jar verified" "$RUNNER_TEMP/aab-verify.txt"
-          cp "$AAB" "RideMesh-1.0.0-beta-API36-PLAY-SIGNED.aab"
+          cp "$AAB" "dist/RideMesh-1.0.0-beta4-vc7-API36-PLAY-SIGNED.aab"
 
-      - name: Upload Play-signed AAB
+      - name: Align, sign and verify release APK
+        shell: bash
+        env:
+          STORE_PASSWORD: ${{ secrets.RIDEMESH_UPLOAD_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RIDEMESH_UPLOAD_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RIDEMESH_UPLOAD_KEY_PASSWORD }}
+        run: |
+          UNSIGNED_APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          test -s "$UNSIGNED_APK"
+          ZIPALIGN="$ANDROID_HOME/build-tools/36.0.0/zipalign"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$ZIPALIGN" -f -v 4 "$UNSIGNED_APK" "$RUNNER_TEMP/ridemesh-release-aligned.apk"
+          "$APKSIGNER" sign \
+            --ks "$RUNNER_TEMP/ridemesh-upload.jks" \
+            --ks-pass "pass:$STORE_PASSWORD" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --key-pass "pass:$KEY_PASSWORD" \
+            --out "dist/RideMesh-1.0.0-beta4-vc7-API36-PLAY-SIGNED.apk" \
+            "$RUNNER_TEMP/ridemesh-release-aligned.apk"
+          "$APKSIGNER" verify --verbose --print-certs "dist/RideMesh-1.0.0-beta4-vc7-API36-PLAY-SIGNED.apk" | tee "$RUNNER_TEMP/apk-verify.txt"
+
+      - name: Build Google Play submission pack
+        shell: bash
+        run: |
+          AAB="dist/RideMesh-1.0.0-beta4-vc7-API36-PLAY-SIGNED.aab"
+          APK="dist/RideMesh-1.0.0-beta4-vc7-API36-PLAY-SIGNED.apk"
+          AAB_SHA=$(sha256sum "$AAB" | awk '{print $1}')
+          APK_SHA=$(sha256sum "$APK" | awk '{print $1}')
+          cat > dist/GOOGLE_PLAY_SUBMISSION_README.txt <<EOF
+          RIDEMESH BY AUTOPILOT INDIA — GOOGLE PLAY BETA SUBMISSION
+
+          Application ID: in.autopilotindia.ridemesh
+          Version name: 1.0.0-beta4-webrtc-opus
+          Version code: 7
+          Compile SDK: 36
+          Target SDK: 36
+          Minimum SDK: 26
+          Build type: Release
+          Voice engine: WebRTC + Opus
+          Media encryption: DTLS-SRTP (WebRTC)
+          Beta expiry: 60 days from first launch
+
+          GOOGLE PLAY FILE TO UPLOAD:
+          RideMesh-1.0.0-beta4-vc7-API36-PLAY-SIGNED.aab
+          SHA256: $AAB_SHA
+
+          DIRECT INSTALL / TEST FILE:
+          RideMesh-1.0.0-beta4-vc7-API36-PLAY-SIGNED.apk
+          SHA256: $APK_SHA
+
+          The AAB is signed with the configured RideMesh Google Play upload key.
+          The APK is signed with the same upload key and is provided for direct tester installation.
+
+          IMPORTANT BETA NETWORK NOTE:
+          This Beta4 build uses WebRTC with public STUN. A production TURN relay is not yet configured,
+          so some restrictive carrier/NAT combinations may fail to establish the media path.
+
+          PLAY CONSOLE:
+          Upload the .aab to an Internal testing or Closed testing release first.
+          Complete App content, Data safety, Privacy policy, Content rating, Foreground service declarations,
+          store listing, screenshots and tester/release notes inside Google Play Console before rollout.
+          EOF
+          cp "$RUNNER_TEMP/aab-verify.txt" dist/AAB_SIGNATURE_VERIFY.txt
+          cp "$RUNNER_TEMP/apk-verify.txt" dist/APK_SIGNATURE_VERIFY.txt
+          sha256sum "$AAB" "$APK" > dist/SHA256SUMS.txt
+          (cd dist && zip -9 "RideMesh-Beta4-Google-Play-Submission-Pack.zip" \
+            RideMesh-1.0.0-beta4-vc7-API36-PLAY-SIGNED.aab \
+            RideMesh-1.0.0-beta4-vc7-API36-PLAY-SIGNED.apk \
+            GOOGLE_PLAY_SUBMISSION_README.txt \
+            SHA256SUMS.txt \
+            AAB_SIGNATURE_VERIFY.txt \
+            APK_SIGNATURE_VERIFY.txt)
+          ls -lh dist/
+
+      - name: Upload Google Play submission pack
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-1.0.0-beta-API36-PLAY-SIGNED
-          path: RideMesh-1.0.0-beta-API36-PLAY-SIGNED.aab
+          name: RideMesh-Beta4-Google-Play-Submission-Pack
+          path: |
+            dist/RideMesh-Beta4-Google-Play-Submission-Pack.zip
+            dist/RideMesh-1.0.0-beta4-vc7-API36-PLAY-SIGNED.aab
+            dist/RideMesh-1.0.0-beta4-vc7-API36-PLAY-SIGNED.apk
+            dist/GOOGLE_PLAY_SUBMISSION_README.txt
+            dist/SHA256SUMS.txt
           if-no-files-found: error
 
-      - name: Upload lint report
+      - name: Upload release lint report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-1.0.0-beta-API36-play-lint
-          path: app/build/reports/lint-results-debug.html
+          name: RideMesh-Beta4-Google-Play-Lint
+          path: app/build/reports/lint-results-release.html
           if-no-files-found: ignore
 
-      - name: Remove upload keystore from runner
+      - name: Remove upload key from runner
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/ridemesh-upload.jks"
+        run: rm -f "$RUNNER_TEMP/ridemesh-upload.jks" "$RUNNER_TEMP/ridemesh-release-aligned.apk"
