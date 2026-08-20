@@ -1,4 +1,4 @@
-// RideMesh Beta4 — Internet-only WebRTC + Opus field test
+// RideMesh Beta4.1 — Google Play release candidate: Internet-only WebRTC + Opus
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -14,8 +14,8 @@ android {
         applicationId = "in.autopilotindia.ridemesh"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "1.0.0-beta4-webrtc-opus"
+        versionCode = 8
+        versionName = "1.0.0-beta4.1-play"
     }
 
     buildFeatures {
@@ -42,14 +42,14 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
 
-    // Kept only because the preserved Beta3.x experimental mesh source still compiles in this branch.
-    // Beta4's user-facing voice path does NOT start Nearby/local mesh.
+    // Preserved Beta3.x mesh classes still compile in this branch, but Beta4.1 does not
+    // request Nearby permissions or start the local/offline transport in the user flow.
     implementation("com.google.android.gms:play-services-nearby:19.4.0")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     implementation("com.google.zxing:core:3.5.4")
 
-    // Current prebuilt libwebrtc Android AAR. WebRTC negotiates Opus for the audio track;
-    // MQTT is used only for lightweight room presence and SDP/ICE signaling.
+    // WebRTC negotiates Opus for the audio track. MQTT/TLS is used only for lightweight
+    // presence and SDP/ICE signaling; it is not the voice-media transport.
     implementation("io.github.webrtc-sdk:android:144.7559.09")
 
     testImplementation("junit:junit:4.13.2")
