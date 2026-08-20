@@ -1,4 +1,4 @@
-name: Build RideMesh Beta4 Release AAB APK
+name: Build RideMesh Beta4.1 Play RC AAB APK
 
 on:
   workflow_dispatch:
@@ -55,14 +55,14 @@ jobs:
           test -s app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           test -s app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
-      - name: Verify Beta4 Play release configuration
+      - name: Verify Beta4.1 Play release configuration
         shell: bash
         run: |
           grep -Fq 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
           grep -Fq 'compileSdk = 36' app/build.gradle.kts
           grep -Fq 'targetSdk = 36' app/build.gradle.kts
-          grep -Fq 'versionCode = 7' app/build.gradle.kts
-          grep -Fq 'versionName = "1.0.0-beta4-webrtc-opus"' app/build.gradle.kts
+          grep -Fq 'versionCode = 8' app/build.gradle.kts
+          grep -Fq 'versionName = "1.0.0-beta4.1-play"' app/build.gradle.kts
           grep -Fq 'io.github.webrtc-sdk:android:144.7559.09' app/build.gradle.kts
           grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -Fq 'DURATION_DAYS = 60L' app/src/main/java/com/bikemesh/ridemesh/beta/BetaWindow.kt
@@ -70,6 +70,12 @@ jobs:
             echo 'ERROR: debuggable release manifest'
             exit 1
           fi
+          for P in android.permission.BLUETOOTH_ADVERTISE android.permission.BLUETOOTH_SCAN android.permission.NEARBY_WIFI_DEVICES android.permission.ACCESS_FINE_LOCATION android.permission.ACCESS_COARSE_LOCATION; do
+            if grep -Fq "$P" app/src/main/AndroidManifest.xml; then
+              echo "ERROR: unused offline permission remains: $P"
+              exit 1
+            fi
+          done
 
       - name: Unit tests
         run: gradle --no-daemon testDebugUnitTest
@@ -80,7 +86,7 @@ jobs:
       - name: Build release AAB and APK
         run: gradle --no-daemon bundleRelease assembleRelease
 
-      - name: Prepare release artifacts
+      - name: Prepare unsigned release artifacts
         shell: bash
         run: |
           AAB="app/build/outputs/bundle/release/app-release.aab"
@@ -88,25 +94,44 @@ jobs:
           test -s "$AAB"
           test -s "$APK"
           mkdir -p dist
-          cp "$AAB" dist/RideMesh-Beta4-vc7-API36-UNSIGNED.aab
-          cp "$APK" dist/RideMesh-Beta4-vc7-API36-UNSIGNED.apk
-          sha256sum dist/RideMesh-Beta4-vc7-API36-UNSIGNED.aab dist/RideMesh-Beta4-vc7-API36-UNSIGNED.apk > dist/SHA256SUMS.txt
+          cp "$AAB" dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.aab
+          cp "$APK" dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.apk
+          sha256sum dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.aab dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.apk > dist/SHA256SUMS.txt
           ls -lh dist/
 
-      - name: Upload Beta4 release artifacts
+      - name: Prepare official Android APK signing tools
+        shell: bash
+        run: |
+          TOOLS="$ANDROID_SDK_ROOT/build-tools/36.0.0"
+          test -x "$TOOLS/apksigner"
+          test -x "$TOOLS/zipalign"
+          test -s "$TOOLS/lib/apksigner.jar"
+          mkdir -p signing-tools/lib
+          cp "$TOOLS/apksigner" signing-tools/apksigner
+          cp "$TOOLS/zipalign" signing-tools/zipalign
+          cp "$TOOLS/lib/apksigner.jar" signing-tools/lib/apksigner.jar
+
+      - name: Upload Beta4.1 unsigned release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta4-Release-Unsigned-AAB-APK
+          name: RideMesh-Beta4.1-vc8-Release-Unsigned
           path: |
-            dist/RideMesh-Beta4-vc7-API36-UNSIGNED.aab
-            dist/RideMesh-Beta4-vc7-API36-UNSIGNED.apk
+            dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.aab
+            dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.apk
             dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Upload official APK signing tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-BuildTools-36-ApkSigner
+          path: signing-tools/
           if-no-files-found: error
 
       - name: Upload release lint report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta4-Release-Lint
+          name: RideMesh-Beta4.1-Release-Lint
           path: app/build/reports/lint-results-release.html
           if-no-files-found: ignore
