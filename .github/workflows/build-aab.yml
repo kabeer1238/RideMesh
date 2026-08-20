@@ -1,4 +1,4 @@
-name: Build RideMesh Beta4.1 Play RC AAB APK
+name: Build RideMesh Beta4.2 Play RC AAB APK
 
 on:
   workflow_dispatch:
@@ -55,14 +55,14 @@ jobs:
           test -s app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           test -s app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
-      - name: Verify Beta4.1 Play release configuration
+      - name: Verify Beta4.2 Play release configuration
         shell: bash
         run: |
           grep -Fq 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
           grep -Fq 'compileSdk = 36' app/build.gradle.kts
           grep -Fq 'targetSdk = 36' app/build.gradle.kts
-          grep -Fq 'versionCode = 8' app/build.gradle.kts
-          grep -Fq 'versionName = "1.0.0-beta4.1-play"' app/build.gradle.kts
+          grep -Fq 'versionCode = 9' app/build.gradle.kts
+          grep -Fq 'versionName = "1.0.0-beta4.2-play"' app/build.gradle.kts
           grep -Fq 'io.github.webrtc-sdk:android:144.7559.09' app/build.gradle.kts
           grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -Fq 'DURATION_DAYS = 60L' app/src/main/java/com/bikemesh/ridemesh/beta/BetaWindow.kt
@@ -98,11 +98,11 @@ jobs:
           test -s "$META"
           test -x "$TOOLS/zipalign"
           mkdir -p dist
-          cp "$AAB" dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.aab
-          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta4.1-vc8-API36-ALIGNED-UNSIGNED.apk
-          "$TOOLS/zipalign" -c -P 16 -v 4 dist/RideMesh-Beta4.1-vc8-API36-ALIGNED-UNSIGNED.apk > dist/ZIPALIGN-VERIFY.txt
+          cp "$AAB" dist/RideMesh-Beta4.2-vc9-API36-UNSIGNED.aab
+          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta4.2-vc9-API36-ALIGNED-UNSIGNED.apk
+          "$TOOLS/zipalign" -c -P 16 -v 4 dist/RideMesh-Beta4.2-vc9-API36-ALIGNED-UNSIGNED.apk > dist/ZIPALIGN-VERIFY.txt
           cp "$META" dist/output-metadata.json
-          sha256sum dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.aab dist/RideMesh-Beta4.1-vc8-API36-ALIGNED-UNSIGNED.apk > dist/SHA256SUMS.txt
+          sha256sum dist/RideMesh-Beta4.2-vc9-API36-UNSIGNED.aab dist/RideMesh-Beta4.2-vc9-API36-ALIGNED-UNSIGNED.apk > dist/SHA256SUMS.txt
           ls -lh dist/
 
       - name: Prepare official Android APK signing tools
@@ -115,13 +115,13 @@ jobs:
           cp "$TOOLS/apksigner" signing-tools/apksigner
           cp "$TOOLS/lib/apksigner.jar" signing-tools/lib/apksigner.jar
 
-      - name: Upload Beta4.1 unsigned release artifacts
+      - name: Upload Beta4.2 unsigned release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta4.1-vc8-Release-Unsigned
+          name: RideMesh-Beta4.2-vc9-Release-Unsigned
           path: |
-            dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.aab
-            dist/RideMesh-Beta4.1-vc8-API36-ALIGNED-UNSIGNED.apk
+            dist/RideMesh-Beta4.2-vc9-API36-UNSIGNED.aab
+            dist/RideMesh-Beta4.2-vc9-API36-ALIGNED-UNSIGNED.apk
             dist/output-metadata.json
             dist/ZIPALIGN-VERIFY.txt
             dist/SHA256SUMS.txt
@@ -138,6 +138,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta4.1-Release-Lint
+          name: RideMesh-Beta4.2-Release-Lint
           path: app/build/reports/lint-results-release.html
           if-no-files-found: ignore
