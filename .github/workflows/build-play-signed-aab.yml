@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ "beta4-internet-webrtc-opus" ]
+  pull_request:
+    branches: [ "main" ]
 
 permissions:
   contents: read
