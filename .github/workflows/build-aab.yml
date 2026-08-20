@@ -86,17 +86,23 @@ jobs:
       - name: Build release AAB and APK
         run: gradle --no-daemon bundleRelease assembleRelease
 
-      - name: Prepare unsigned release artifacts
+      - name: Align and prepare unsigned release artifacts
         shell: bash
         run: |
           AAB="app/build/outputs/bundle/release/app-release.aab"
           APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          META="app/build/outputs/apk/release/output-metadata.json"
+          TOOLS="$ANDROID_SDK_ROOT/build-tools/36.0.0"
           test -s "$AAB"
           test -s "$APK"
+          test -s "$META"
+          test -x "$TOOLS/zipalign"
           mkdir -p dist
           cp "$AAB" dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.aab
-          cp "$APK" dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.apk
-          sha256sum dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.aab dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.apk > dist/SHA256SUMS.txt
+          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta4.1-vc8-API36-ALIGNED-UNSIGNED.apk
+          "$TOOLS/zipalign" -c -P 16 -v 4 dist/RideMesh-Beta4.1-vc8-API36-ALIGNED-UNSIGNED.apk > dist/ZIPALIGN-VERIFY.txt
+          cp "$META" dist/output-metadata.json
+          sha256sum dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.aab dist/RideMesh-Beta4.1-vc8-API36-ALIGNED-UNSIGNED.apk > dist/SHA256SUMS.txt
           ls -lh dist/
 
       - name: Prepare official Android APK signing tools
@@ -104,11 +110,9 @@ jobs:
         run: |
           TOOLS="$ANDROID_SDK_ROOT/build-tools/36.0.0"
           test -x "$TOOLS/apksigner"
-          test -x "$TOOLS/zipalign"
           test -s "$TOOLS/lib/apksigner.jar"
           mkdir -p signing-tools/lib
           cp "$TOOLS/apksigner" signing-tools/apksigner
-          cp "$TOOLS/zipalign" signing-tools/zipalign
           cp "$TOOLS/lib/apksigner.jar" signing-tools/lib/apksigner.jar
 
       - name: Upload Beta4.1 unsigned release artifacts
@@ -117,7 +121,9 @@ jobs:
           name: RideMesh-Beta4.1-vc8-Release-Unsigned
           path: |
             dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.aab
-            dist/RideMesh-Beta4.1-vc8-API36-UNSIGNED.apk
+            dist/RideMesh-Beta4.1-vc8-API36-ALIGNED-UNSIGNED.apk
+            dist/output-metadata.json
+            dist/ZIPALIGN-VERIFY.txt
             dist/SHA256SUMS.txt
           if-no-files-found: error
 
