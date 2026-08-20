@@ -1,9 +1,9 @@
-name: Build RideMesh Play AAB API 36
+name: Build RideMesh Beta4 Release AAB APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "play-release-api36" ]
+    branches: [ "beta4-internet-webrtc-opus" ]
   pull_request:
     branches: [ "main" ]
 
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  build-aab:
+  build-release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -34,6 +34,9 @@ jobs:
         with:
           gradle-version: '8.13'
 
+      - name: Apply validated Beta4 Internet-only WebRTC runtime
+        run: python tools/apply_beta4_internet_only_ui.py
+
       - name: Materialize approved RideMesh branding
         shell: bash
         run: |
@@ -45,45 +48,58 @@ jobs:
           test -s app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           test -s app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
-      - name: Verify Play release configuration
+      - name: Verify Beta4 Play release configuration
         shell: bash
         run: |
-          grep -q 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
-          grep -q 'compileSdk = 36' app/build.gradle.kts
-          grep -q 'targetSdk = 36' app/build.gradle.kts
-          grep -q 'versionCode = 1' app/build.gradle.kts
-          grep -q 'versionName = "1.0.0-beta"' app/build.gradle.kts
-          grep -q 'android.permission.FOREGROUND_SERVICE_MICROPHONE' app/src/main/AndroidManifest.xml
-          grep -q 'android:foregroundServiceType="microphone|connectedDevice"' app/src/main/AndroidManifest.xml
-          ! grep -R "secondaryInternetNode\|SECONDARY GROUP\|CREATE SECOND GROUP\|JOIN SECOND GROUP" app/src/main/java app/src/main/res/layout/activity_main.xml
+          grep -Fq 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
+          grep -Fq 'compileSdk = 36' app/build.gradle.kts
+          grep -Fq 'targetSdk = 36' app/build.gradle.kts
+          grep -Fq 'versionCode = 7' app/build.gradle.kts
+          grep -Fq 'versionName = "1.0.0-beta4-webrtc-opus"' app/build.gradle.kts
+          grep -Fq 'io.github.webrtc-sdk:android:144.7559.09' app/build.gradle.kts
+          grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -Fq 'DURATION_DAYS = 60L' app/src/main/java/com/bikemesh/ridemesh/beta/BetaWindow.kt
+          if grep -Fq 'android:debuggable="true"' app/src/main/AndroidManifest.xml; then
+            echo 'ERROR: debuggable release manifest'
+            exit 1
+          fi
 
       - name: Unit tests
         run: gradle --no-daemon testDebugUnitTest
 
-      - name: Android lint
-        run: gradle --no-daemon lintDebug
+      - name: Release lint
+        run: gradle --no-daemon lintRelease
 
-      - name: Build release AAB
-        run: gradle --no-daemon bundleRelease
+      - name: Build release AAB and APK
+        run: gradle --no-daemon bundleRelease assembleRelease
 
-      - name: Verify AAB created
+      - name: Prepare release artifacts
         shell: bash
         run: |
           AAB="app/build/outputs/bundle/release/app-release.aab"
+          APK="app/build/outputs/apk/release/app-release-unsigned.apk"
           test -s "$AAB"
-          ls -lh "$AAB"
+          test -s "$APK"
+          mkdir -p dist
+          cp "$AAB" dist/RideMesh-Beta4-vc7-API36-UNSIGNED.aab
+          cp "$APK" dist/RideMesh-Beta4-vc7-API36-UNSIGNED.apk
+          sha256sum dist/RideMesh-Beta4-vc7-API36-UNSIGNED.aab dist/RideMesh-Beta4-vc7-API36-UNSIGNED.apk > dist/SHA256SUMS.txt
+          ls -lh dist/
 
-      - name: Upload Play release AAB
+      - name: Upload Beta4 release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Play-1.0.0-beta-api36-aab
-          path: app/build/outputs/bundle/release/app-release.aab
+          name: RideMesh-Beta4-Release-Unsigned-AAB-APK
+          path: |
+            dist/RideMesh-Beta4-vc7-API36-UNSIGNED.aab
+            dist/RideMesh-Beta4-vc7-API36-UNSIGNED.apk
+            dist/SHA256SUMS.txt
           if-no-files-found: error
 
-      - name: Upload lint report
+      - name: Upload release lint report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Play-1.0.0-beta-api36-lint
-          path: app/build/reports/lint-results-debug.html
+          name: RideMesh-Beta4-Release-Lint
+          path: app/build/reports/lint-results-release.html
           if-no-files-found: ignore
