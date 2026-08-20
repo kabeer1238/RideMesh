@@ -34,8 +34,15 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Apply validated Beta4 Internet-only WebRTC runtime
-        run: python tools/apply_beta4_internet_only_ui.py
+      - name: Ensure validated Beta4 Internet-only WebRTC runtime
+        shell: bash
+        run: |
+          if grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt && \
+             grep -Fq 'WEBRTC OPUS' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt; then
+            echo 'Beta4 runtime already materialized; patch step skipped.'
+          else
+            python tools/apply_beta4_internet_only_ui.py
+          fi
 
       - name: Materialize approved RideMesh branding
         shell: bash
