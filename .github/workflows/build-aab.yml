@@ -1,9 +1,9 @@
-name: Build RideMesh Beta4.2 Play RC AAB APK
+name: Build RideMesh Beta4.3 Public Play RC AAB APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "beta4-internet-webrtc-opus" ]
+    branches: [ "beta4.3-public-blackbox-email" ]
   pull_request:
     branches: [ "main" ]
 
@@ -34,15 +34,18 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Ensure validated Beta4 Internet-only WebRTC runtime
+      - name: Ensure validated Internet voice runtime
         shell: bash
         run: |
           if grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt && \
              grep -Fq 'WEBRTC OPUS' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt; then
-            echo 'Beta4 runtime already materialized; patch step skipped.'
+            echo 'Internet voice runtime already materialized; patch step skipped.'
           else
             python tools/apply_beta4_internet_only_ui.py
           fi
+
+      - name: Apply Beta4.3 public black-box UI
+        run: python tools/apply_beta43_public_ui.py
 
       - name: Materialize approved RideMesh branding
         shell: bash
@@ -55,17 +58,28 @@ jobs:
           test -s app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           test -s app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
-      - name: Verify Beta4.2 Play release configuration
+      - name: Verify Beta4.3 public Play configuration
         shell: bash
         run: |
           grep -Fq 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
           grep -Fq 'compileSdk = 36' app/build.gradle.kts
           grep -Fq 'targetSdk = 36' app/build.gradle.kts
-          grep -Fq 'versionCode = 9' app/build.gradle.kts
-          grep -Fq 'versionName = "1.0.0-beta4.2-play"' app/build.gradle.kts
-          grep -Fq 'io.github.webrtc-sdk:android:144.7559.09' app/build.gradle.kts
-          grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -Fq 'versionCode = 10' app/build.gradle.kts
+          grep -Fq 'versionName = "1.0.0-beta4.3-play"' app/build.gradle.kts
+          grep -Fq 'isMinifyEnabled = true' app/build.gradle.kts
+          grep -Fq 'USER_EMAIL_KEY' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -Fq 'Use 5–12 letters and numbers only' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -Fq 'BUG_REPORT_GROUP_URL' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -Fq 'DURATION_DAYS = 60L' app/src/main/java/com/bikemesh/ridemesh/beta/BetaWindow.kt
+          if grep -Fq '+91 9188664823' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt; then
+            echo 'ERROR: personal support phone remains in public UI source'
+            exit 1
+          fi
+          if grep -Fq 'TURN relay:' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt || \
+             grep -Fq 'Ride status • WebRTC + Opus' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt; then
+            echo 'ERROR: engineering diagnostics remain in public status UI'
+            exit 1
+          fi
           if grep -Fq 'android:debuggable="true"' app/src/main/AndroidManifest.xml; then
             echo 'ERROR: debuggable release manifest'
             exit 1
@@ -98,11 +112,11 @@ jobs:
           test -s "$META"
           test -x "$TOOLS/zipalign"
           mkdir -p dist
-          cp "$AAB" dist/RideMesh-Beta4.2-vc9-API36-UNSIGNED.aab
-          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta4.2-vc9-API36-ALIGNED-UNSIGNED.apk
-          "$TOOLS/zipalign" -c -P 16 -v 4 dist/RideMesh-Beta4.2-vc9-API36-ALIGNED-UNSIGNED.apk > dist/ZIPALIGN-VERIFY.txt
+          cp "$AAB" dist/RideMesh-Beta4.3-vc10-API36-UNSIGNED.aab
+          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta4.3-vc10-API36-ALIGNED-UNSIGNED.apk
+          "$TOOLS/zipalign" -c -P 16 -v 4 dist/RideMesh-Beta4.3-vc10-API36-ALIGNED-UNSIGNED.apk > dist/ZIPALIGN-VERIFY.txt
           cp "$META" dist/output-metadata.json
-          sha256sum dist/RideMesh-Beta4.2-vc9-API36-UNSIGNED.aab dist/RideMesh-Beta4.2-vc9-API36-ALIGNED-UNSIGNED.apk > dist/SHA256SUMS.txt
+          sha256sum dist/RideMesh-Beta4.3-vc10-API36-UNSIGNED.aab dist/RideMesh-Beta4.3-vc10-API36-ALIGNED-UNSIGNED.apk > dist/SHA256SUMS.txt
           ls -lh dist/
 
       - name: Prepare official Android APK signing tools
@@ -115,13 +129,13 @@ jobs:
           cp "$TOOLS/apksigner" signing-tools/apksigner
           cp "$TOOLS/lib/apksigner.jar" signing-tools/lib/apksigner.jar
 
-      - name: Upload Beta4.2 unsigned release artifacts
+      - name: Upload Beta4.3 unsigned release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta4.2-vc9-Release-Unsigned
+          name: RideMesh-Beta4.3-vc10-Release-Unsigned
           path: |
-            dist/RideMesh-Beta4.2-vc9-API36-UNSIGNED.aab
-            dist/RideMesh-Beta4.2-vc9-API36-ALIGNED-UNSIGNED.apk
+            dist/RideMesh-Beta4.3-vc10-API36-UNSIGNED.aab
+            dist/RideMesh-Beta4.3-vc10-API36-ALIGNED-UNSIGNED.apk
             dist/output-metadata.json
             dist/ZIPALIGN-VERIFY.txt
             dist/SHA256SUMS.txt
@@ -138,6 +152,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta4.2-Release-Lint
+          name: RideMesh-Beta4.3-Release-Lint
           path: app/build/reports/lint-results-release.html
           if-no-files-found: ignore
