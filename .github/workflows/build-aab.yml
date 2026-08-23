@@ -55,6 +55,9 @@ jobs:
       - name: Apply Beta4.5 unified theme and rider profile
         run: python tools/apply_beta45_themed_ui.py
 
+      - name: Normalize generated Beta4.5 Kotlin
+        run: python tools/fix_beta45_generated_kotlin.py
+
       - name: Materialize RideMesh branding
         shell: bash
         run: |
