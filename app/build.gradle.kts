@@ -1,4 +1,4 @@
-// RideMesh Beta4.4 — stability, rider-speed and public UX Google Play candidate
+// RideMesh Beta4.4.1 — crash-fix APK field candidate
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -14,8 +14,8 @@ android {
         applicationId = "in.autopilotindia.ridemesh"
         minSdk = 26
         targetSdk = 36
-        versionCode = 11
-        versionName = "1.0.0-beta4.4-play"
+        versionCode = 12
+        versionName = "1.0.0-beta4.4.1-crashfix"
     }
 
     buildFeatures {
@@ -24,12 +24,11 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro",
-            )
+            // Deliberately disabled for this APK-only field test. Beta4.3/4.4 crashes began
+            // after release minification was introduced, while the earlier WebRTC tester was
+            // unminified. Re-enable only after phone validation and narrowed keep rules.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 
@@ -53,14 +52,9 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
 
-    // Legacy experimental mesh classes remain compiled for source continuity, but the
-    // public Beta4.4 user flow does not expose or start that transport.
     implementation("com.google.android.gms:play-services-nearby:19.4.0")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     implementation("com.google.zxing:core:3.5.4")
-
-    // Real-time Internet voice engine. Technical implementation details are intentionally
-    // hidden from normal public UI; credentials and privileged backend logic are not embedded.
     implementation("io.github.webrtc-sdk:android:144.7559.09")
 
     testImplementation("junit:junit:4.13.2")
