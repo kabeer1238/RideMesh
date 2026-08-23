@@ -1,3 +1,4 @@
+// RideMesh Beta4.4.1 — crash-fix APK field candidate
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -7,18 +8,28 @@ plugins {
 
 android {
     namespace = "com.bikemesh.ridemesh"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.bikemesh.ridemesh"
+        applicationId = "in.autopilotindia.ridemesh"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 10
-        versionName = "0.4.0-beta1"
+        targetSdk = 36
+        versionCode = 12
+        versionName = "1.0.0-beta4.4.1-crashfix"
     }
 
     buildFeatures {
         viewBinding = true
+    }
+
+    buildTypes {
+        release {
+            // Deliberately disabled for this APK-only field test. Beta4.3/4.4 crashes began
+            // after release minification was introduced, while the earlier WebRTC tester was
+            // unminified. Re-enable only after phone validation and narrowed keep rules.
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
     }
 
     compileOptions {
@@ -40,8 +51,11 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
+
     implementation("com.google.android.gms:play-services-nearby:19.4.0")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     implementation("com.google.zxing:core:3.5.4")
+    implementation("io.github.webrtc-sdk:android:144.7559.09")
+
     testImplementation("junit:junit:4.13.2")
 }
