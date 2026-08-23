@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ "beta4.5-themed-ui-apk" ]
+  pull_request:
+    branches: [ "main" ]
 
 permissions:
   contents: read
