@@ -20,7 +20,7 @@ class RideService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_headset)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText("RideMesh intercom is active")
+            .setContentText("RideMesh WebRTC intercom is active")
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .build()
@@ -32,7 +32,7 @@ class RideService : Service() {
             ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, fullTypes)
         } catch (_: SecurityException) {
             // Some Android/OEM builds enforce microphone FGS prerequisites more strictly.
-            // Keep the mesh process alive with the connected-device type instead of
+            // Keep the ride process alive with the connected-device type instead of
             // allowing an uncaught SecurityException to terminate the whole app.
             try {
                 ServiceCompat.startForeground(
