@@ -24,6 +24,14 @@ if 'import android.text.InputType\n' not in s:
         raise SystemExit('InputType import anchor not found')
     s = s.replace(anchor, anchor + 'import android.text.InputType\n', 1)
 
+# ScrollView inherits FrameLayout behavior, but ScrollView.LayoutParams is not a
+# Kotlin-visible nested type. A generic ViewGroup.LayoutParams is valid here.
+s = s.replace(
+    'ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)',
+    'ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)',
+    1,
+)
+
 # Avoid escaping ambiguity in the generated email local-part parser.
 s, count = re.subn(
     r'''val words = local\.split\(Regex\(".*?"\)\)\.filter \{ it\.isNotBlank\(\) \}''',
