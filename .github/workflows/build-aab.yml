@@ -1,9 +1,9 @@
-name: Build RideMesh Beta4.4.1 CrashFix APK
+name: Build RideMesh Beta4.5 Themed UI APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "beta4.4.1-crashfix-apk" ]
+    branches: [ "beta4.5-themed-ui-apk" ]
   pull_request:
     branches: [ "main" ]
 
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  build-crashfix-apk:
+  build-themed-apk:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -49,8 +49,11 @@ jobs:
       - name: Apply Beta4.4 UX and fast presence
         run: python tools/apply_beta44_stability_speed.py
 
-      - name: Apply Beta4.4.1 crash fix
+      - name: Apply stable vc12 crash fix
         run: python tools/apply_beta441_crashfix.py
+
+      - name: Apply Beta4.5 unified theme and rider profile
+        run: python tools/apply_beta45_themed_ui.py
 
       - name: Materialize RideMesh branding
         shell: bash
@@ -60,18 +63,24 @@ jobs:
           base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
-      - name: Verify crash-fix configuration
+      - name: Verify Beta4.5 configuration
         shell: bash
         run: |
           grep -Fq 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
-          grep -Fq 'versionCode = 12' app/build.gradle.kts
-          grep -Fq 'versionName = "1.0.0-beta4.4.1-crashfix"' app/build.gradle.kts
+          grep -Fq 'versionCode = 13' app/build.gradle.kts
+          grep -Fq 'versionName = "1.0.0-beta4.5-themed-ui"' app/build.gradle.kts
           grep -Fq 'isMinifyEnabled = false' app/build.gradle.kts
-          grep -Fq 'screenEmail' app/src/main/res/layout/activity_main.xml
-          grep -Fq 'binding.startRide.text = "JOIN RIDE"' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -Fq 'showRideMeshPanel' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -Fq 'riderNameFromEmail' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -Fq 'INVITE RIDERS' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -Fq 'EDIT RIDER NAME' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -Fq 'PRESENCE_INTERVAL_MS = 1_000L' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
           grep -Fq 'audioJitterBufferMaxPackets = 50' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
           grep -Fq 'pc.setBitrate(24_000, 40_000, 64_000)' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
+          if grep -Fq 'Ride status • WebRTC + Opus' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt; then
+            echo 'ERROR: public status exposed engine terminology'
+            exit 1
+          fi
 
       - name: Unit tests
         run: gradle --no-daemon testDebugUnitTest
@@ -89,23 +98,23 @@ jobs:
           TOOLS="$ANDROID_SDK_ROOT/build-tools/36.0.0"
           test -s "$APK"
           mkdir -p dist signing-tools/lib
-          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta4.4.1-vc12-CrashFix-ALIGNED-UNSIGNED.apk
-          "$TOOLS/zipalign" -c -P 16 -v 4 dist/RideMesh-Beta4.4.1-vc12-CrashFix-ALIGNED-UNSIGNED.apk > dist/ZIPALIGN-VERIFY.txt
+          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta4.5-vc13-ThemedUI-ALIGNED-UNSIGNED.apk
+          "$TOOLS/zipalign" -c -P 16 -v 4 dist/RideMesh-Beta4.5-vc13-ThemedUI-ALIGNED-UNSIGNED.apk > dist/ZIPALIGN-VERIFY.txt
           cp "$TOOLS/apksigner" signing-tools/apksigner
           cp "$TOOLS/lib/apksigner.jar" signing-tools/lib/apksigner.jar
-          sha256sum dist/RideMesh-Beta4.4.1-vc12-CrashFix-ALIGNED-UNSIGNED.apk > dist/SHA256SUMS.txt
+          sha256sum dist/RideMesh-Beta4.5-vc13-ThemedUI-ALIGNED-UNSIGNED.apk > dist/SHA256SUMS.txt
 
-      - name: Upload crash-fix APK
+      - name: Upload themed APK
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta4.4.1-vc12-CrashFix-Unsigned-APK
+          name: RideMesh-Beta4.5-vc13-ThemedUI-Unsigned-APK
           path: dist/
           if-no-files-found: error
 
       - name: Upload signing tools
         uses: actions/upload-artifact@v4
         with:
-          name: Android-BuildTools-36-ApkSigner-CrashFix
+          name: Android-BuildTools-36-ApkSigner-Beta45
           path: signing-tools/
           if-no-files-found: error
 
@@ -113,6 +122,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta4.4.1-CrashFix-Lint
+          name: RideMesh-Beta4.5-ThemedUI-Lint
           path: app/build/reports/lint-results-release.html
           if-no-files-found: ignore
