@@ -134,7 +134,7 @@ if abandon_old not in s:
 s = s.replace(abandon_old, abandon_new, 1)
 
 # Add a very short debounce before reclaiming MAY_DUCK focus after a media player starts.
-if 'MEDIA_FOCUS_RECOVERY_MS' not in s:
+if 'private const val MEDIA_FOCUS_RECOVERY_MS' not in s:
     s, count = re.subn(
         r'(private const val CALL_RESUME_SETTLE_MS\s*=\s*\d+L\n)',
         r'\1        private const val MEDIA_FOCUS_RECOVERY_MS = 180L\n',
