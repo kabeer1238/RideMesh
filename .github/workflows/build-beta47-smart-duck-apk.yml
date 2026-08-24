@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ "beta4.7-smart-duck-apk" ]
+  pull_request:
+    branches: [ "main" ]
 
 permissions:
   contents: read
