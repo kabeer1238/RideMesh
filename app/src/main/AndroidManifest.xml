@@ -1,22 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Beta4 customer build: Internet WebRTC voice + Bluetooth audio route only. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- Bluetooth headset / helmet routing. -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="31" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="31" />
-
-    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
-    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />
 
+    <!-- Hands-free intercom and active-ride foreground service. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -24,11 +17,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <application
-        android:allowBackup="true"
-        android:icon="@drawable/ridemesh_icon"
-        android:roundIcon="@drawable/ridemesh_icon"
-        android:logo="@drawable/ridemesh_logo"
-        android:label="Ride Mesh"
+        android:allowBackup="false"
+        android:icon="@drawable/ridemesh_icon_exact"
+        android:roundIcon="@drawable/ridemesh_icon_exact"
+        android:logo="@drawable/ridemesh_logo_exact"
+        android:label="RideMesh"
         android:supportsRtl="true"
         android:theme="@style/Theme.RideMesh">
 
@@ -47,14 +40,21 @@
         </provider>
 
         <activity
-            android:name=".MainActivity"
+            android:name=".SplashActivity"
             android:exported="true"
-            android:screenOrientation="portrait">
+            android:noHistory="true"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.RideMesh.Splash">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
 
         <service
             android:name=".service.RideService"
