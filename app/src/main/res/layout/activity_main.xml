@@ -5,57 +5,36 @@
     android:layout_height="match_parent"
     android:background="@color/black">
 
-    <!-- HOME -->
+    <!-- HOME / LANDING -->
     <ScrollView
         android:id="@+id/screenHome"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:fillViewport="true">
+        android:fillViewport="true"
+        android:overScrollMode="never">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:padding="22dp">
+            android:paddingStart="22dp"
+            android:paddingTop="18dp"
+            android:paddingEnd="22dp"
+            android:paddingBottom="24dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="52dp"
+                android:layout_height="78dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
                 <ImageView
-                    android:layout_width="44dp"
-                    android:layout_height="44dp"
-                    android:contentDescription="Ride Mesh"
-                    android:scaleType="centerInside"
-                    android:src="@drawable/ridemesh_icon" />
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="10dp"
+                    android:layout_width="218dp"
+                    android:layout_height="76dp"
                     android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:fontFamily="sans-serif-condensed"
-                        android:letterSpacing="0.13"
-                        android:text="RIDE MESH"
-                        android:textColor="@color/white"
-                        android:textSize="20sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="BY AUTOPILOTINDIA"
-                        android:textColor="@color/accent"
-                        android:textSize="9sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
+                    android:contentDescription="RideMesh by Autopilot India"
+                    android:scaleType="fitStart"
+                    android:src="@drawable/ridemesh_logo_exact" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/openSettings"
@@ -63,97 +42,288 @@
                     android:layout_width="wrap_content"
                     android:layout_height="44dp"
                     android:minWidth="0dp"
+                    android:layout_marginTop="6dp"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
                     android:text="SETTINGS"
                     android:textColor="@color/muted"
                     android:textSize="10sp" />
             </LinearLayout>
 
-            <ImageView
-                android:layout_width="match_parent"
-                android:layout_height="118dp"
-                android:layout_marginTop="18dp"
-                android:adjustViewBounds="true"
-                android:contentDescription="Ride Mesh by AutopilotIndia"
-                android:scaleType="centerInside"
-                android:src="@drawable/ridemesh_logo" />
-
-            <TextView
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="28dp"
-                android:fontFamily="sans-serif-condensed"
-                android:letterSpacing="0.055"
-                android:text="RIDE TOGETHER.\nSTAY CONNECTED."
-                android:textColor="@color/white"
-                android:textSize="30sp"
+                android:layout_marginTop="22dp"
+                android:background="@drawable/home_hero_bg"
+                android:orientation="vertical"
+                android:paddingStart="22dp"
+                android:paddingTop="24dp"
+                android:paddingEnd="22dp"
+                android:paddingBottom="24dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="32dp"
+                    android:background="@drawable/hero_badge_bg"
+                    android:gravity="center"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:text="HANDS-FREE RIDER INTERCOM"
+                    android:textColor="@color/accent"
+                    android:textSize="9sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:fontFamily="sans-serif-condensed"
+                    android:letterSpacing="0.045"
+                    android:text="YOUR GROUP.
+ONE CHANNEL."
+                    android:textColor="@color/white"
+                    android:textSize="34sp"
+                    android:textStyle="bold" />
+
+                <View
+                    android:layout_width="34dp"
+                    android:layout_height="2dp"
+                    android:layout_marginTop="14dp"
+                    android:background="@color/accent" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:lineSpacingExtra="3dp"
+                    android:text="RideMesh uses low-latency WebRTC Internet voice with Opus for clear group communication across distance."
+                    android:textColor="@color/muted"
+                    android:textSize="13.5sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="60dp"
+                android:layout_marginTop="22dp"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/createRide"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="58dp"
+                    android:layout_marginEnd="6dp"
+                    android:layout_weight="1"
+                    android:text="CREATE A RIDE"
+                    android:textColor="@color/accent"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="@android:color/transparent"
+                    app:cornerRadius="16dp"
+                    app:icon="@drawable/ic_add_ride"
+                    app:iconGravity="textStart"
+                    app:iconPadding="6dp"
+                    app:iconTint="@color/accent"
+                    app:strokeColor="@color/accent"
+                    app:strokeWidth="1dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/joinRide"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="58dp"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:text="JOIN A RIDE"
+                    android:textColor="@color/accent"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="@android:color/transparent"
+                    app:cornerRadius="16dp"
+                    app:icon="@drawable/ic_join_ride"
+                    app:iconGravity="textStart"
+                    app:iconPadding="6dp"
+                    app:iconTint="@color/white"
+                    app:strokeColor="@color/accent"
+                    app:strokeWidth="1dp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="22dp"
+                android:background="@drawable/status_card_bg"
+                android:orientation="vertical"
+                android:paddingStart="18dp"
+                android:paddingTop="18dp"
+                android:paddingEnd="18dp"
+                android:paddingBottom="16dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-condensed"
+                    android:letterSpacing="0.04"
+                    android:text="READY TO RIDE"
+                    android:textColor="@color/white"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <View
+                    android:layout_width="26dp"
+                    android:layout_height="2dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@color/accent" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:gravity="center"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:gravity="center"
+                        android:orientation="vertical"
+                        android:paddingHorizontal="4dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="≋"
+                            android:textColor="@color/accent"
+                            android:textSize="29sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="INTERNET"
+                            android:textColor="@color/accent"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/homeNetworkStatus"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:gravity="center"
+                            android:lineSpacingExtra="1dp"
+                            android:text="WebRTC Voice
+Ready"
+                            android:textColor="@color/white_soft"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="1dp"
+                        android:layout_height="88dp"
+                        android:background="@color/border_strong" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:gravity="center"
+                        android:orientation="vertical"
+                        android:paddingHorizontal="4dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="◖"
+                            android:textColor="@color/accent"
+                            android:textSize="29sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="HELMET"
+                            android:textColor="@color/accent"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/homeAudioStatus"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:gravity="center"
+                            android:lineSpacingExtra="1dp"
+                            android:text="Bluetooth
+Ready"
+                            android:textColor="@color/white_soft"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="1dp"
+                        android:layout_height="88dp"
+                        android:background="@color/border_strong" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:gravity="center"
+                        android:orientation="vertical"
+                        android:paddingHorizontal="4dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="ϟ"
+                            android:textColor="@color/accent"
+                            android:textSize="31sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="SMART POWER"
+                            android:textColor="@color/accent"
+                            android:textSize="11sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:gravity="center"
+                            android:lineSpacingExtra="1dp"
+                            android:text="Optimized
+Extended Battery"
+                            android:textColor="@color/white_soft"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/betaExpiryStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:gravity="center"
+                android:text="BETA ACCESS • 60 DAYS REMAINING"
+                android:textColor="@color/accent"
+                android:textSize="9sp"
                 android:textStyle="bold" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:lineSpacingExtra="3dp"
-                android:text="Hands-free group voice for riders. Internet for distance, local mesh when coverage disappears."
-                android:textColor="@color/muted"
-                android:textSize="14sp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/createRide"
-                android:layout_width="match_parent"
-                android:layout_height="58dp"
-                android:layout_marginTop="32dp"
-                android:text="CREATE A RIDE"
-                android:textColor="#00201D"
-                android:textStyle="bold"
-                app:backgroundTint="@color/accent"
-                app:cornerRadius="14dp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/joinRide"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="match_parent"
-                android:layout_height="58dp"
-                android:layout_marginTop="12dp"
-                android:text="JOIN A RIDE"
-                android:textColor="@color/white"
-                android:textStyle="bold"
-                app:cornerRadius="14dp"
-                app:strokeColor="@color/border" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="30dp"
-                android:background="@drawable/panel_bg"
-                android:orientation="vertical"
-                android:padding="18dp">
-
-                <TextView
-                    android:id="@+id/homeNetworkStatus"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="●  READY TO RIDE"
-                    android:textColor="@color/accent"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/homeAudioStatus"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="Phone audio ready • helmet optional"
-                    android:textColor="@color/muted"
-                    android:textSize="12sp" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="Battery Smart enabled by default"
-                    android:textColor="@color/faint"
-                    android:textSize="11sp" />
-            </LinearLayout>
+                android:layout_marginTop="8dp"
+                android:gravity="center"
+                android:lineSpacingExtra="2dp"
+                android:text="Configure while stopped • Once the ride starts, normal voice mode is hands-free."
+                android:textColor="@color/faint_plus"
+                android:textSize="10.5sp" />
         </LinearLayout>
     </ScrollView>
 
@@ -409,80 +579,36 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
-        android:paddingStart="20dp"
-        android:paddingTop="16dp"
-        android:paddingEnd="20dp"
-        android:paddingBottom="18dp"
+        android:paddingStart="18dp"
+        android:paddingTop="14dp"
+        android:paddingEnd="18dp"
+        android:paddingBottom="14dp"
         android:visibility="gone">
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <ImageView
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:contentDescription="Ride Mesh"
-                android:src="@drawable/ridemesh_icon" />
-
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="10dp"
-                android:layout_weight="1"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:fontFamily="sans-serif-condensed"
-                    android:letterSpacing="0.09"
-                    android:text="RIDE MESH"
-                    android:textColor="@color/accent"
-                    android:textSize="18sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/activeRideCode"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="RIDE01"
-                    android:textColor="@color/muted"
-                    android:textSize="10sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/activeStop"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="76dp"
-                android:layout_height="42dp"
-                android:text="END"
-                android:textColor="@color/white"
-                android:textSize="10sp"
-                app:cornerRadius="12dp"
-                app:strokeColor="@color/border" />
-        </LinearLayout>
+        <ImageView
+            android:layout_width="244dp"
+            android:layout_height="72dp"
+            android:contentDescription="RideMesh by Autopilot India"
+            android:scaleType="fitStart"
+            android:src="@drawable/ridemesh_logo_exact" />
 
         <TextView
             android:id="@+id/riderCount"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="10dp"
             android:fontFamily="sans-serif-condensed"
             android:gravity="center"
             android:text="RIDE ACTIVE"
             android:textColor="@color/white"
-            android:textSize="24sp"
+            android:textSize="28sp"
             android:textStyle="bold" />
 
         <TextView
             android:id="@+id/meshStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="5dp"
             android:gravity="center"
             android:text="CONNECTING…"
             android:textColor="@color/accent"
@@ -491,109 +617,174 @@
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="18dp"
+            android:layout_height="46dp"
+            android:layout_marginTop="11dp"
             android:gravity="center"
             android:orientation="horizontal">
 
             <TextView
                 android:id="@+id/networkTile"
                 android:layout_width="0dp"
-                android:layout_height="40dp"
-                android:layout_marginEnd="5dp"
+                android:layout_height="38dp"
+                android:layout_marginEnd="4dp"
                 android:layout_weight="1"
                 android:background="@drawable/panel_bg"
                 android:gravity="center"
                 android:text="CONNECTING"
                 android:textColor="@color/accent"
-                android:textSize="11sp"
+                android:textSize="10sp"
                 android:textStyle="bold" />
 
             <TextView
                 android:id="@+id/audioTile"
                 android:layout_width="0dp"
-                android:layout_height="40dp"
-                android:layout_marginHorizontal="5dp"
+                android:layout_height="38dp"
+                android:layout_marginHorizontal="4dp"
                 android:layout_weight="1"
                 android:background="@drawable/panel_bg"
                 android:gravity="center"
-                android:text="PHONE AUDIO"
+                android:text="VOICE CLEAN"
                 android:textColor="@color/white"
-                android:textSize="11sp"
+                android:textSize="10sp"
                 android:textStyle="bold" />
 
             <TextView
                 android:id="@+id/powerTile"
                 android:layout_width="0dp"
-                android:layout_height="40dp"
-                android:layout_marginStart="5dp"
+                android:layout_height="38dp"
+                android:layout_marginStart="4dp"
                 android:layout_weight="1"
                 android:background="@drawable/panel_bg"
                 android:gravity="center"
                 android:text="SMART POWER"
                 android:textColor="@color/green"
-                android:textSize="11sp"
+                android:textSize="10sp"
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <FrameLayout
+        <LinearLayout
+            android:id="@+id/handsFreeIndicator"
             android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1">
+            android:layout_height="82dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/live_panel_bg"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="12dp"
+            android:paddingEnd="6dp">
 
             <LinearLayout
-                android:id="@+id/handsFreeIndicator"
-                android:layout_width="196dp"
-                android:layout_height="196dp"
-                android:layout_gravity="center"
-                android:background="@drawable/circle_mic_bg"
-                android:gravity="center"
-                android:orientation="vertical"
-                android:padding="18dp">
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:gravity="center_vertical"
+                android:orientation="vertical">
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:fontFamily="sans-serif-condensed"
-                    android:letterSpacing="0.08"
+                    android:letterSpacing="0.07"
                     android:text="LIVE"
                     android:textColor="@color/accent"
-                    android:textSize="34sp"
+                    android:textSize="19sp"
                     android:textStyle="bold" />
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
                     android:text="HANDS-FREE INTERCOM"
                     android:textColor="@color/white"
-                    android:textSize="11sp"
+                    android:textSize="8.5sp"
                     android:textStyle="bold" />
 
                 <TextView
                     android:id="@+id/audioStatus"
-                    android:layout_width="150dp"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="9dp"
-                    android:gravity="center"
-                    android:maxLines="3"
-                    android:text="Waiting for audio route"
+                    android:layout_marginTop="2dp"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="VOICE-ACTIVATED • NOISE GUARD"
                     android:textColor="@color/muted"
-                    android:textSize="9sp" />
+                    android:textSize="7.5sp" />
             </LinearLayout>
-        </FrameLayout>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/activeMute"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="68dp"
+                android:layout_height="52dp"
+                android:minWidth="0dp"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:text="MUTE MIC"
+                android:textColor="@color/white"
+                android:textSize="8.5sp"
+                android:textStyle="bold"
+                app:backgroundTint="@color/panel2"
+                app:cornerRadius="13dp"
+                app:strokeColor="@color/accent"
+                app:strokeWidth="1dp" />
+
+            <View
+                android:layout_width="1dp"
+                android:layout_height="46dp"
+                android:layout_marginHorizontal="4dp"
+                android:background="@color/border_strong" />
+
+            <TextView
+                android:id="@+id/activeRideCode"
+                android:layout_width="62dp"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:text="RM0000"
+                android:textColor="@color/white"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <View
+                android:layout_width="1dp"
+                android:layout_height="46dp"
+                android:layout_marginHorizontal="3dp"
+                android:background="@color/border_strong" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/activeStop"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="52dp"
+                android:layout_height="54dp"
+                android:minWidth="0dp"
+                android:text="END"
+                android:textColor="#FF554D"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <GridLayout
+            android:id="@+id/riderGrid"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="10dp"
+            android:layout_weight="1"
+            android:alignmentMode="alignMargins"
+            android:columnCount="3"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:rowCount="2"
+            android:useDefaultMargins="false" />
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="68dp"
+            android:layout_height="62dp"
             android:orientation="horizontal">
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/activeRiders"
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 android:layout_width="0dp"
-                android:layout_height="58dp"
-                android:layout_marginEnd="5dp"
+                android:layout_height="54dp"
+                android:layout_marginEnd="4dp"
                 android:layout_weight="1"
                 android:text="RIDERS"
                 android:textColor="@color/white"
@@ -605,8 +796,8 @@
                 android:id="@+id/activeInvite"
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 android:layout_width="0dp"
-                android:layout_height="58dp"
-                android:layout_marginHorizontal="5dp"
+                android:layout_height="54dp"
+                android:layout_marginHorizontal="4dp"
                 android:layout_weight="1"
                 android:text="INVITE"
                 android:textColor="@color/accent"
@@ -618,8 +809,8 @@
                 android:id="@+id/activeAudio"
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 android:layout_width="0dp"
-                android:layout_height="58dp"
-                android:layout_marginHorizontal="5dp"
+                android:layout_height="54dp"
+                android:layout_marginHorizontal="4dp"
                 android:layout_weight="1"
                 android:text="AUDIO"
                 android:textColor="@color/white"
@@ -631,8 +822,8 @@
                 android:id="@+id/activeStatus"
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 android:layout_width="0dp"
-                android:layout_height="58dp"
-                android:layout_marginStart="5dp"
+                android:layout_height="54dp"
+                android:layout_marginStart="4dp"
                 android:layout_weight="1"
                 android:text="STATUS"
                 android:textColor="@color/white"
@@ -641,4 +832,5 @@
                 app:strokeColor="@color/border" />
         </LinearLayout>
     </LinearLayout>
+
 </FrameLayout>
