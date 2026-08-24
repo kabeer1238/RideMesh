@@ -226,7 +226,7 @@ if 'private fun startSmartDucking()' not in s:
 
 # Add constants beside the existing audio-focus timing constants.
 constant_anchor = '        private const val MEDIA_FOCUS_RECOVERY_MS = 180L\n'
-if 'SMART_DUCK_POLL_MS' not in s:
+if 'private const val SMART_DUCK_POLL_MS' not in s:
     if constant_anchor not in s:
         raise SystemExit('Beta4.6 media focus constant anchor not found')
     s = s.replace(
