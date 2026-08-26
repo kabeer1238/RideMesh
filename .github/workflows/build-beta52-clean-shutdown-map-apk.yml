@@ -88,6 +88,9 @@ jobs:
       - name: Apply Beta5.2 shutdown + all-rider map fixes
         run: python tools/apply_beta52_clean_shutdown_map_visibility.py
 
+      - name: Ensure Beta5.2 generated constants
+        run: python tools/fix_beta52_constants.py
+
       - name: Require Google Maps key
         shell: bash
         run: |
@@ -123,6 +126,7 @@ jobs:
           grep -F 'firstLocationFromRider' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'publishCachedLocalLocationIfDue(force = true)' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'LOCATION_STATIONARY_HEARTBEAT_MS = 5_000L' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'LOCATION_SHARE_HEARTBEAT_CHECK_MS = 1_000L' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'MAP_RENDER_MIN_INTERVAL_MS = 500L' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'SMART_DUCK_VOLUME_RATIO = 0.22' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
 
