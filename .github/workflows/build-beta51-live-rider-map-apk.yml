@@ -1,0 +1,167 @@
+name: Build RideMesh Beta5.1 Live Rider Map APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "beta5.1-live-rider-map-apk" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+env:
+  MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+
+jobs:
+  build-live-rider-map-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 16 API 36 SDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Ensure Internet voice runtime
+        shell: bash
+        run: |
+          if grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt && grep -Fq 'WEBRTC OPUS' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt; then
+            echo 'Runtime already materialized'
+          else
+            python tools/apply_beta4_internet_only_ui.py
+          fi
+
+      - name: Apply public UI
+        run: python tools/apply_beta43_public_ui.py
+
+      - name: Apply Beta4.4 UX and fast presence
+        run: python tools/apply_beta44_stability_speed.py
+
+      - name: Apply stable vc12 crash fix
+        run: python tools/apply_beta441_crashfix.py
+
+      - name: Apply Beta4.5 unified theme and rider profile
+        run: python tools/apply_beta45_themed_ui.py
+
+      - name: Normalize generated Beta4.5 Kotlin
+        run: python tools/fix_beta45_generated_kotlin.py
+
+      - name: Apply Beta4.6 music coexistence
+        run: python tools/apply_beta46_music_coexistence.py
+
+      - name: Apply Beta4.7 active smart duck
+        run: python tools/apply_beta47_smart_duck.py
+
+      - name: Apply Beta4.8 noise-aware duck
+        run: python tools/apply_beta48_noise_aware_duck.py
+
+      - name: Apply Beta4.9 battery optimizations
+        run: python tools/apply_beta49_battery_optimizations.py
+
+      - name: Apply Beta5.0 adaptive reliability
+        run: python tools/apply_beta50_adaptive_reliability.py
+
+      - name: Ensure Beta5.0 generated constants
+        run: python tools/fix_beta50_constants.py
+
+      - name: Apply Beta5.1 Live Rider Map
+        run: python tools/apply_beta51_live_rider_map.py
+
+      - name: Normalize Beta5.1 map build
+        run: python tools/fix_beta51_map_compile.py
+
+      - name: Check Google Maps key
+        shell: bash
+        run: |
+          if [ -z "$MAPS_API_KEY" ]; then
+            echo "::warning::GOOGLE_MAPS_API_KEY repository secret is not set. APK will compile, but map tiles will show the built-in setup-required message until rebuilt with a valid key."
+          else
+            echo "Google Maps API key supplied securely through Actions secret."
+          fi
+
+      - name: Materialize RideMesh branding
+        shell: bash
+        run: |
+          mkdir -p app/src/main/res/drawable-nodpi
+          base64 -d branding/ridemesh_logo_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
+          base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
+
+      - name: Verify Beta5.1 essentials
+        shell: bash
+        run: |
+          set -e
+          grep -F 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
+          grep -F 'versionCode = 19' app/build.gradle.kts
+          grep -F 'versionName = "1.0.0-beta5.1-live-rider-map"' app/build.gradle.kts
+          grep -F 'play-services-maps' app/build.gradle.kts
+          grep -F 'play-services-location' app/build.gradle.kts
+          grep -F 'android.permission.ACCESS_FINE_LOCATION' app/src/main/AndroidManifest.xml
+          grep -F 'com.google.android.geo.API_KEY' app/src/main/AndroidManifest.xml
+          grep -F 'locationTopic = "$baseTopic/location"' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
+          grep -F 'fun publishRiderLocation(' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
+          grep -F 'internal fun encodeLocation(' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
+          grep -F 'private fun renderLiveRiderMap(' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'MAP_RENDER_MIN_INTERVAL_MS = 500L' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'add("MAP"' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'google.navigation:q=' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'SMART_DUCK_VOLUME_RATIO = 0.22' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
+
+      - name: Unit tests
+        run: gradle --no-daemon testDebugUnitTest
+
+      - name: Release lint
+        run: gradle --no-daemon lintRelease
+
+      - name: Build release APK only
+        run: gradle --no-daemon assembleRelease
+
+      - name: Align APK
+        shell: bash
+        run: |
+          APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          TOOLS="$ANDROID_SDK_ROOT/build-tools/36.0.0"
+          test -s "$APK"
+          mkdir -p dist signing-tools/lib
+          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta5.1-vc19-LiveRiderMap-ALIGNED-UNSIGNED.apk
+          "$TOOLS/zipalign" -c -P 16 -v 4 dist/RideMesh-Beta5.1-vc19-LiveRiderMap-ALIGNED-UNSIGNED.apk > dist/ZIPALIGN-VERIFY.txt
+          cp "$TOOLS/apksigner" signing-tools/apksigner
+          cp "$TOOLS/lib/apksigner.jar" signing-tools/lib/apksigner.jar
+          sha256sum dist/RideMesh-Beta5.1-vc19-LiveRiderMap-ALIGNED-UNSIGNED.apk > dist/SHA256SUMS.txt
+
+      - name: Upload Live Rider Map APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideMesh-Beta5.1-vc19-LiveRiderMap-Unsigned-APK
+          path: dist/
+          if-no-files-found: error
+
+      - name: Upload signing tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-BuildTools-36-ApkSigner-Beta51
+          path: signing-tools/
+          if-no-files-found: error
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideMesh-Beta5.1-LiveRiderMap-Lint
+          path: app/build/reports/lint-results-release.html
+          if-no-files-found: ignore
