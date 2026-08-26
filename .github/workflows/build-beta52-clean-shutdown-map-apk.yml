@@ -1,11 +1,9 @@
-name: Build RideMesh Beta5.2 Clean Shutdown Map APK
+name: Build RideMesh Beta5.2.1 iOS RML1 Map APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "beta5.2-clean-shutdown-map-apk" ]
-  pull_request:
-    branches: [ "main" ]
+    branches: [ "beta5.2.1-ios-rml1-location-apk" ]
 
 permissions:
   contents: read
@@ -14,7 +12,7 @@ env:
   MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
 
 jobs:
-  build-clean-shutdown-map-apk:
+  build-ios-rml1-map-apk:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -91,7 +89,7 @@ jobs:
       - name: Ensure Beta5.2 generated constants
         run: python tools/fix_beta52_constants.py
 
-      - name: Apply iOS/Android location compatibility
+      - name: Apply canonical iOS RML1 location compatibility
         run: python tools/apply_beta52_ios_location_compat.py
 
       - name: Require Google Maps key
@@ -99,7 +97,7 @@ jobs:
         run: |
           set -e
           if [ -z "$MAPS_API_KEY" ]; then
-            echo "::error::GOOGLE_MAPS_API_KEY repository secret is required for this vc20 field-test APK."
+            echo "::error::GOOGLE_MAPS_API_KEY repository secret is required for this vc21 field-test APK."
             exit 1
           fi
           echo "Google Maps API key supplied securely through Actions secret."
@@ -112,13 +110,13 @@ jobs:
           base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
-      - name: Verify Beta5.2 essentials
+      - name: Verify Beta5.2.1 essentials
         shell: bash
         run: |
           set -e
           grep -F 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
-          grep -F 'versionCode = 20' app/build.gradle.kts
-          grep -F 'versionName = "1.0.0-beta5.2-clean-shutdown-map"' app/build.gradle.kts
+          grep -F 'versionCode = 21' app/build.gradle.kts
+          grep -F 'versionName = "1.0.0-beta5.2.1-ios-rml1-location"' app/build.gradle.kts
           grep -F 'play-services-maps' app/build.gradle.kts
           grep -F 'play-services-location' app/build.gradle.kts
           grep -F 'android.permission.ACCESS_FINE_LOCATION' app/src/main/AndroidManifest.xml
@@ -132,7 +130,8 @@ jobs:
           grep -F 'LOCATION_SHARE_HEARTBEAT_CHECK_MS = 1_000L' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'MAP_RENDER_MIN_INTERVAL_MS = 500L' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'decodeLocationCompat(payload)' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
-          grep -F 'JSONObject(text)' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
+          grep -F 'decodeCanonicalRml1Location(payload)' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
+          grep -F '0 -> "Excellent"' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
           grep -F 'SMART_DUCK_VOLUME_RATIO = 0.22' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
 
       - name: Unit tests
@@ -151,23 +150,23 @@ jobs:
           TOOLS="$ANDROID_SDK_ROOT/build-tools/36.0.0"
           test -s "$APK"
           mkdir -p dist signing-tools/lib
-          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta5.2-vc20-CleanShutdownMap-ALIGNED-UNSIGNED.apk
-          "$TOOLS/zipalign" -c -P 16 -v 4 dist/RideMesh-Beta5.2-vc20-CleanShutdownMap-ALIGNED-UNSIGNED.apk > dist/ZIPALIGN-VERIFY.txt
+          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta5.2.1-vc21-iOS-RML1-ALIGNED-UNSIGNED.apk
+          "$TOOLS/zipalign" -c -P 16 -v 4 dist/RideMesh-Beta5.2.1-vc21-iOS-RML1-ALIGNED-UNSIGNED.apk > dist/ZIPALIGN-VERIFY.txt
           cp "$TOOLS/apksigner" signing-tools/apksigner
           cp "$TOOLS/lib/apksigner.jar" signing-tools/lib/apksigner.jar
-          sha256sum dist/RideMesh-Beta5.2-vc20-CleanShutdownMap-ALIGNED-UNSIGNED.apk > dist/SHA256SUMS.txt
+          sha256sum dist/RideMesh-Beta5.2.1-vc21-iOS-RML1-ALIGNED-UNSIGNED.apk > dist/SHA256SUMS.txt
 
-      - name: Upload vc20 APK
+      - name: Upload vc21 APK
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta5.2-vc20-CleanShutdownMap-Unsigned-APK
+          name: RideMesh-Beta5.2.1-vc21-iOS-RML1-Unsigned-APK
           path: dist/
           if-no-files-found: error
 
       - name: Upload signing tools
         uses: actions/upload-artifact@v4
         with:
-          name: Android-BuildTools-36-ApkSigner-Beta52
+          name: Android-BuildTools-36-ApkSigner-Beta521
           path: signing-tools/
           if-no-files-found: error
 
@@ -175,6 +174,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta5.2-CleanShutdownMap-Lint
+          name: RideMesh-Beta5.2.1-iOS-RML1-Lint
           path: app/build/reports/lint-results-release.html
           if-no-files-found: ignore
