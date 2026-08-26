@@ -73,6 +73,9 @@ jobs:
       - name: Apply Beta5.0 adaptive reliability
         run: python tools/apply_beta50_adaptive_reliability.py
 
+      - name: Ensure Beta5.0 generated constants
+        run: python tools/fix_beta50_constants.py
+
       - name: Materialize RideMesh branding
         shell: bash
         run: |
@@ -92,6 +95,7 @@ jobs:
           grep -F 'AudioDeviceCallback' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
           grep -F 'startConnectionHealthMonitor' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
           grep -F 'applyAdaptiveAudioTier' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
+          grep -F 'private const val CONNECTION_HEALTH_POLL_MS = 4_000L' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
           grep -F 'qualityLabel' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
           grep -F 'SMART_DUCK_VOLUME_RATIO = 0.22' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
 
