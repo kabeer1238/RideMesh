@@ -1,0 +1,111 @@
+name: Build RideMesh Beta3.2 Offline Recovery APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "beta3.2-offline-recovery-stable" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 16 API 36 SDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Apply Beta3.2 offline recovery patch
+        run: python tools/apply_beta32_offline_recovery.py
+
+      - name: Fix Beta3.2 restart syntax
+        run: python tools/fix_beta32_patch.py
+
+      - name: Materialize approved RideMesh branding
+        shell: bash
+        run: |
+          mkdir -p app/src/main/res/drawable-nodpi
+          base64 -d branding/ridemesh_logo_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
+          base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
+          test -s app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
+          test -s app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          test -s app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
+
+      - name: Verify core Beta3.2 identity
+        shell: bash
+        run: |
+          grep -Fq 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
+          grep -Fq 'versionCode = 5' app/build.gradle.kts
+          grep -Fq 'versionName = "1.0.0-beta3.2-offline"' app/build.gradle.kts
+          grep -Fq 'showOfflineDiagnosticsDialog' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -Fq 'fun refreshDiscovery(reason: String)' app/src/main/java/com/bikemesh/ridemesh/mesh/MeshNode.kt
+          grep -Fq 'CALL / OTHER AUDIO ACTIVE • RIDEMESH PAUSED' app/src/main/java/com/bikemesh/ridemesh/audio/AudioEngine.kt
+
+      - name: Unit tests and Kotlin compile
+        run: gradle --no-daemon testDebugUnitTest
+
+      - name: Android lint
+        run: gradle --no-daemon lintDebug
+
+      - name: Build installable Beta3.2 APK only
+        run: gradle --no-daemon assembleDebug
+
+      - name: Prepare tester APK
+        shell: bash
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          mkdir -p dist
+          cp "$APK" dist/RideMesh-Beta3.2-OfflineRecovery-Test.apk
+          ls -lh dist/RideMesh-Beta3.2-OfflineRecovery-Test.apk
+
+      - name: Upload Beta3.2 tester APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideMesh-Beta3.2-OfflineRecovery-Test-APK
+          path: dist/RideMesh-Beta3.2-OfflineRecovery-Test.apk
+          if-no-files-found: error
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideMesh-Beta3.2-OfflineRecovery-Lint
+          path: app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+
+      - name: Persist validated Beta3.2 source
+        if: success() && github.event_name == 'push'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/build.gradle.kts \
+                  app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt \
+                  app/src/main/java/com/bikemesh/ridemesh/mesh/MeshNode.kt
+          if ! git diff --cached --quiet; then
+            git commit -m "Apply Beta3.2 offline recovery [skip ci]"
+            git push origin HEAD:beta3.2-offline-recovery-stable
+          else
+            echo "Validated Beta3.2 source already persisted"
+          fi
