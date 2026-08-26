@@ -1,9 +1,9 @@
-name: Build RideMesh Beta5.3 Compact Map Contacts APK
+name: Build RideMesh Beta5.4 Cluster Bottom Sheet APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "beta5.3-compact-map-contacts-apk" ]
+    branches: [ "beta5.4-cluster-bottomsheet-apk" ]
 
 permissions:
   contents: read
@@ -12,7 +12,7 @@ env:
   MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
 
 jobs:
-  build-compact-map-contacts-apk:
+  build-cluster-bottomsheet-apk:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -95,12 +95,15 @@ jobs:
       - name: Apply Beta5.3 compact map + contact options
         run: python tools/apply_beta53_compact_contacts.py
 
+      - name: Apply Beta5.4 clustering + rider bottom sheet
+        run: python tools/apply_beta54_cluster_bottomsheet.py
+
       - name: Require Google Maps key
         shell: bash
         run: |
           set -e
           if [ -z "$MAPS_API_KEY" ]; then
-            echo "::error::GOOGLE_MAPS_API_KEY repository secret is required for this vc22 field-test APK."
+            echo "::error::GOOGLE_MAPS_API_KEY repository secret is required for this vc23 field-test APK."
             exit 1
           fi
           echo "Google Maps API key supplied securely through Actions secret."
@@ -113,13 +116,13 @@ jobs:
           base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
-      - name: Verify Beta5.3 essentials
+      - name: Verify Beta5.4 essentials
         shell: bash
         run: |
           set -e
           grep -F 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
-          grep -F 'versionCode = 22' app/build.gradle.kts
-          grep -F 'versionName = "1.0.0-beta5.3-compact-map-contacts"' app/build.gradle.kts
+          grep -F 'versionCode = 23' app/build.gradle.kts
+          grep -F 'versionName = "1.0.0-beta5.4-cluster-bottomsheet"' app/build.gradle.kts
           grep -F 'play-services-maps' app/build.gradle.kts
           grep -F 'play-services-location' app/build.gradle.kts
           grep -F 'android.permission.ACCESS_FINE_LOCATION' app/src/main/AndroidManifest.xml
@@ -130,6 +133,11 @@ jobs:
           grep -F 'android:id="@+id/riderPhone"' app/src/main/res/layout/activity_main.xml
           grep -F 'val width = dp(132)' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'showRiderCallOptions(location.phoneNumber)' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'private val riderClusterMarkers' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'createRiderClusterBitmap' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'setOnMapClickListener' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'VIEW DETAILS' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'RIDER_DETAIL_AUTO_HIDE_MS = 10_000L' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'WHATSAPP CALL' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'WHATSAPP MESSAGE' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'SMART_DUCK_VOLUME_RATIO = 0.22' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
@@ -150,23 +158,23 @@ jobs:
           TOOLS="$ANDROID_SDK_ROOT/build-tools/36.0.0"
           test -s "$APK"
           mkdir -p dist signing-tools/lib
-          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta5.3-vc22-CompactMapContacts-ALIGNED-UNSIGNED.apk
-          "$TOOLS/zipalign" -c -P 16 -v 4 dist/RideMesh-Beta5.3-vc22-CompactMapContacts-ALIGNED-UNSIGNED.apk > dist/ZIPALIGN-VERIFY.txt
+          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta5.4-vc23-ClusterBottomSheet-ALIGNED-UNSIGNED.apk
+          "$TOOLS/zipalign" -c -P 16 -v 4 dist/RideMesh-Beta5.4-vc23-ClusterBottomSheet-ALIGNED-UNSIGNED.apk > dist/ZIPALIGN-VERIFY.txt
           cp "$TOOLS/apksigner" signing-tools/apksigner
           cp "$TOOLS/lib/apksigner.jar" signing-tools/lib/apksigner.jar
-          sha256sum dist/RideMesh-Beta5.3-vc22-CompactMapContacts-ALIGNED-UNSIGNED.apk > dist/SHA256SUMS.txt
+          sha256sum dist/RideMesh-Beta5.4-vc23-ClusterBottomSheet-ALIGNED-UNSIGNED.apk > dist/SHA256SUMS.txt
 
-      - name: Upload vc22 APK
+      - name: Upload vc23 APK
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta5.3-vc22-CompactMapContacts-Unsigned-APK
+          name: RideMesh-Beta5.4-vc23-ClusterBottomSheet-Unsigned-APK
           path: dist/
           if-no-files-found: error
 
       - name: Upload signing tools
         uses: actions/upload-artifact@v4
         with:
-          name: Android-BuildTools-36-ApkSigner-Beta53
+          name: Android-BuildTools-36-ApkSigner-Beta54
           path: signing-tools/
           if-no-files-found: error
 
@@ -174,6 +182,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta5.3-CompactMapContacts-Lint
+          name: RideMesh-Beta5.4-ClusterBottomSheet-Lint
           path: app/build/reports/lint-results-release.html
           if-no-files-found: ignore
