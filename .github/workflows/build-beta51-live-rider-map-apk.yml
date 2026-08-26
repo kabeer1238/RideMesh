@@ -82,6 +82,9 @@ jobs:
       - name: Apply Beta5.1 Live Rider Map
         run: python tools/apply_beta51_live_rider_map.py
 
+      - name: Normalize Beta5.1 map build
+        run: python tools/fix_beta51_map_compile.py
+
       - name: Check Google Maps key
         shell: bash
         run: |
@@ -114,6 +117,7 @@ jobs:
           grep -F 'fun publishRiderLocation(' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
           grep -F 'internal fun encodeLocation(' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
           grep -F 'private fun renderLiveRiderMap(' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'MAP_RENDER_MIN_INTERVAL_MS = 500L' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'add("MAP"' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'google.navigation:q=' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'SMART_DUCK_VOLUME_RATIO = 0.22' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
