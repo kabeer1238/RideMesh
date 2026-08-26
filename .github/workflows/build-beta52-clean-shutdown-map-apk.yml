@@ -91,6 +91,9 @@ jobs:
       - name: Ensure Beta5.2 generated constants
         run: python tools/fix_beta52_constants.py
 
+      - name: Apply iOS/Android location compatibility
+        run: python tools/apply_beta52_ios_location_compat.py
+
       - name: Require Google Maps key
         shell: bash
         run: |
@@ -128,6 +131,8 @@ jobs:
           grep -F 'LOCATION_STATIONARY_HEARTBEAT_MS = 5_000L' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'LOCATION_SHARE_HEARTBEAT_CHECK_MS = 1_000L' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'MAP_RENDER_MIN_INTERVAL_MS = 500L' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'decodeLocationCompat(payload)' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
+          grep -F 'JSONObject(text)' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
           grep -F 'SMART_DUCK_VOLUME_RATIO = 0.22' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt
 
       - name: Unit tests
