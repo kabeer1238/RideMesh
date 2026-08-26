@@ -1,0 +1,131 @@
+name: Build RideMesh Beta5.4 vc23 Fixed APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "beta5.4-cluster-bottomsheet-apk" ]
+
+permissions:
+  contents: read
+
+env:
+  MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+
+jobs:
+  build-vc23-fixed:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 16 build tools
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Materialize RideMesh vc23 runtime
+        shell: bash
+        run: |
+          set -e
+          if grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt && grep -Fq 'WEBRTC OPUS' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt; then
+            echo 'Runtime already materialized'
+          else
+            python tools/apply_beta4_internet_only_ui.py
+          fi
+          python tools/apply_beta43_public_ui.py
+          python tools/apply_beta44_stability_speed.py
+          python tools/apply_beta441_crashfix.py
+          python tools/apply_beta45_themed_ui.py
+          python tools/fix_beta45_generated_kotlin.py
+          python tools/apply_beta46_music_coexistence.py
+          python tools/apply_beta47_smart_duck.py
+          python tools/apply_beta48_noise_aware_duck.py
+          python tools/apply_beta49_battery_optimizations.py
+          python tools/apply_beta50_adaptive_reliability.py
+          python tools/fix_beta50_constants.py
+          python tools/apply_beta51_live_rider_map.py
+          python tools/fix_beta51_map_compile.py
+          python tools/apply_beta52_clean_shutdown_map_visibility.py
+          python tools/fix_beta52_constants.py
+          python tools/apply_beta52_ios_location_compat.py
+          python tools/apply_beta53_compact_contacts.py
+          python tools/apply_beta54_cluster_bottomsheet.py
+          python tools/fix_beta54_generated_kotlin.py
+
+      - name: Require Google Maps key
+        shell: bash
+        run: |
+          test -n "$MAPS_API_KEY" || (echo "GOOGLE_MAPS_API_KEY is required" && exit 1)
+
+      - name: Materialize branding
+        shell: bash
+        run: |
+          mkdir -p app/src/main/res/drawable-nodpi
+          base64 -d branding/ridemesh_logo_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
+          base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
+
+      - name: Verify vc23 essentials
+        shell: bash
+        run: |
+          set -e
+          grep -F 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
+          grep -F 'versionCode = 23' app/build.gradle.kts
+          grep -F 'versionName = "1.0.0-beta5.4-cluster-bottomsheet"' app/build.gradle.kts
+          grep -F 'private val riderClusterMarkers' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'createRiderClusterBitmap' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'setOnMapClickListener' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'VIEW DETAILS' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'RIDER_DETAIL_AUTO_HIDE_MS = 10_000L' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'android:id="@+id/riderPhone"' app/src/main/res/layout/activity_main.xml
+          grep -F 'WHATSAPP CALL' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'WHATSAPP MESSAGE' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+
+      - name: Unit tests
+        run: gradle --no-daemon testDebugUnitTest
+
+      - name: Release lint
+        run: gradle --no-daemon lintRelease
+
+      - name: Build release APK
+        run: gradle --no-daemon assembleRelease
+
+      - name: Align and verify APK
+        shell: bash
+        run: |
+          set -e
+          APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          TOOLS="$ANDROID_SDK_ROOT/build-tools/36.0.0"
+          mkdir -p dist signing-tools/lib
+          test -s "$APK"
+          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta5.4-vc23-ClusterBottomSheet-ALIGNED-UNSIGNED.apk
+          "$TOOLS/zipalign" -c -P 16 -v 4 dist/RideMesh-Beta5.4-vc23-ClusterBottomSheet-ALIGNED-UNSIGNED.apk > dist/ZIPALIGN-VERIFY.txt
+          sha256sum dist/RideMesh-Beta5.4-vc23-ClusterBottomSheet-ALIGNED-UNSIGNED.apk > dist/SHA256SUMS.txt
+          cp "$TOOLS/apksigner" signing-tools/apksigner
+          cp "$TOOLS/lib/apksigner.jar" signing-tools/lib/apksigner.jar
+
+      - name: Upload vc23 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideMesh-Beta5.4-vc23-ClusterBottomSheet-Unsigned-APK
+          path: dist/
+          if-no-files-found: error
+
+      - name: Upload APK signer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-BuildTools-36-ApkSigner-Beta54
+          path: signing-tools/
+          if-no-files-found: error
