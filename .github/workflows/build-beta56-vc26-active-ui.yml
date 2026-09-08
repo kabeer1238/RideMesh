@@ -66,6 +66,7 @@ jobs:
           python tools/apply_beta55_subscription_paywall.py
           python tools/apply_beta551_official_logo_lock.py
           python tools/apply_beta56_active_ui_rebuild.py
+          python tools/fix_beta56_preserve_email_gate.py
 
       - name: Require Google Maps key
         shell: bash
@@ -88,6 +89,9 @@ jobs:
           grep -F 'versionName = "1.0.0-beta5.6-active-ui-rebuild"' app/build.gradle.kts
           grep -F 'ACTIVE RIDE — Beta5.6 premium rebuild' app/src/main/res/layout/activity_main.xml
           grep -F 'android:layout_height="142dp"' app/src/main/res/layout/activity_main.xml
+          grep -F 'android:id="@+id/screenEmail"' app/src/main/res/layout/activity_main.xml
+          grep -F 'android:id="@+id/emailInput"' app/src/main/res/layout/activity_main.xml
+          grep -F 'android:id="@+id/emailSave"' app/src/main/res/layout/activity_main.xml
           grep -F 'LIVE • YOU' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'START 7-DAY FREE TRIAL' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
 
