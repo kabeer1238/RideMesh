@@ -98,18 +98,33 @@ if "android.hardware.wifi.aware" not in m:
         raise SystemExit("Offline mesh patch: manifest root anchor not found")
     m = m.replace(manifest_anchor, manifest_anchor + "\n" + feature, 1)
 
+# Production vc25 already declares some permissions (notably ACCESS_FINE_LOCATION
+# for the live map). Add Wi-Fi Aware permissions by permission NAME rather than by
+# exact XML line so we never create a duplicate manifest declaration.
 permissions = [
-    '    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />',
-    '    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />',
-    '    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />',
-    '    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />',
+    (
+        "android.permission.ACCESS_WIFI_STATE",
+        '    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />',
+    ),
+    (
+        "android.permission.CHANGE_WIFI_STATE",
+        '    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />',
+    ),
+    (
+        "android.permission.ACCESS_FINE_LOCATION",
+        '    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />',
+    ),
+    (
+        "android.permission.NEARBY_WIFI_DEVICES",
+        '    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />',
+    ),
 ]
 
 application_anchor = "    <application\n"
 if application_anchor not in m:
     raise SystemExit("Offline mesh patch: application anchor not found")
 
-missing = [line for line in permissions if line not in m]
+missing = [line for permission_name, line in permissions if permission_name not in m]
 if missing:
     m = m.replace(
         application_anchor,
