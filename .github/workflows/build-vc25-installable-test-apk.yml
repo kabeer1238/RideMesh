@@ -66,10 +66,10 @@ jobs:
           python tools/apply_beta54_cluster_bottomsheet.py
           python tools/fix_beta54_generated_kotlin.py
           python tools/apply_beta55_subscription_paywall.py
-          python tools/fix_premium_screen_enums.py
           python tools/apply_production_vc25_billing8.py
           python tools/apply_production_no_beta.py
           python tools/apply_production_final_cleanup.py
+          python tools/fix_production_premium_enum.py
 
       - name: Require Google Maps key
         shell: bash
@@ -92,7 +92,7 @@ jobs:
           set -euo pipefail
           APK="app/build/outputs/apk/debug/app-debug.apk"
           test -s "$APK"
-          "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --verbose "$APK"
+          "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
 
       - name: Prepare installable APK
         shell: bash
