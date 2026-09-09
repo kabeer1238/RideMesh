@@ -117,6 +117,9 @@ jobs:
           ! grep -Fq 'chat.whatsapp.com' "$MAIN"
           ! grep -Fq 'com.whatsapp' "$MAIN"
           ! grep -Fq 'WhatsApp' "$LAYOUT"
+          ! grep -Fq 'beta rider profile' "$LAYOUT"
+          ! grep -Fq 'BETA ACCESS' "$LAYOUT"
+          ! grep -Fq '60 DAYS REMAINING' "$LAYOUT"
           echo 'Production source verification passed'
 
       - name: Unit tests
@@ -131,14 +134,16 @@ jobs:
       - name: Verify compiled production APK strings
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           APK="app/build/outputs/apk/release/app-release-unsigned.apk"
           test -s "$APK"
           STRINGS_FILE="$(mktemp)"
-          for dex in $(unzip -Z1 "$APK" | grep -E '^classes([0-9]+)?\.dex$'); do
-            unzip -p "$APK" "$dex" | strings >> "$STRINGS_FILE"
-          done
-          unzip -p "$APK" resources.arsc | strings >> "$STRINGS_FILE" || true
+          APK_DIR="$(mktemp -d)"
+          trap 'rm -rf "$APK_DIR" "$STRINGS_FILE"' EXIT
+          unzip -qq "$APK" -d "$APK_DIR"
+          while IFS= read -r -d '' file; do
+            strings -n 4 "$file" >> "$STRINGS_FILE" || true
+          done < <(find "$APK_DIR" -type f -print0)
 
           forbidden=(
             'RIDE MESH  •  BETA'
@@ -147,6 +152,8 @@ jobs:
             'BETA ACCESS'
             'BETA PERIOD ENDED'
             'RideMesh Beta •'
+            'beta rider profile'
+            '60 DAYS REMAINING'
             'This tester build expires 60 days'
             'This RideMesh Beta build has reached its 60-day test limit'
             'NOT CONFIGURED IN THIS BETA'
