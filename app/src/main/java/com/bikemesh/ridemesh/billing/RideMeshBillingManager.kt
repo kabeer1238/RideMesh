@@ -25,7 +25,7 @@ class RideMeshBillingManager(
         val productDetails: ProductDetails,
         val offerToken: String,
         val localizedMonthlyPrice: String,
-        val hasSevenDayTrial: Boolean,
+        val hasTwoMonthTrial: Boolean,
     )
 
     private val appContext = context.applicationContext
@@ -133,7 +133,7 @@ class RideMeshBillingManager(
                 return@queryProductDetailsAsync
             }
             val offer = details.subscriptionOfferDetails
-                ?.firstOrNull { it.offerId != null && it.pricingPhases.pricingPhaseList.any { phase -> phase.priceAmountMicros == 0L && phase.billingPeriod == "P7D" } }
+                ?.firstOrNull { it.offerId != null && it.pricingPhases.pricingPhaseList.any { phase -> phase.priceAmountMicros == 0L && phase.billingPeriod == "P2M" } }
                 ?: details.subscriptionOfferDetails?.firstOrNull()
             if (offer == null) {
                 subscription = null
@@ -151,7 +151,7 @@ class RideMeshBillingManager(
                 productDetails = details,
                 offerToken = offer.offerToken,
                 localizedMonthlyPrice = paidPhase.formattedPrice,
-                hasSevenDayTrial = phases.any { it.priceAmountMicros == 0L && it.billingPeriod == "P7D" },
+                hasTwoMonthTrial = phases.any { it.priceAmountMicros == 0L && it.billingPeriod == "P2M" },
             )
             subscription = display
             onProductChanged(display)
