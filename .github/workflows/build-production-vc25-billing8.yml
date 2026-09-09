@@ -135,7 +135,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gradle --no-daemon dependencies --configuration releaseRuntimeClasspath > /tmp/ridemesh-deps.txt
+          gradle --no-daemon :app:dependencies --configuration releaseRuntimeClasspath > /tmp/ridemesh-deps.txt
           grep -F 'com.android.billingclient:billing-ktx:8.0.0' /tmp/ridemesh-deps.txt
           ! grep -Fq 'com.android.billingclient:billing-ktx:7.1.1' /tmp/ridemesh-deps.txt
           echo 'Resolved Google Play Billing 8.0.0'
