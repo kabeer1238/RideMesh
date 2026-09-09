@@ -1,20 +1,27 @@
 from pathlib import Path
+import re
 
-# Beta5.5 / vc24 — Google Play Billing subscription gate.
-# The 7-day free trial and regional prices are configured in Play Console.
-# RideMesh always renders the localized price returned by Google Play.
+# Production vc27 — keep the proven vc23 UI/runtime and add Google Play Billing only.
+# The 2-month free trial and regional prices are configured in Play Console.
+# RideMesh always renders the localized recurring price returned by Google Play.
 
 p = Path("app/build.gradle.kts")
 s = p.read_text()
-s = s.replace("versionCode = 23", "versionCode = 24")
+s = s.replace("versionCode = 23", "versionCode = 27")
 s = s.replace(
     'versionName = "1.0.0-beta5.4-cluster-bottomsheet"',
-    'versionName = "1.0.0-beta5.5-subscription-paywall"',
+    'versionName = "1.0.0"',
 )
 if 'com.android.billingclient:billing-ktx' not in s:
     s = s.replace(
         '    implementation("com.google.android.material:material:1.12.0")\n',
-        '    implementation("com.google.android.material:material:1.12.0")\n    implementation("com.android.billingclient:billing-ktx:7.1.1")\n',
+        '    implementation("com.google.android.material:material:1.12.0")\n    implementation("com.android.billingclient:billing-ktx:9.1.0")\n',
+    )
+else:
+    s = re.sub(
+        r'implementation\("com\.android\.billingclient:billing-ktx:[^"]+"\)',
+        'implementation("com.android.billingclient:billing-ktx:9.1.0")',
+        s,
     )
 p.write_text(s)
 
@@ -86,7 +93,7 @@ if 'private fun ensurePremiumAccess()' not in s:
             gravity = Gravity.CENTER
         })
         root.addView(TextView(this).apply {
-            text = if (product?.hasSevenDayTrial == true) "7 DAYS FREE" else "RIDEMESH PREMIUM"
+            text = if (product?.hasTwoMonthTrial == true) "2 MONTHS FREE" else "RIDEMESH PREMIUM"
             textSize = 19f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(Color.rgb(0, 229, 255))
@@ -103,7 +110,7 @@ if 'private fun ensurePremiumAccess()' not in s:
 
         val priceText = when {
             product == null -> "Connecting to Google Play for your local price…"
-            product.hasSevenDayTrial -> "Free for 7 days\nThen ${product.localizedMonthlyPrice} / month"
+            product.hasTwoMonthTrial -> "Free for 2 months\nThen ${product.localizedMonthlyPrice} / month"
             else -> "${product.localizedMonthlyPrice} / month"
         }
         root.addView(TextView(this).apply {
@@ -115,7 +122,7 @@ if 'private fun ensurePremiumAccess()' not in s:
             setPadding(0, dp(18), 0, dp(6))
         })
         root.addView(TextView(this).apply {
-            text = "Your exact local price is provided by Google Play before purchase. Subscription renews monthly unless cancelled. Cancel anytime in Google Play."
+            text = "Your exact local price is provided by Google Play before purchase. Subscription renews monthly after any trial unless cancelled. Cancel anytime in Google Play."
             textSize = 11.5f
             setTextColor(Color.rgb(155, 169, 177))
             gravity = Gravity.CENTER
@@ -123,7 +130,7 @@ if 'private fun ensurePremiumAccess()' not in s:
         })
 
         root.addView(MaterialButton(this).apply {
-            text = if (product?.hasSevenDayTrial == true) "START 7-DAY FREE TRIAL" else if (product != null) "CONTINUE" else "RETRY PRICE"
+            text = if (product?.hasTwoMonthTrial == true) "START 2-MONTH FREE TRIAL" else if (product != null) "CONTINUE" else "RETRY PRICE"
             isAllCaps = true
             setTextColor(Color.BLACK)
             backgroundTintList = ColorStateList.valueOf(Color.rgb(0, 229, 255))
@@ -170,6 +177,45 @@ if 'private fun ensurePremiumAccess()' not in s:
 
 '''
     s = s[:idx] + block + s[idx:]
+
+# Production build must never expire after the old 60-day tester window.
+s = re.sub(
+    r'    private fun isBetaExpired\(nowMs: Long = System\.currentTimeMillis\(\)\): Boolean =\n        BetaWindow\.isExpired\(betaFirstLaunchMs\(\), nowMs\)',
+    '    private fun isBetaExpired(nowMs: Long = System.currentTimeMillis()): Boolean = false',
+    s,
+)
+s = re.sub(
+    r'    private fun betaStatusSentence\(\): String \{.*?\n    \}\n\n    private fun refreshBetaAccessUi',
+    '    private fun betaStatusSentence(): String = "Premium access: managed by Google Play"\n\n    private fun refreshBetaAccessUi',
+    s,
+    flags=re.S,
+)
+s = re.sub(
+    r'    private fun refreshBetaAccessUi\(showWarning: Boolean\) \{.*?\n    \}\n\n    private fun ensureBetaUsable\(\): Boolean \{.*?\n    \}',
+    '''    private fun refreshBetaAccessUi(showWarning: Boolean) {
+        binding.betaExpiryStatus.visibility = View.GONE
+        binding.createRide.isEnabled = true
+        binding.joinRide.isEnabled = true
+        binding.startRide.isEnabled = true
+        binding.findNearby.isEnabled = true
+    }
+
+    private fun ensureBetaUsable(): Boolean = true''',
+    s,
+    flags=re.S,
+)
+
+# Remove tester wording without changing the vc23 layout.
+s = s.replace('RideMesh Beta4 settings & help', 'RideMesh settings & help')
+s = s.replace(
+    'Beta4 uses Internet-only WebRTC + Opus. Offline / multi-hop modes are not active in this package so voice stability can be tested independently.',
+    'RideMesh uses Internet-only WebRTC + Opus. Offline / multi-hop modes are currently not active in this release.',
+)
+s = s.replace(
+    'Offline / multi-hop is intentionally disabled in this Beta4 package while we prioritize clear, stable group voice.',
+    'Offline / multi-hop is currently disabled while we prioritize clear, stable group voice.',
+)
+s = s.replace('NOT CONFIGURED IN THIS BETA', 'NOT CONFIGURED')
 
 # Release BillingClient cleanly with the activity.
 if 'billingManager.endConnection()' not in s:
