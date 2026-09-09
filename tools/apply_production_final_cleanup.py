@@ -64,10 +64,28 @@ m = re.sub(r'^\s*private const val COMMUNITY_URL = .*\n', '', m, flags=re.M)
 
 main.write_text(m)
 
-# Remove the WhatsApp-specific hint from the optional rider phone field.
+# Clean production layout text too. Older vc23 layout still carried beta copy even
+# though the expiry view was hidden; remove it so it cannot reappear on any device.
 layout = Path("app/src/main/res/layout/activity_main.xml")
 s = layout.read_text()
 s = s.replace('country code for WhatsApp', 'country code if applicable')
+s = s.replace(
+    'Add your email for your beta rider profile. No account, password, OTP or verification is required.',
+    'Add your email to your RideMesh rider profile. No account, password, OTP or verification is required.'
+)
+
+# Remove the static legacy beta countdown text from the hidden compatibility TextView.
+marker = 'android:id="@+id/betaExpiryStatus"'
+pos = s.find(marker)
+if pos >= 0:
+    start = s.rfind('<TextView', 0, pos)
+    end = s.find('/>', pos)
+    if start >= 0 and end >= 0:
+        block = s[start:end + 2]
+        block = re.sub(r'\n\s*android:text="[^"]*"', '', block, count=1)
+        if 'android:visibility="gone"' not in block:
+            block = block.replace(marker, marker + '\n                android:visibility="gone"', 1)
+        s = s[:start] + block + s[end + 2:]
 layout.write_text(s)
 
 # Fail immediately if any known rider-facing beta/WhatsApp strings survived this pass.
@@ -96,8 +114,16 @@ for value in forbidden_main:
     if value in m:
         raise SystemExit(f'Forbidden production UI string remains: {value}')
 
-if 'WhatsApp' in s:
-    raise SystemExit('Forbidden WhatsApp layout text remains')
+forbidden_layout = [
+    'beta rider profile',
+    'BETA ACCESS',
+    '60 DAYS REMAINING',
+    'BETA PERIOD ENDED',
+    'WhatsApp',
+]
+for value in forbidden_layout:
+    if value in s:
+        raise SystemExit(f'Forbidden production layout string remains: {value}')
 
 if 'salesautopilotindia@gmail.com' not in m:
     raise SystemExit('Production support email missing')
