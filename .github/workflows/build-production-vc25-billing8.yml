@@ -1,0 +1,219 @@
+name: Build RideMesh Production vc25 Billing8 APK AAB
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "production-vc25-billing8" ]
+
+permissions:
+  contents: read
+
+env:
+  MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+
+jobs:
+  build-vc25:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 16 build tools
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Materialize RideMesh vc25 runtime
+        shell: bash
+        run: |
+          set -e
+          if grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt && grep -Fq 'WEBRTC OPUS' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt; then
+            echo 'Runtime already materialized'
+          else
+            python tools/apply_beta4_internet_only_ui.py
+          fi
+          python tools/apply_beta43_public_ui.py
+          python tools/apply_beta44_stability_speed.py
+          python tools/apply_beta441_crashfix.py
+          python tools/apply_beta45_themed_ui.py
+          python tools/fix_beta45_generated_kotlin.py
+          python tools/apply_beta46_music_coexistence.py
+          python tools/apply_beta47_smart_duck.py
+          python tools/apply_beta48_noise_aware_duck.py
+          python tools/apply_beta49_battery_optimizations.py
+          python tools/apply_beta50_adaptive_reliability.py
+          python tools/fix_beta50_constants.py
+          python tools/apply_beta51_live_rider_map.py
+          python tools/fix_beta51_map_compile.py
+          python tools/apply_beta52_clean_shutdown_map_visibility.py
+          python tools/fix_beta52_constants.py
+          python tools/apply_beta52_ios_location_compat.py
+          python tools/apply_beta53_compact_contacts.py
+          python tools/apply_beta54_cluster_bottomsheet.py
+          python tools/fix_beta54_generated_kotlin.py
+          python tools/apply_beta55_subscription_paywall.py
+          python tools/apply_production_vc25_billing8.py
+          python tools/apply_production_no_beta.py
+          python tools/apply_production_final_cleanup.py
+
+      - name: Require Google Maps key
+        shell: bash
+        run: |
+          test -n "$MAPS_API_KEY" || (echo "GOOGLE_MAPS_API_KEY is required" && exit 1)
+
+      - name: Materialize branding
+        shell: bash
+        run: |
+          mkdir -p app/src/main/res/drawable-nodpi
+          base64 -d branding/ridemesh_logo_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
+          base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
+
+      - name: Verify vc25 production subscription essentials
+        shell: bash
+        run: |
+          set -e
+          MAIN="app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt"
+          BILLING="app/src/main/java/com/bikemesh/ridemesh/billing/RideMeshBillingManager.kt"
+          LAYOUT="app/src/main/res/layout/activity_main.xml"
+          grep -F 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
+          grep -F 'versionCode = 25' app/build.gradle.kts
+          grep -F 'versionName = "1.0.0"' app/build.gradle.kts
+          grep -F 'com.android.billingclient:billing-ktx:8.0.0' app/build.gradle.kts
+          ! grep -Fq 'com.android.billingclient:billing-ktx:7.1.1' app/build.gradle.kts
+          grep -F 'PendingPurchasesParams.newBuilder().enableOneTimeProducts().build()' "$BILLING"
+          grep -F '.enableAutoServiceReconnection()' "$BILLING"
+          grep -F 'queryResult.billingResult' "$BILLING"
+          grep -F 'queryResult.productDetailsList' "$BILLING"
+          ! grep -Fq '.enablePendingPurchases()' "$BILLING"
+          ! grep -Fq 'queryProductDetailsAsync(params) { result, products ->' "$BILLING"
+          grep -F 'const val PRODUCT_ID = "ridemesh_premium_monthly"' "$BILLING"
+          grep -F 'START 2-MONTH FREE TRIAL' "$MAIN"
+          grep -F 'billingPeriod == "P2M"' "$BILLING"
+          grep -F 'localizedMonthlyPrice' "$MAIN"
+          grep -F 'ensurePremiumAccess()' "$MAIN"
+          grep -F 'fun isExpired(firstLaunchMs: Long, nowMs: Long): Boolean = false' app/src/main/java/com/bikemesh/ridemesh/beta/BetaWindow.kt
+          grep -A8 -F 'android:id="@+id/betaExpiryStatus"' "$LAYOUT" | grep -F 'android:visibility="gone"'
+          grep -F 'salesautopilotindia@gmail.com' "$MAIN"
+          grep -F 'private fun openEmailSupport()' "$MAIN"
+
+          ! grep -Fq 'RIDE MESH  •  BETA' "$MAIN"
+          ! grep -Fq 'RideMesh Beta4 settings & help' "$MAIN"
+          ! grep -Fq 'Beta access:' "$MAIN"
+          ! grep -Fq 'BETA ACCESS' "$MAIN"
+          ! grep -Fq 'BETA PERIOD ENDED' "$MAIN"
+          ! grep -Fq 'RideMesh Beta •' "$MAIN"
+          ! grep -Fq 'NOT CONFIGURED IN THIS BETA' "$MAIN"
+          ! grep -Fq 'WHATSAPP CALL' "$MAIN"
+          ! grep -Fq 'WHATSAPP MESSAGE' "$MAIN"
+          ! grep -Fq 'WhatsApp group' "$MAIN"
+          ! grep -Fq 'WhatsApp bug' "$MAIN"
+          ! grep -Fq 'WhatsApp call' "$MAIN"
+          ! grep -Fq 'whatsapp://call?number=' "$MAIN"
+          ! grep -Fq 'https://wa.me/' "$MAIN"
+          ! grep -Fq 'chat.whatsapp.com' "$MAIN"
+          ! grep -Fq 'com.whatsapp' "$MAIN"
+          ! grep -Fq 'WhatsApp' "$LAYOUT"
+          ! grep -Fq 'beta rider profile' "$LAYOUT"
+          ! grep -Fq 'BETA ACCESS' "$LAYOUT"
+          ! grep -Fq '60 DAYS REMAINING' "$LAYOUT"
+          echo 'Production vc25 source verification passed'
+
+      - name: Verify resolved Billing dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon dependencies --configuration releaseRuntimeClasspath > /tmp/ridemesh-deps.txt
+          grep -F 'com.android.billingclient:billing-ktx:8.0.0' /tmp/ridemesh-deps.txt
+          ! grep -Fq 'com.android.billingclient:billing-ktx:7.1.1' /tmp/ridemesh-deps.txt
+          echo 'Resolved Google Play Billing 8.0.0'
+
+      - name: Unit tests
+        run: gradle --no-daemon testDebugUnitTest
+
+      - name: Release lint
+        run: gradle --no-daemon lintRelease
+
+      - name: Build release APK and AAB
+        run: gradle --no-daemon assembleRelease bundleRelease
+
+      - name: Verify compiled production APK strings
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          test -s "$APK"
+          STRINGS_FILE="$(mktemp)"
+          APK_DIR="$(mktemp -d)"
+          trap 'rm -rf "$APK_DIR" "$STRINGS_FILE"' EXIT
+          unzip -qq "$APK" -d "$APK_DIR"
+          while IFS= read -r -d '' file; do
+            strings -n 4 "$file" >> "$STRINGS_FILE" || true
+          done < <(find "$APK_DIR" -type f -print0)
+
+          forbidden=(
+            'RIDE MESH  •  BETA'
+            'RideMesh Beta4 settings & help'
+            'Beta access:'
+            'BETA ACCESS'
+            'BETA PERIOD ENDED'
+            'RideMesh Beta •'
+            'beta rider profile'
+            '60 DAYS REMAINING'
+            'This tester build expires 60 days'
+            'This RideMesh Beta build has reached its 60-day test limit'
+            'NOT CONFIGURED IN THIS BETA'
+            'WHATSAPP CALL'
+            'WHATSAPP MESSAGE'
+            'WhatsApp group'
+            'WhatsApp bug'
+            'WhatsApp call'
+            'WhatsApp is not available on this device'
+            'whatsapp://call?number='
+            'https://wa.me/'
+            'chat.whatsapp.com'
+            'com.whatsapp'
+          )
+          for value in "${forbidden[@]}"; do
+            if grep -Fq "$value" "$STRINGS_FILE"; then
+              echo "Forbidden production string found in compiled APK: $value"
+              exit 1
+            fi
+          done
+          grep -Fq 'salesautopilotindia@gmail.com' "$STRINGS_FILE"
+          grep -Fq 'ridemesh_premium_monthly' "$STRINGS_FILE"
+          grep -Fq 'P2M' "$STRINGS_FILE"
+          echo 'Compiled vc25 APK verification passed'
+
+      - name: Prepare APK and AAB
+        shell: bash
+        run: |
+          set -e
+          APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          AAB="app/build/outputs/bundle/release/app-release.aab"
+          TOOLS="$ANDROID_SDK_ROOT/build-tools/36.0.0"
+          mkdir -p dist
+          test -s "$APK"
+          test -s "$AAB"
+          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-vc25-Production-Billing8-ALIGNED-UNSIGNED.apk
+          cp "$AAB" dist/RideMesh-vc25-Production-Billing8-GOOGLE-PLAY-UNSIGNED.aab
+          sha256sum dist/* > dist/SHA256SUMS.txt
+
+      - name: Upload vc25 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideMesh-vc25-Production-Billing8-Package
+          path: dist/
+          if-no-files-found: error
