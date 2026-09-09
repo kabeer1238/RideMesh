@@ -1,9 +1,9 @@
-name: Build RideMesh Beta5.5 vc24 Subscription APK AAB
+name: Build RideMesh Production vc27 vc23 UI Billing
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "beta5.5-subscription-paywall-apk" ]
+    branches: [ "production-vc27-vc23-ui-billing" ]
 
 permissions:
   contents: read
@@ -12,7 +12,7 @@ env:
   MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
 
 jobs:
-  build-vc24:
+  build-production-vc27:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -35,7 +35,7 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Materialize RideMesh vc24 runtime
+      - name: Materialize proven vc23 runtime plus production billing
         shell: bash
         run: |
           set -e
@@ -78,18 +78,22 @@ jobs:
           base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
-      - name: Verify vc24 subscription essentials
+      - name: Verify production essentials
         shell: bash
         run: |
           set -e
           grep -F 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
-          grep -F 'versionCode = 24' app/build.gradle.kts
-          grep -F 'versionName = "1.0.0-beta5.5-subscription-paywall"' app/build.gradle.kts
-          grep -F 'com.android.billingclient:billing-ktx:7.1.1' app/build.gradle.kts
+          grep -F 'versionCode = 27' app/build.gradle.kts
+          grep -F 'versionName = "1.0.0"' app/build.gradle.kts
+          grep -F 'com.android.billingclient:billing-ktx:9.1.0' app/build.gradle.kts
           grep -F 'const val PRODUCT_ID = "ridemesh_premium_monthly"' app/src/main/java/com/bikemesh/ridemesh/billing/RideMeshBillingManager.kt
-          grep -F 'START 7-DAY FREE TRIAL' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'TWO_MONTH_TRIAL_PERIOD = "P2M"' app/src/main/java/com/bikemesh/ridemesh/billing/RideMeshBillingManager.kt
+          grep -F 'START 2-MONTH FREE TRIAL' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'Free for 2 months' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'localizedMonthlyPrice' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'ensurePremiumAccess()' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'private fun isBetaExpired(nowMs: Long = System.currentTimeMillis()): Boolean = false' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'binding.betaExpiryStatus.visibility = View.GONE' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
 
       - name: Unit tests
         run: gradle --no-daemon testDebugUnitTest
@@ -110,13 +114,13 @@ jobs:
           mkdir -p dist
           test -s "$APK"
           test -s "$AAB"
-          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta5.5-vc24-Subscription-ALIGNED-UNSIGNED.apk
-          cp "$AAB" dist/RideMesh-Beta5.5-vc24-Subscription-GOOGLE-PLAY-UNSIGNED.aab
+          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-1.0-vc27-vc23UI-Billing-ALIGNED-UNSIGNED.apk
+          cp "$AAB" dist/RideMesh-1.0-vc27-vc23UI-Billing-GOOGLE-PLAY-UNSIGNED.aab
           sha256sum dist/* > dist/SHA256SUMS.txt
 
-      - name: Upload vc24 package
+      - name: Upload production candidate package
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta5.5-vc24-Subscription-Package
+          name: RideMesh-1.0-vc27-vc23UI-Billing-Package
           path: dist/
           if-no-files-found: error
