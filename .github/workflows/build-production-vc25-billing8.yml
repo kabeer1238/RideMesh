@@ -67,6 +67,7 @@ jobs:
           python tools/apply_production_vc25_billing8.py
           python tools/apply_production_no_beta.py
           python tools/apply_production_final_cleanup.py
+          python tools/fix_production_premium_enum.py
 
       - name: Require Google Maps key
         shell: bash
