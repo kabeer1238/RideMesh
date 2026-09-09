@@ -23,37 +23,27 @@ jobs:
   build-offline-mesh-v1:
     runs-on: ubuntu-latest
     timeout-minutes: 35
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-
       - name: Install Android 16 build tools
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
-
       - name: Set up Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.13"
-
       - name: Materialize production vc25 runtime
         shell: bash
         run: |
           set -e
-          if grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt && grep -Fq 'WEBRTC OPUS' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt; then
-            echo 'Runtime already materialized'
-          else
-            python tools/apply_beta4_internet_only_ui.py
-          fi
+          if grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt && grep -Fq 'WEBRTC OPUS' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt; then echo 'Runtime already materialized'; else python tools/apply_beta4_internet_only_ui.py; fi
           python tools/apply_beta43_public_ui.py
           python tools/apply_beta44_stability_speed.py
           python tools/apply_beta441_crashfix.py
@@ -78,14 +68,13 @@ jobs:
           python tools/apply_production_no_beta.py
           python tools/apply_production_final_cleanup.py
           python tools/fix_production_premium_enum.py
-
       - name: Apply offline mesh v1
         run: python3 tools/apply_offline_mesh_v1.py
-
+      - name: Disable subscriptions for offline test
+        run: python3 tools/apply_offline_test_no_subscription.py
       - name: Require Google Maps key
         shell: bash
         run: test -n "$MAPS_API_KEY" || (echo "GOOGLE_MAPS_API_KEY is required" && exit 1)
-
       - name: Materialize branding
         shell: bash
         run: |
@@ -93,13 +82,10 @@ jobs:
           base64 -d branding/ridemesh_logo_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
           base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
-
       - name: Run unit tests
         run: gradle --no-daemon :app:testDebugUnitTest
-
       - name: Build signed debug test APK
         run: gradle --no-daemon :app:assembleDebug
-
       - name: Verify APK signing
         shell: bash
         run: |
@@ -107,18 +93,16 @@ jobs:
           APK="app/build/outputs/apk/debug/app-debug.apk"
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
-
       - name: Prepare installable APK
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/RideMesh-vc25-OFFLINE-MESH-V1-INSTALLABLE-TEST.apk
-          sha256sum dist/RideMesh-vc25-OFFLINE-MESH-V1-INSTALLABLE-TEST.apk > dist/SHA256SUMS.txt
-
+          cp app/build/outputs/apk/debug/app-debug.apk dist/RideMesh-vc25-OFFLINE-MESH-V1-NO-SUBSCRIPTION-SIGNED-TEST.apk
+          sha256sum dist/RideMesh-vc25-OFFLINE-MESH-V1-NO-SUBSCRIPTION-SIGNED-TEST.apk > dist/SHA256SUMS.txt
       - name: Upload offline mesh test APK
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-vc25-Offline-Mesh-v1-Test-APK
+          name: RideMesh-vc25-Offline-Mesh-v1-No-Subscription-Test-APK
           path: dist/
           if-no-files-found: error
