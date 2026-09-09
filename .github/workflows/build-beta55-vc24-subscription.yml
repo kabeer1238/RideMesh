@@ -3,7 +3,7 @@ name: Build RideMesh Beta5.5 vc24 Subscription APK AAB
 on:
   workflow_dispatch:
   push:
-    branches: [ "beta5.5-subscription-paywall-apk" ]
+    branches: [ "beta5.5.2-production-2month-trial" ]
 
 permissions:
   contents: read
@@ -87,7 +87,8 @@ jobs:
           grep -F 'versionName = "1.0.0-beta5.5-subscription-paywall"' app/build.gradle.kts
           grep -F 'com.android.billingclient:billing-ktx:7.1.1' app/build.gradle.kts
           grep -F 'const val PRODUCT_ID = "ridemesh_premium_monthly"' app/src/main/java/com/bikemesh/ridemesh/billing/RideMeshBillingManager.kt
-          grep -F 'START 7-DAY FREE TRIAL' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'START 2-MONTH FREE TRIAL' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'billingPeriod == "P2M"' app/src/main/java/com/bikemesh/ridemesh/billing/RideMeshBillingManager.kt
           grep -F 'localizedMonthlyPrice' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'ensurePremiumAccess()' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
 
