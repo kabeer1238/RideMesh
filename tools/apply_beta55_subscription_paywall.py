@@ -1,7 +1,7 @@
 from pathlib import Path
 
 # Beta5.5 / vc24 — Google Play Billing subscription gate.
-# The 7-day free trial and regional prices are configured in Play Console.
+# The 2-month free trial and regional prices are configured in Play Console.
 # RideMesh always renders the localized price returned by Google Play.
 
 p = Path("app/build.gradle.kts")
@@ -86,7 +86,7 @@ if 'private fun ensurePremiumAccess()' not in s:
             gravity = Gravity.CENTER
         })
         root.addView(TextView(this).apply {
-            text = if (product?.hasSevenDayTrial == true) "7 DAYS FREE" else "RIDEMESH PREMIUM"
+            text = if (product?.hasTwoMonthTrial == true) "2 MONTHS FREE" else "RIDEMESH PREMIUM"
             textSize = 19f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(Color.rgb(0, 229, 255))
@@ -103,7 +103,7 @@ if 'private fun ensurePremiumAccess()' not in s:
 
         val priceText = when {
             product == null -> "Connecting to Google Play for your local price…"
-            product.hasSevenDayTrial -> "Free for 7 days\nThen ${product.localizedMonthlyPrice} / month"
+            product.hasTwoMonthTrial -> "Free for 2 months\nThen ${product.localizedMonthlyPrice} / month"
             else -> "${product.localizedMonthlyPrice} / month"
         }
         root.addView(TextView(this).apply {
@@ -123,7 +123,7 @@ if 'private fun ensurePremiumAccess()' not in s:
         })
 
         root.addView(MaterialButton(this).apply {
-            text = if (product?.hasSevenDayTrial == true) "START 7-DAY FREE TRIAL" else if (product != null) "CONTINUE" else "RETRY PRICE"
+            text = if (product?.hasTwoMonthTrial == true) "START 2-MONTH FREE TRIAL" else if (product != null) "CONTINUE" else "RETRY PRICE"
             isAllCaps = true
             setTextColor(Color.BLACK)
             backgroundTintList = ColorStateList.valueOf(Color.rgb(0, 229, 255))
