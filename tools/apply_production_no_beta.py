@@ -14,6 +14,16 @@ test = Path("app/src/test/java/com/bikemesh/ridemesh/beta/BetaWindowTest.kt")
 if test.exists():
     test.write_text('''package com.bikemesh.ridemesh.beta\n\nimport org.junit.Assert.assertEquals\nimport org.junit.Assert.assertFalse\nimport org.junit.Assert.assertNull\nimport org.junit.Test\n\nclass BetaWindowTest {\n    private val start = 1_700_000_000_000L\n\n    @Test fun productionNeverExpiresAtLegacyDeadline() {\n        val legacyExpiry = start + BetaWindow.DURATION_MS\n        assertFalse(BetaWindow.isExpired(start, legacyExpiry))\n        assertFalse(BetaWindow.isExpired(start, Long.MAX_VALUE))\n    }\n\n    @Test fun productionDoesNotShowExpiryWarnings() {\n        assertNull(BetaWindow.warningBucket(14))\n        assertNull(BetaWindow.warningBucket(7))\n        assertNull(BetaWindow.warningBucket(1))\n        assertNull(BetaWindow.warningBucket(0))\n    }\n\n    @Test fun compatibilityCountdownCannotReachZero() {\n        assertEquals(60L, BetaWindow.remainingDays(start, start))\n        assertEquals(60L, BetaWindow.remainingDays(start, start + 365L * BetaWindow.DAY_MS))\n    }\n}\n''')
 
+# Remove every rider-visible beta reference introduced by the older themed/public UI
+# patches. Keep internal class/function names only where changing them would be invasive.
+main = Path("app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt")
+m = main.read_text()
+m = m.replace('text = "RIDE MESH  •  BETA"', 'text = "RIDE MESH"')
+m = m.replace('            addPanelSection(body, "Beta")\n            addPanelInfo(body, "Access", betaStatusSentence())\n\n', '')
+m = m.replace('            addPanelInfo(body, "Beta access", betaStatusSentence())\n', '')
+m = m.replace('No OTP or password is required in this beta.', 'No OTP or password is required.')
+main.write_text(m)
+
 # Hide the legacy beta-access line while retaining the view id for compatibility
 # with older MainActivity bindings.
 layout = Path("app/src/main/res/layout/activity_main.xml")
