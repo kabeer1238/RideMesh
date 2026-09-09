@@ -62,6 +62,62 @@ m = re.sub(r'^\s*private const val SUPPORT_WHATSAPP = .*\n', '', m, flags=re.M)
 m = re.sub(r'^\s*private const val BUG_REPORT_GROUP_URL = .*\n', '', m, flags=re.M)
 m = re.sub(r'^\s*private const val COMMUNITY_URL = .*\n', '', m, flags=re.M)
 
+# Production subscription access must fail closed. The beta5.5 paywall patch historically
+# relied on exact string replacement, so verify and enforce the gate after all runtime patches.
+def enforce_button_gate(source: str, button_id: str) -> str:
+    marker = f'        binding.{button_id}.setOnClickListener {{\n'
+    start = source.find(marker)
+    if start < 0:
+        raise SystemExit(f'Premium gate button listener missing: {button_id}')
+    end = source.find('\n        }', start)
+    if end < 0:
+        raise SystemExit(f'Premium gate button listener end missing: {button_id}')
+    block = source[start:end]
+    if 'ensurePremiumAccess()' in block:
+        return source
+
+    beta_line = '            if (!ensureBetaUsable()) return@setOnClickListener\n'
+    if beta_line in block:
+        updated = block.replace(
+            beta_line,
+            beta_line + '            if (!ensurePremiumAccess()) return@setOnClickListener\n',
+            1,
+        )
+    else:
+        updated = block.replace(
+            marker,
+            marker + '            if (!ensurePremiumAccess()) return@setOnClickListener\n',
+            1,
+        )
+    return source[:start] + updated + source[end:]
+
+m = enforce_button_gate(m, 'createRide')
+m = enforce_button_gate(m, 'joinRide')
+
+# Defense in depth: even if another future UI path reaches START_RIDE, premium access is
+# checked again immediately before microphone/ride startup.
+permissions_anchor = '''    private fun ensurePermissionsAndRun(action: PendingAction) {
+        if (action == PendingAction.START_RIDE && !ensureBetaUsable()) return
+'''
+if permissions_anchor not in m:
+    raise SystemExit('Premium gate start-ride anchor missing')
+if 'if (action == PendingAction.START_RIDE && !ensurePremiumAccess()) return' not in m:
+    m = m.replace(
+        permissions_anchor,
+        permissions_anchor + '        if (action == PendingAction.START_RIDE && !ensurePremiumAccess()) return\n',
+        1,
+    )
+
+# Hard verification: two entry buttons plus START_RIDE defense must all be gated.
+for button_id in ('createRide', 'joinRide'):
+    marker = f'        binding.{button_id}.setOnClickListener {{\n'
+    start = m.find(marker)
+    end = m.find('\n        }', start)
+    if start < 0 or end < 0 or 'ensurePremiumAccess()' not in m[start:end]:
+        raise SystemExit(f'Production premium gate verification failed: {button_id}')
+if 'if (action == PendingAction.START_RIDE && !ensurePremiumAccess()) return' not in m:
+    raise SystemExit('Production premium START_RIDE gate verification failed')
+
 main.write_text(m)
 
 # Clean production layout text too. Older vc23 layout still carried beta copy even
@@ -128,4 +184,4 @@ for value in forbidden_layout:
 if 'salesautopilotindia@gmail.com' not in m:
     raise SystemExit('Production support email missing')
 
-print('Final production cleanup applied: no rider-visible beta or WhatsApp UI remains')
+print('Final production cleanup applied: premium gate enforced; no rider-visible beta or WhatsApp UI remains')
