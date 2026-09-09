@@ -13,6 +13,12 @@ on:
       - "gradle.properties"
       - ".github/workflows/build-offline-mesh-v1.yml"
 
+permissions:
+  contents: read
+
+env:
+  MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+
 jobs:
   build-offline-mesh-v1:
     runs-on: ubuntu-latest
@@ -32,9 +38,7 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android 16 build tools
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
       - name: Set up Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
@@ -42,55 +46,72 @@ jobs:
           gradle-version: "8.13"
 
       - name: Materialize production vc25 runtime
+        shell: bash
         run: |
-          python3 tools/apply_beta43_app_shell.py
-          python3 tools/apply_beta44_settings.py
-          python3 tools/apply_beta45_settings_help_qr.py
-          python3 tools/apply_beta46_cluster_audio_map.py
-          python3 tools/apply_beta47_cluster_engine.py
-          python3 tools/apply_beta48_full_cluster_architecture.py
-          python3 tools/apply_beta49_smart_group_voice.py
-          python3 tools/apply_beta50_optimized_full_cluster.py
-          python3 tools/apply_beta51_live_rider_map.py
-          python3 tools/apply_beta52_google_maps.py
-          python3 tools/apply_beta53_play_services_213.py
-          python3 tools/apply_beta54_rider_clustering_bottom_sheet.py
-          python3 tools/apply_beta55_subscription_paywall.py
-          python3 tools/apply_production_vc25_billing8.py
-          python3 tools/apply_production_no_beta_maps.py
-          python3 tools/apply_production_final_cleanup.py
-          python3 tools/fix_production_premium_enum.py
-          python3 tools/enforce_production_premium_gate.py
+          set -e
+          if grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt && grep -Fq 'WEBRTC OPUS' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt; then
+            echo 'Runtime already materialized'
+          else
+            python tools/apply_beta4_internet_only_ui.py
+          fi
+          python tools/apply_beta43_public_ui.py
+          python tools/apply_beta44_stability_speed.py
+          python tools/apply_beta441_crashfix.py
+          python tools/apply_beta45_themed_ui.py
+          python tools/fix_beta45_generated_kotlin.py
+          python tools/apply_beta46_music_coexistence.py
+          python tools/apply_beta47_smart_duck.py
+          python tools/apply_beta48_noise_aware_duck.py
+          python tools/apply_beta49_battery_optimizations.py
+          python tools/apply_beta50_adaptive_reliability.py
+          python tools/fix_beta50_constants.py
+          python tools/apply_beta51_live_rider_map.py
+          python tools/fix_beta51_map_compile.py
+          python tools/apply_beta52_clean_shutdown_map_visibility.py
+          python tools/fix_beta52_constants.py
+          python tools/apply_beta52_ios_location_compat.py
+          python tools/apply_beta53_compact_contacts.py
+          python tools/apply_beta54_cluster_bottomsheet.py
+          python tools/fix_beta54_generated_kotlin.py
+          python tools/apply_beta55_subscription_paywall.py
+          python tools/apply_production_vc25_billing8.py
+          python tools/apply_production_no_beta.py
+          python tools/apply_production_final_cleanup.py
+          python tools/fix_production_premium_enum.py
 
       - name: Apply offline mesh v1
-        run: |
-          python3 tools/apply_offline_mesh_v1.py
+        run: python3 tools/apply_offline_mesh_v1.py
 
       - name: Require Google Maps key
-        env:
-          RIDEMESH_MAPS_API_KEY: ${{ secrets.RIDEMESH_MAPS_API_KEY }}
-        run: |
-          test -n "$RIDEMESH_MAPS_API_KEY" || { echo "RIDEMESH_MAPS_API_KEY secret is required"; exit 1; }
-          printf 'MAPS_API_KEY=%s\n' "$RIDEMESH_MAPS_API_KEY" > local.properties
+        shell: bash
+        run: test -n "$MAPS_API_KEY" || (echo "GOOGLE_MAPS_API_KEY is required" && exit 1)
 
       - name: Materialize branding
+        shell: bash
         run: |
-          python3 tools/materialize_branding.py
+          mkdir -p app/src/main/res/drawable-nodpi
+          base64 -d branding/ridemesh_logo_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
+          base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
       - name: Run unit tests
-        run: |
-          gradle --no-daemon :app:testDebugUnitTest
+        run: gradle --no-daemon :app:testDebugUnitTest
 
       - name: Build signed debug test APK
-        run: |
-          gradle --no-daemon :app:assembleDebug
+        run: gradle --no-daemon :app:assembleDebug
 
       - name: Verify APK signing
+        shell: bash
         run: |
-          "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/debug/app-debug.apk
+          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
 
       - name: Prepare installable APK
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p dist
           cp app/build/outputs/apk/debug/app-debug.apk dist/RideMesh-vc25-OFFLINE-MESH-V1-INSTALLABLE-TEST.apk
           sha256sum dist/RideMesh-vc25-OFFLINE-MESH-V1-INSTALLABLE-TEST.apk > dist/SHA256SUMS.txt
