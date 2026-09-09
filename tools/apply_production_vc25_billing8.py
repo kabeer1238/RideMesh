@@ -39,15 +39,14 @@ m = m.replace(
 
 m = m.replace(
     '''        client.queryProductDetailsAsync(params) { result, products ->\n            if (result.responseCode != BillingClient.BillingResponseCode.OK) {''',
-    '''        client.queryProductDetailsAsync(params) { queryResult ->\n            val result = queryResult.billingResult\n            val products = queryResult.productDetailsList\n            if (result.responseCode != BillingClient.BillingResponseCode.OK) {''',
+    '''        client.queryProductDetailsAsync(params) { result, queryResult ->\n            val products = queryResult.productDetailsList\n            if (result.responseCode != BillingClient.BillingResponseCode.OK) {''',
     1,
 )
 
 required = [
     'PendingPurchasesParams.newBuilder().enableOneTimeProducts().build()',
     '.enableAutoServiceReconnection()',
-    'client.queryProductDetailsAsync(params) { queryResult ->',
-    'val result = queryResult.billingResult',
+    'client.queryProductDetailsAsync(params) { result, queryResult ->',
     'val products = queryResult.productDetailsList',
     'billingPeriod == "P2M"',
     'const val PRODUCT_ID = "ridemesh_premium_monthly"',
@@ -60,6 +59,8 @@ if '.enablePendingPurchases()' in m:
     raise SystemExit('vc25 Billing 8 migration failed: deprecated no-arg enablePendingPurchases remains')
 if 'queryProductDetailsAsync(params) { result, products ->' in m:
     raise SystemExit('vc25 Billing 8 migration failed: PBL 7 product details callback remains')
+if 'queryProductDetailsAsync(params) { queryResult ->' in m:
+    raise SystemExit('vc25 Billing 8 migration failed: incorrect one-argument callback remains')
 
 manager.write_text(m)
 print('Production vc25 Billing 8.0.0 migration applied')
