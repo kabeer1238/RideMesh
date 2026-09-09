@@ -6,7 +6,7 @@ manifest = Path("app/src/main/AndroidManifest.xml")
 
 s = main.read_text()
 
-# Import the experimental controller without disturbing the production transports.
+# Import the dedicated offline controller without disturbing the production files.
 if "import com.bikemesh.ridemesh.offline.OfflineMeshController" not in s:
     anchor = "import com.bikemesh.ridemesh.mesh.MeshNode\n"
     if anchor not in s:
@@ -17,7 +17,6 @@ if "import com.bikemesh.ridemesh.offline.OfflineMeshController" not in s:
         1,
     )
 
-# Controller lifetime is tied to MainActivity/active ride for Phase 1.
 if "private lateinit var offlineMeshController: OfflineMeshController" not in s:
     anchor = "    private lateinit var audioEngine: AudioEngine\n"
     if anchor not in s:
@@ -34,12 +33,15 @@ if "OfflineMeshController(applicationContext)" not in s:
         raise SystemExit("Offline mesh patch: applySelectedAudioRoute anchor not found")
     init = (
         "        offlineMeshController = OfflineMeshController(applicationContext) { message ->\n"
-        "            runOnUiThread { log(message) }\n"
+        "            runOnUiThread {\n"
+        "                log(message)\n"
+        "                if (rideStarted) updateTransportStatus()\n"
+        "            }\n"
         "        }\n\n"
     )
     s = s.replace(anchor, init + anchor, 1)
 
-# Wi-Fi Aware permission changed in Android 13. Keep location only on <= Android 12L.
+# Android 13+ LocalOnlyHotspot and Wi-Fi Aware use NEARBY_WIFI_DEVICES.
 if "Manifest.permission.NEARBY_WIFI_DEVICES" not in s:
     anchor = "    private fun requiredPermissions(): List<String> = buildList {\n        add(Manifest.permission.RECORD_AUDIO)\n"
     if anchor not in s:
@@ -55,8 +57,7 @@ if "Manifest.permission.NEARBY_WIFI_DEVICES" not in s:
     )
     s = s.replace(anchor, permission_block, 1)
 
-# Start the experimental link alongside the existing production transports.
-# It does not carry production voice yet; Phase 1 is discovery/data-path/RTT validation.
+# Start the Android-hosted local-only Wi-Fi link when the ride begins.
 if "offlineMeshController.start(rider, code)" not in s:
     anchor = "            rideStarted = true\n"
     if anchor not in s:
@@ -87,6 +88,53 @@ if "if (::offlineMeshController.isInitialized) offlineMeshController.stop()" not
         1,
     )
 
+# During an active offline test ride, the existing INVITE QR becomes the Android
+# LocalOnlyHotspot credential payload. Before a ride it remains the normal ride QR.
+normal_qr = '        val payload = "ridemesh://join?ride=${Uri.encode(code)}"\n'
+offline_qr = (
+    '        val payload = if (rideStarted && ::offlineMeshController.isInitialized) {\n'
+    '            offlineMeshController.hotspotInvitePayload() ?: "ridemesh://join?ride=${Uri.encode(code)}"\n'
+    '        } else {\n'
+    '            "ridemesh://join?ride=${Uri.encode(code)}"\n'
+    '        }\n'
+)
+if normal_qr in s:
+    s = s.replace(normal_qr, offline_qr, 1)
+elif "offlineMeshController.hotspotInvitePayload()" not in s:
+    raise SystemExit("Offline mesh patch: QR payload anchor not found")
+
+# Make the active screen describe the real offline path rather than the old
+# Internet/WebRTC state. The production branch is untouched; this is test-only.
+status_anchor = "    private fun updateTransportStatus() {\n        if (!rideStarted) return\n"
+if status_anchor in s and "OFFLINE HOTSPOT" not in s:
+    offline_status = (
+        "    private fun updateTransportStatus() {\n"
+        "        if (!rideStarted) return\n"
+        "        if (::offlineMeshController.isInitialized) {\n"
+        "            val offlinePeers = offlineMeshController.connectedPeerCount()\n"
+        "            val offlineReady = offlineMeshController.hotspotInvitePayload() != null\n"
+        "            if (offlinePeers > 0 || offlineReady) {\n"
+        "                binding.networkTile.text = if (offlinePeers > 0) \"OFFLINE\" else \"HOTSPOT\"\n"
+        "                binding.riderCount.text = \"RIDE ACTIVE\"\n"
+        "                binding.meshStatus.text = if (offlinePeers > 0) {\n"
+        "                    val peer = offlineMeshController.connectedPeerName() ?: \"IPHONE\"\n"
+        "                    val rtt = offlineMeshController.currentRttMs()?.let { \" • ${it}ms\" }.orEmpty()\n"
+        "                    \"OFFLINE CONNECTED • $peer$rtt\"\n"
+        "                } else {\n"
+        "                    \"OFFLINE HOTSPOT READY • INVITE → SHOW QR\"\n"
+        "                }\n"
+        "                binding.homeNetworkStatus.text = if (offlinePeers > 0) \"Offline Link\\nConnected\" else \"Offline Link\\nReady\"\n"
+        "                binding.activeRiders.text = \"RIDERS ${offlinePeers + 1}\"\n"
+        "                renderRiderGrid()\n"
+        "                applyPowerUi()\n"
+        "                return\n"
+        "            }\n"
+        "        }\n"
+    )
+    s = s.replace(status_anchor, offline_status, 1)
+elif "OFFLINE HOTSPOT READY" not in s:
+    raise SystemExit("Offline mesh patch: updateTransportStatus anchor not found")
+
 main.write_text(s)
 
 m = manifest.read_text()
@@ -98,9 +146,8 @@ if "android.hardware.wifi.aware" not in m:
         raise SystemExit("Offline mesh patch: manifest root anchor not found")
     m = m.replace(manifest_anchor, manifest_anchor + "\n" + feature, 1)
 
-# Production vc25 already declares some permissions (notably ACCESS_FINE_LOCATION
-# for the live map). Add Wi-Fi Aware permissions by permission NAME rather than by
-# exact XML line so we never create a duplicate manifest declaration.
+# Production vc25 already declares some permissions. Add local Wi-Fi permissions
+# by permission NAME so manifest merger never sees duplicates.
 permissions = [
     (
         "android.permission.ACCESS_WIFI_STATE",
@@ -133,4 +180,4 @@ if missing:
     )
 
 manifest.write_text(m)
-print("Offline mesh v1 Android Wi-Fi Aware integration applied")
+print("Offline Android<->iPhone LocalOnlyHotspot + Bonjour integration applied")
