@@ -1,4 +1,4 @@
-name: Build RideMesh Beta5.5 vc24 Subscription APK AAB
+name: Build RideMesh Production vc24 Subscription APK AAB
 
 on:
   workflow_dispatch:
@@ -64,6 +64,7 @@ jobs:
           python tools/apply_beta54_cluster_bottomsheet.py
           python tools/fix_beta54_generated_kotlin.py
           python tools/apply_beta55_subscription_paywall.py
+          python tools/apply_production_no_beta.py
 
       - name: Require Google Maps key
         shell: bash
@@ -78,19 +79,21 @@ jobs:
           base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
           base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
 
-      - name: Verify vc24 subscription essentials
+      - name: Verify vc24 production subscription essentials
         shell: bash
         run: |
           set -e
           grep -F 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
           grep -F 'versionCode = 24' app/build.gradle.kts
-          grep -F 'versionName = "1.0.0-beta5.5-subscription-paywall"' app/build.gradle.kts
+          grep -F 'versionName = "1.0.0"' app/build.gradle.kts
           grep -F 'com.android.billingclient:billing-ktx:7.1.1' app/build.gradle.kts
           grep -F 'const val PRODUCT_ID = "ridemesh_premium_monthly"' app/src/main/java/com/bikemesh/ridemesh/billing/RideMeshBillingManager.kt
           grep -F 'START 2-MONTH FREE TRIAL' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'billingPeriod == "P2M"' app/src/main/java/com/bikemesh/ridemesh/billing/RideMeshBillingManager.kt
           grep -F 'localizedMonthlyPrice' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
           grep -F 'ensurePremiumAccess()' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'fun isExpired(firstLaunchMs: Long, nowMs: Long): Boolean = false' app/src/main/java/com/bikemesh/ridemesh/beta/BetaWindow.kt
+          grep -A8 -F 'android:id="@+id/betaExpiryStatus"' app/src/main/res/layout/activity_main.xml | grep -F 'android:visibility="gone"'
 
       - name: Unit tests
         run: gradle --no-daemon testDebugUnitTest
@@ -111,13 +114,13 @@ jobs:
           mkdir -p dist
           test -s "$APK"
           test -s "$AAB"
-          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-Beta5.5-vc24-Subscription-ALIGNED-UNSIGNED.apk
-          cp "$AAB" dist/RideMesh-Beta5.5-vc24-Subscription-GOOGLE-PLAY-UNSIGNED.aab
+          "$TOOLS/zipalign" -P 16 -f 4 "$APK" dist/RideMesh-vc24-Production-ALIGNED-UNSIGNED.apk
+          cp "$AAB" dist/RideMesh-vc24-Production-GOOGLE-PLAY-UNSIGNED.aab
           sha256sum dist/* > dist/SHA256SUMS.txt
 
       - name: Upload vc24 package
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Beta5.5-vc24-Subscription-Package
+          name: RideMesh-vc24-Production-Package
           path: dist/
           if-no-files-found: error
