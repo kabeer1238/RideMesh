@@ -65,6 +65,7 @@ jobs:
           python tools/fix_beta54_generated_kotlin.py
           python tools/apply_beta55_subscription_paywall.py
           python tools/apply_production_no_beta.py
+          python tools/apply_production_final_cleanup.py
 
       - name: Require Google Maps key
         shell: bash
@@ -83,17 +84,40 @@ jobs:
         shell: bash
         run: |
           set -e
+          MAIN="app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt"
+          LAYOUT="app/src/main/res/layout/activity_main.xml"
           grep -F 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
           grep -F 'versionCode = 24' app/build.gradle.kts
           grep -F 'versionName = "1.0.0"' app/build.gradle.kts
           grep -F 'com.android.billingclient:billing-ktx:7.1.1' app/build.gradle.kts
           grep -F 'const val PRODUCT_ID = "ridemesh_premium_monthly"' app/src/main/java/com/bikemesh/ridemesh/billing/RideMeshBillingManager.kt
-          grep -F 'START 2-MONTH FREE TRIAL' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'START 2-MONTH FREE TRIAL' "$MAIN"
           grep -F 'billingPeriod == "P2M"' app/src/main/java/com/bikemesh/ridemesh/billing/RideMeshBillingManager.kt
-          grep -F 'localizedMonthlyPrice' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
-          grep -F 'ensurePremiumAccess()' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt
+          grep -F 'localizedMonthlyPrice' "$MAIN"
+          grep -F 'ensurePremiumAccess()' "$MAIN"
           grep -F 'fun isExpired(firstLaunchMs: Long, nowMs: Long): Boolean = false' app/src/main/java/com/bikemesh/ridemesh/beta/BetaWindow.kt
-          grep -A8 -F 'android:id="@+id/betaExpiryStatus"' app/src/main/res/layout/activity_main.xml | grep -F 'android:visibility="gone"'
+          grep -A8 -F 'android:id="@+id/betaExpiryStatus"' "$LAYOUT" | grep -F 'android:visibility="gone"'
+          grep -F 'salesautopilotindia@gmail.com' "$MAIN"
+          grep -F 'private fun openEmailSupport()' "$MAIN"
+
+          ! grep -Fq 'RIDE MESH  •  BETA' "$MAIN"
+          ! grep -Fq 'RideMesh Beta4 settings & help' "$MAIN"
+          ! grep -Fq 'Beta access:' "$MAIN"
+          ! grep -Fq 'BETA ACCESS' "$MAIN"
+          ! grep -Fq 'BETA PERIOD ENDED' "$MAIN"
+          ! grep -Fq 'RideMesh Beta •' "$MAIN"
+          ! grep -Fq 'NOT CONFIGURED IN THIS BETA' "$MAIN"
+          ! grep -Fq 'WHATSAPP CALL' "$MAIN"
+          ! grep -Fq 'WHATSAPP MESSAGE' "$MAIN"
+          ! grep -Fq 'WhatsApp group' "$MAIN"
+          ! grep -Fq 'WhatsApp bug' "$MAIN"
+          ! grep -Fq 'WhatsApp call' "$MAIN"
+          ! grep -Fq 'whatsapp://call?number=' "$MAIN"
+          ! grep -Fq 'https://wa.me/' "$MAIN"
+          ! grep -Fq 'chat.whatsapp.com' "$MAIN"
+          ! grep -Fq 'com.whatsapp' "$MAIN"
+          ! grep -Fq 'WhatsApp' "$LAYOUT"
+          echo 'Production source verification passed'
 
       - name: Unit tests
         run: gradle --no-daemon testDebugUnitTest
@@ -103,6 +127,48 @@ jobs:
 
       - name: Build release APK and AAB
         run: gradle --no-daemon assembleRelease bundleRelease
+
+      - name: Verify compiled production APK strings
+        shell: bash
+        run: |
+          set -e
+          APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          test -s "$APK"
+          STRINGS_FILE="$(mktemp)"
+          for dex in $(unzip -Z1 "$APK" | grep -E '^classes([0-9]+)?\.dex$'); do
+            unzip -p "$APK" "$dex" | strings >> "$STRINGS_FILE"
+          done
+          unzip -p "$APK" resources.arsc | strings >> "$STRINGS_FILE" || true
+
+          forbidden=(
+            'RIDE MESH  •  BETA'
+            'RideMesh Beta4 settings & help'
+            'Beta access:'
+            'BETA ACCESS'
+            'BETA PERIOD ENDED'
+            'RideMesh Beta •'
+            'This tester build expires 60 days'
+            'This RideMesh Beta build has reached its 60-day test limit'
+            'NOT CONFIGURED IN THIS BETA'
+            'WHATSAPP CALL'
+            'WHATSAPP MESSAGE'
+            'WhatsApp group'
+            'WhatsApp bug'
+            'WhatsApp call'
+            'WhatsApp is not available on this device'
+            'whatsapp://call?number='
+            'https://wa.me/'
+            'chat.whatsapp.com'
+            'com.whatsapp'
+          )
+          for value in "${forbidden[@]}"; do
+            if grep -Fq "$value" "$STRINGS_FILE"; then
+              echo "Forbidden production string found in compiled APK: $value"
+              exit 1
+            fi
+          done
+          grep -Fq 'salesautopilotindia@gmail.com' "$STRINGS_FILE"
+          echo 'Compiled APK verification passed: support email present, forbidden beta/WhatsApp UI absent'
 
       - name: Prepare APK and AAB
         shell: bash
