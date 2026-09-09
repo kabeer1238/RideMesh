@@ -1,31 +1,38 @@
 package com.bikemesh.ridemesh.offline
 
 import android.content.Context
-import com.bikemesh.ridemesh.transport.RideMeshTransport
-import com.bikemesh.ridemesh.transport.TransportMetrics
-import com.bikemesh.ridemesh.transport.TransportState
-import com.bikemesh.ridemesh.transport.WifiAwareTransport
 import java.util.UUID
 
 /**
- * Phase-1 coordinator used by the Android app while the full routing layer is
- * being integrated. It starts Wi-Fi Aware for the active ride and exposes clear
- * diagnostics without changing the existing production Internet/Nearby voice
- * pipeline.
+ * Cross-platform offline coordinator for the dedicated test build.
+ *
+ * The first reliable Android <-> iPhone path is Android LocalOnlyHotspot +
+ * Bonjour + TCP. Wi-Fi Aware remains in the codebase for later capability-based
+ * use, but this controller intentionally does not start it so both transports do
+ * not compete for TCP 49355 during the proof-of-connectivity test.
  */
 class OfflineMeshController(
     context: Context,
     private val onLog: (String) -> Unit,
-) : RideMeshTransport.Listener {
+) : LocalHotspotHost.Listener {
 
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences("ridemesh_offline_mesh", Context.MODE_PRIVATE)
 
     @Volatile
-    private var transport: WifiAwareTransport? = null
+    private var host: LocalHotspotHost? = null
 
-    private var lastPeerCount = -1
-    private var lastRttBucket: Int? = null
+    @Volatile
+    private var invitePayload: String? = null
+
+    @Volatile
+    private var hotspotSummary: String? = null
+
+    @Volatile
+    private var lastPeerName: String? = null
+
+    @Volatile
+    private var lastRttMs: Int? = null
 
     fun start(riderName: String, rideCode: String) {
         stop()
@@ -35,58 +42,81 @@ class OfflineMeshController(
                 prefs.edit().putString(KEY_NODE_ID, it).apply()
             }
 
-        lastPeerCount = -1
-        lastRttBucket = null
-        transport = WifiAwareTransport(
+        invitePayload = null
+        hotspotSummary = null
+        lastPeerName = null
+        lastRttMs = null
+
+        host = LocalHotspotHost(
             context = appContext,
             nodeId = nodeId,
             riderName = riderName,
             rideCode = rideCode,
-        ).also {
-            it.setListener(this)
-            it.start()
-        }
-        onLog("Offline mesh v1 starting • Wi-Fi Aware Android↔iPhone protocol")
+            listener = this,
+        ).also { it.start() }
+
+        onLog("Offline cross-platform link starting • Android hotspot + Bonjour + TCP")
     }
 
     fun stop() {
-        transport?.setListener(null)
-        transport?.stop()
-        transport = null
-        lastPeerCount = -1
-        lastRttBucket = null
+        host?.stop()
+        host = null
+        invitePayload = null
+        hotspotSummary = null
+        lastPeerName = null
+        lastRttMs = null
     }
+
+    fun hotspotInvitePayload(): String? = invitePayload
+
+    fun hotspotCredentialsSummary(): String? = hotspotSummary
+
+    fun connectedPeerCount(): Int = host?.connectedPeerCount() ?: 0
+
+    fun connectedPeerName(): String? = lastPeerName
+
+    fun currentRttMs(): Int? = lastRttMs
 
     fun sendDiagnosticEnvelope(text: String): Boolean =
-        transport?.send(text.toByteArray(Charsets.UTF_8)) == true
+        host?.send(text.toByteArray(Charsets.UTF_8)) == true
 
-    override fun onEnvelopeReceived(
-        transport: RideMeshTransport,
-        fromPeerId: String?,
-        envelope: ByteArray,
-    ) {
-        val preview = envelope.toString(Charsets.UTF_8).take(80)
-        onLog("Offline packet from ${fromPeerId?.take(8) ?: "peer"}: $preview")
+    override fun onStatus(message: String) {
+        onLog(message)
     }
 
-    override fun onStateChanged(transport: RideMeshTransport, state: TransportState) {
-        val label = when (state) {
-            TransportState.STOPPED -> "stopped"
-            TransportState.STARTING -> "starting"
-            TransportState.AVAILABLE -> "available"
-            TransportState.DEGRADED -> "degraded"
-            TransportState.UNAVAILABLE -> "unavailable on this phone / permission missing"
+    override fun onHotspotReady(ssid: String, passphrase: String?, invitePayload: String) {
+        this.invitePayload = invitePayload
+        this.hotspotSummary = if (passphrase.isNullOrBlank()) {
+            "SSID: $ssid • OPEN"
+        } else {
+            "SSID: $ssid • Password: $passphrase"
         }
-        onLog("Offline Wi-Fi Aware: $label")
+        onLog("OFFLINE LINK READY • tap INVITE → SHOW QR on Android, then scan it on iPhone")
     }
 
-    override fun onMetricsChanged(transport: RideMeshTransport, metrics: TransportMetrics) {
-        val rttBucket = metrics.estimatedRttMs?.div(10)?.times(10)
-        if (metrics.reachablePeers == lastPeerCount && rttBucket == lastRttBucket) return
-        lastPeerCount = metrics.reachablePeers
-        lastRttBucket = rttBucket
-        val rttText = metrics.estimatedRttMs?.let { " • ${it}ms RTT" }.orEmpty()
-        onLog("Offline peers: ${metrics.reachablePeers}$rttText")
+    override fun onPeerConnected(nodeId: String, riderName: String) {
+        lastPeerName = riderName.ifBlank { "iPhone rider" }
+        onLog("OFFLINE PEER CONNECTED • ${lastPeerName}")
+        host?.send("RIDEMESH_OFFLINE_LINK_OK".toByteArray(Charsets.UTF_8), nodeId)
+    }
+
+    override fun onPeerDisconnected(nodeId: String) {
+        lastPeerName = null
+        lastRttMs = null
+        onLog("OFFLINE PEER LOST • waiting for reconnect")
+    }
+
+    override fun onRtt(nodeId: String, rttMs: Int) {
+        val previousBucket = lastRttMs?.div(10)
+        lastRttMs = rttMs
+        if (previousBucket != rttMs.div(10)) {
+            onLog("OFFLINE LINK • ${lastPeerName ?: "peer"} • ${rttMs}ms RTT")
+        }
+    }
+
+    override fun onData(nodeId: String, payload: ByteArray) {
+        val preview = payload.toString(Charsets.UTF_8).take(80)
+        onLog("Offline packet from ${lastPeerName ?: nodeId.take(8)}: $preview")
     }
 
     companion object {
