@@ -161,7 +161,7 @@ jobs:
           trap 'rm -rf "$APK_DIR" "$STRINGS_FILE"' EXIT
           unzip -qq "$APK" -d "$APK_DIR"
           while IFS= read -r -d '' file; do
-            strings -n 4 "$file" >> "$STRINGS_FILE" || true
+            strings -n 3 "$file" >> "$STRINGS_FILE" || true
           done < <(find "$APK_DIR" -type f -print0)
 
           forbidden=(
