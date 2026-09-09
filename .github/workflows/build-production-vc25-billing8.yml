@@ -95,10 +95,11 @@ jobs:
           ! grep -Fq 'com.android.billingclient:billing-ktx:7.1.1' app/build.gradle.kts
           grep -F 'PendingPurchasesParams.newBuilder().enableOneTimeProducts().build()' "$BILLING"
           grep -F '.enableAutoServiceReconnection()' "$BILLING"
-          grep -F 'queryResult.billingResult' "$BILLING"
-          grep -F 'queryResult.productDetailsList' "$BILLING"
+          grep -F 'queryProductDetailsAsync(params) { result, queryResult ->' "$BILLING"
+          grep -F 'val products = queryResult.productDetailsList' "$BILLING"
           ! grep -Fq '.enablePendingPurchases()' "$BILLING"
           ! grep -Fq 'queryProductDetailsAsync(params) { result, products ->' "$BILLING"
+          ! grep -Fq 'queryProductDetailsAsync(params) { queryResult ->' "$BILLING"
           grep -F 'const val PRODUCT_ID = "ridemesh_premium_monthly"' "$BILLING"
           grep -F 'START 2-MONTH FREE TRIAL' "$MAIN"
           grep -F 'billingPeriod == "P2M"' "$BILLING"
