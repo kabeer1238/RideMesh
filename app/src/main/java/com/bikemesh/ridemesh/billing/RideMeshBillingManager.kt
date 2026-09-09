@@ -7,6 +7,7 @@ import com.android.billingclient.api.BillingClient
 import com.android.billingclient.api.BillingClientStateListener
 import com.android.billingclient.api.BillingFlowParams
 import com.android.billingclient.api.BillingResult
+import com.android.billingclient.api.PendingPurchasesParams
 import com.android.billingclient.api.ProductDetails
 import com.android.billingclient.api.Purchase
 import com.android.billingclient.api.PurchasesUpdatedListener
@@ -25,7 +26,7 @@ class RideMeshBillingManager(
         val productDetails: ProductDetails,
         val offerToken: String,
         val localizedMonthlyPrice: String,
-        val hasSevenDayTrial: Boolean,
+        val hasTwoMonthTrial: Boolean,
     )
 
     private val appContext = context.applicationContext
@@ -39,9 +40,12 @@ class RideMeshBillingManager(
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
+        val pendingPurchases = PendingPurchasesParams.newBuilder()
+            .enableOneTimeProducts()
+            .build()
         val client = BillingClient.newBuilder(appContext)
             .setListener(this)
-            .enablePendingPurchases()
+            .enablePendingPurchases(pendingPurchases)
             .build()
         billingClient = client
         connect(client)
@@ -122,24 +126,33 @@ class RideMeshBillingManager(
         val params = QueryProductDetailsParams.newBuilder()
             .setProductList(listOf(product))
             .build()
-        client.queryProductDetailsAsync(params) { result, products ->
+
+        client.queryProductDetailsAsync(params) { result, queryResult ->
             if (result.responseCode != BillingClient.BillingResponseCode.OK) {
-                onProductChanged(null)
-                return@queryProductDetailsAsync
-            }
-            val details = products.firstOrNull() ?: run {
                 subscription = null
                 onProductChanged(null)
                 return@queryProductDetailsAsync
             }
-            val offer = details.subscriptionOfferDetails
-                ?.firstOrNull { it.offerId != null && it.pricingPhases.pricingPhaseList.any { phase -> phase.priceAmountMicros == 0L && phase.billingPeriod == "P7D" } }
-                ?: details.subscriptionOfferDetails?.firstOrNull()
+
+            val details = queryResult.productDetailsList.firstOrNull() ?: run {
+                subscription = null
+                onProductChanged(null)
+                return@queryProductDetailsAsync
+            }
+
+            val offers = details.subscriptionOfferDetails.orEmpty()
+            val trialOffer = offers.firstOrNull { offer ->
+                offer.pricingPhases.pricingPhaseList.any { phase ->
+                    phase.priceAmountMicros == 0L && phase.billingPeriod == TWO_MONTH_TRIAL_PERIOD
+                }
+            }
+            val offer = trialOffer ?: offers.firstOrNull()
             if (offer == null) {
                 subscription = null
                 onProductChanged(null)
                 return@queryProductDetailsAsync
             }
+
             val phases = offer.pricingPhases.pricingPhaseList
             val paidPhase = phases.lastOrNull { it.priceAmountMicros > 0L } ?: phases.lastOrNull()
             if (paidPhase == null) {
@@ -147,11 +160,14 @@ class RideMeshBillingManager(
                 onProductChanged(null)
                 return@queryProductDetailsAsync
             }
+
             val display = SubscriptionDisplay(
                 productDetails = details,
                 offerToken = offer.offerToken,
                 localizedMonthlyPrice = paidPhase.formattedPrice,
-                hasSevenDayTrial = phases.any { it.priceAmountMicros == 0L && it.billingPeriod == "P7D" },
+                hasTwoMonthTrial = phases.any {
+                    it.priceAmountMicros == 0L && it.billingPeriod == TWO_MONTH_TRIAL_PERIOD
+                },
             )
             subscription = display
             onProductChanged(display)
@@ -190,7 +206,7 @@ class RideMeshBillingManager(
         }
     }
 
-    override fun onPurchasesUpdated(result: BillingResult, purchases: MutableList<Purchase>?) {
+    override fun onPurchasesUpdated(result: BillingResult, purchases: List<Purchase>?) {
         when (result.responseCode) {
             BillingClient.BillingResponseCode.OK -> {
                 val client = billingClient ?: return
@@ -215,5 +231,6 @@ class RideMeshBillingManager(
 
     companion object {
         const val PRODUCT_ID = "ridemesh_premium_monthly"
+        private const val TWO_MONTH_TRIAL_PERIOD = "P2M"
     }
 }
