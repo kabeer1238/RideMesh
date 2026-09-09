@@ -51,13 +51,16 @@ email_support = r'''    private fun openWhatsAppBugReport() {
             diag.voicePeersConnected > 0 -> "Connected"
             else -> "Ready"
         }
+        val appVersion = runCatching {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "Unknown"
+        }.getOrDefault("Unknown")
         val subject = "RideMesh Support"
         val body = buildString {
             appendLine("Please describe your issue below:")
             appendLine()
             appendLine("--------------------------------")
             appendLine("RideMesh diagnostic information")
-            appendLine("App version: ${BuildConfig.VERSION_NAME}")
+            appendLine("App version: $appVersion")
             appendLine("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
             appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("Ride code: $rideCode")
