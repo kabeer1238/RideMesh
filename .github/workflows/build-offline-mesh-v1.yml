@@ -70,6 +70,8 @@ jobs:
           python tools/fix_production_premium_enum.py
       - name: Apply offline mesh v1
         run: python3 tools/apply_offline_mesh_v1.py
+      - name: Apply offline low-latency audio policy
+        run: python3 tools/apply_offline_low_latency_audio.py
       - name: Ensure offline Opus dependency
         shell: bash
         run: |
@@ -77,9 +79,6 @@ jobs:
           from pathlib import Path
           p = Path('app/build.gradle.kts')
           s = p.read_text()
-          # com.plasmoverse:concentus is the published Java Concentus artifact
-          # containing the org.concentus.OpusEncoder/OpusDecoder classes used by
-          # OpusVoiceCodec. Remove the incompatible fork coordinate if present.
           s = s.replace('    implementation("io.github.jaredmdobson:concentus:1.0.2")\n', '')
           dep = '    implementation("com.plasmoverse:concentus:1.0.0")\n'
           if 'com.plasmoverse:concentus:1.0.0' not in s:
