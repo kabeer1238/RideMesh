@@ -21,14 +21,13 @@ import java.util.UUID
  * BLE bootstrap for the temporary Android LocalOnlyHotspot.
  *
  * Advertising exposes only the ride-token fingerprint plus an anonymous,
- * deterministic node rank used to elect one Android device as the hotspot host.
- * The SSID/password QR payload remains protected by an encrypted, authenticated
- * OS Bluetooth bond.
+ * deterministic per-install rank used to elect one Android device as hotspot
+ * host. The SSID/password invitation remains protected by an encrypted,
+ * authenticated OS Bluetooth bond.
  */
 class NearbyHotspotAdvertiser(
     context: Context,
     private val rideToken: String,
-    private val nodeId: String,
     invitePayload: String,
     private val onStatus: (String) -> Unit,
 ) {
@@ -91,7 +90,7 @@ class NearbyHotspotAdvertiser(
 
         val uuid = ParcelUuid(SERVICE_UUID)
         val primary = AdvertiseData.Builder().setIncludeDeviceName(false).addServiceUuid(uuid).build()
-        val bootstrapData = rideTokenBytes() + NearbyHotspotClient.nodeRank(nodeId)
+        val bootstrapData = rideTokenBytes() + NearbyHotspotClient.deviceRank(appContext)
         val scanResponse = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .addServiceData(uuid, bootstrapData)
