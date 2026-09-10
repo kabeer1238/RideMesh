@@ -155,9 +155,6 @@ class NearbyClusterTransport(
             .addOnSuccessListener { status("DISCOVERY ON • searching same-code riders") }
             .addOnFailureListener { status("DISCOVERY FAILED • ${shortError(it)}") }
 
-        // Identity is deliberately retried until both sides have learned the stable
-        // RideMesh node ID. Nearby can report CONNECTED before the first BYTES payload
-        // is delivered; without this retry one device could remain stuck at RIDERS 1.
         scheduler.scheduleAtFixedRate({
             if (!started) return@scheduleAtFixedRate
             val now = SystemClock.elapsedRealtime()
@@ -187,13 +184,20 @@ class NearbyClusterTransport(
     fun connectedPeerCount(): Int = endpointToNode.size
     fun firstPeerName(): String? = endpointToNode.entries.firstOrNull()?.key?.let(endpointToName::get)
 
-    fun send(payload: ByteArray): Boolean {
-        val endpoints = connectedEndpoints.toList()
+    fun send(payload: ByteArray): Boolean = sendExceptNode(null, payload)
+
+    /** Send a RideMesh payload to all directly connected neighbors except one source node. */
+    fun sendExceptNode(excludedNodeId: String?, payload: ByteArray): Boolean {
+        val endpoints = connectedEndpoints.filter { endpointId ->
+            val peerNodeId = endpointToNode[endpointId]
+            excludedNodeId == null || peerNodeId == null || peerNodeId != excludedNodeId
+        }
         if (endpoints.isEmpty()) return false
         val encoded = ByteArray(DATA_PREFIX.size + payload.size)
         DATA_PREFIX.copyInto(encoded)
         payload.copyInto(encoded, DATA_PREFIX.size)
         client.sendPayload(endpoints, Payload.fromBytes(encoded))
+            .addOnFailureListener { status("PAYLOAD BROADCAST FAILED • ${shortError(it)}") }
         return true
     }
 
@@ -218,8 +222,6 @@ class NearbyClusterTransport(
             text.startsWith("HELLO|") -> {
                 val parts = text.split('|', limit = 4)
                 if (!acceptIdentity(endpointId, parts)) return
-                // Acknowledge with our complete identity. This makes the handshake
-                // symmetric even if one side's original HELLO was lost or delayed.
                 sendRaw(endpointId, helloAck())
             }
             text.startsWith("HELLO_ACK|") -> {
