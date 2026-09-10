@@ -4,14 +4,7 @@ import android.content.Context
 import com.bikemesh.ridemesh.transport.WifiAwareWireProtocol
 import java.util.UUID
 
-/**
- * Offline coordinator for the dedicated Android test build.
- *
- * IMPORTANT: this controller is additive. It does not replace or modify the
- * existing Internet/WebRTC transport or Maps. Android offline discovery now
- * uses Nearby Connections P2P_CLUSTER; LocalOnlyHotspot is intentionally not
- * started by this controller.
- */
+/** Dedicated Android offline coordinator. Existing online mesh and Maps stay untouched. */
 class OfflineMeshController(
     context: Context,
     private val onLog: (String) -> Unit,
@@ -23,23 +16,24 @@ class OfflineMeshController(
     @Volatile private var cluster: NearbyClusterTransport? = null
     @Volatile private var lastPeerName: String? = null
     @Volatile private var lastRttMs: Int? = null
+    @Volatile private var lastNearbyStatus: String = "NEARBY DIAG • NOT STARTED"
 
     fun start(riderName: String, rideCode: String) {
         stop()
         val normalizedCode = rideCode.trim().uppercase()
         if (normalizedCode.isBlank()) {
+            lastNearbyStatus = "NEARBY DIAG • INVALID RIDE CODE"
             onLog("OFFLINE MESH • enter or scan a ride code first")
             return
         }
         val nodeId = prefs.getString(KEY_NODE_ID, null)
             ?.takeIf { it.isNotBlank() }
-            ?: UUID.randomUUID().toString().also {
-                prefs.edit().putString(KEY_NODE_ID, it).apply()
-            }
+            ?: UUID.randomUUID().toString().also { prefs.edit().putString(KEY_NODE_ID, it).apply() }
 
         val token = WifiAwareWireProtocol.rideToken(normalizedCode)
         lastPeerName = null
         lastRttMs = null
+        lastNearbyStatus = "NEARBY DIAG • START REQUESTED"
         cluster = NearbyClusterTransport(
             context = appContext,
             nodeId = nodeId,
@@ -56,27 +50,28 @@ class OfflineMeshController(
         cluster = null
         lastPeerName = null
         lastRttMs = null
+        lastNearbyStatus = "NEARBY DIAG • STOPPED"
     }
 
     fun isActive(): Boolean = cluster != null
-
-    // Compatibility with older test-only QR/status hooks. Returning null is
-    // deliberate: AndroidShare/LocalOnlyHotspot is no longer the primary path.
     fun hotspotInvitePayload(): String? = null
     fun hotspotCredentialsSummary(): String? = null
     fun connectedPeerCount(): Int = cluster?.connectedPeerCount() ?: 0
     fun connectedPeerName(): String? = lastPeerName ?: cluster?.firstPeerName()
     fun currentRttMs(): Int? = lastRttMs
+    fun diagnosticSummary(): String = lastNearbyStatus.removePrefix("NEARBY DIAG • ")
 
     fun sendDiagnosticEnvelope(text: String): Boolean =
         cluster?.send(text.toByteArray(Charsets.UTF_8)) == true
 
     override fun onStatus(message: String) {
+        lastNearbyStatus = message
         onLog(message)
     }
 
     override fun onPeerConnected(nodeId: String, riderName: String) {
         lastPeerName = riderName.ifBlank { "Android rider" }
+        lastNearbyStatus = "NEARBY DIAG • IDENTITY OK • $lastPeerName"
         onLog("OFFLINE ANDROID↔ANDROID CONNECTED • $lastPeerName")
         cluster?.send("RIDEMESH_OFFLINE_LINK_OK".toByteArray(Charsets.UTF_8))
     }
@@ -84,6 +79,7 @@ class OfflineMeshController(
     override fun onPeerDisconnected(nodeId: String) {
         lastPeerName = null
         lastRttMs = null
+        lastNearbyStatus = "NEARBY DIAG • PEER LOST • REDISCOVERING"
         onLog("OFFLINE PEER LOST • automatic discovery/reconnect remains active")
     }
 
@@ -100,7 +96,5 @@ class OfflineMeshController(
         onLog("Offline packet from ${lastPeerName ?: nodeId.take(8)}: $preview")
     }
 
-    companion object {
-        private const val KEY_NODE_ID = "node_id"
-    }
+    companion object { private const val KEY_NODE_ID = "node_id" }
 }
