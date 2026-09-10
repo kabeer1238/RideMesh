@@ -57,6 +57,27 @@ if "Manifest.permission.NEARBY_WIFI_DEVICES" not in s:
     )
     s = s.replace(anchor, permission_block, 1)
 
+if "Manifest.permission.BLUETOOTH_ADVERTISE" not in s:
+    anchor = (
+        "        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {\n"
+        "            add(Manifest.permission.NEARBY_WIFI_DEVICES)\n"
+        "        } else {\n"
+        "            add(Manifest.permission.ACCESS_FINE_LOCATION)\n"
+        "        }\n"
+    )
+    if anchor not in s:
+        raise SystemExit("Offline mesh patch: nearby Wi-Fi permission anchor not found")
+    s = s.replace(
+        anchor,
+        anchor +
+        "        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {\n" +
+        "            add(Manifest.permission.BLUETOOTH_SCAN)\n" +
+        "            add(Manifest.permission.BLUETOOTH_ADVERTISE)\n" +
+        "            add(Manifest.permission.BLUETOOTH_CONNECT)\n" +
+        "        }\n",
+        1,
+    )
+
 # Start the Android-hosted local-only Wi-Fi link when the ride begins.
 if "offlineMeshController.start(rider, code)" not in s:
     anchor = "            rideStarted = true\n"
@@ -146,6 +167,11 @@ if "android.hardware.wifi.aware" not in m:
         raise SystemExit("Offline mesh patch: manifest root anchor not found")
     m = m.replace(manifest_anchor, manifest_anchor + "\n" + feature, 1)
 
+ble_feature = '    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />\n'
+if "android.hardware.bluetooth_le" not in m:
+    manifest_anchor = "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\">\n"
+    m = m.replace(manifest_anchor, manifest_anchor + "\n" + ble_feature, 1)
+
 # Production vc25 already declares some permissions. Add local Wi-Fi permissions
 # by permission NAME so manifest merger never sees duplicates.
 permissions = [
@@ -164,6 +190,14 @@ permissions = [
     (
         "android.permission.NEARBY_WIFI_DEVICES",
         '    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />',
+    ),
+    (
+        "android.permission.BLUETOOTH_SCAN",
+        '    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />',
+    ),
+    (
+        "android.permission.BLUETOOTH_ADVERTISE",
+        '    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />',
     ),
 ]
 

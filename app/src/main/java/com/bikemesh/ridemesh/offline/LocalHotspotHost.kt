@@ -69,6 +69,7 @@ class LocalHotspotHost(
     @Volatile private var currentInvitePayload: String? = null
     @Volatile private var currentSsid: String? = null
     @Volatile private var currentPassphrase: String? = null
+    @Volatile private var nearbyAdvertiser: NearbyHotspotAdvertiser? = null
 
     fun start() {
         if (started) return
@@ -100,6 +101,7 @@ class LocalHotspotHost(
                     currentInvitePayload = payload
                     startServer()
                     registerBonjour()
+                    startNearbyAdvertisement(payload)
                     listener.onHotspotReady(ssid, passphrase, payload)
                     listener.onStatus("OFFLINE HOTSPOT READY • Invite iPhone with QR")
                 }
@@ -136,6 +138,8 @@ class LocalHotspotHost(
         currentInvitePayload = null
         currentSsid = null
         currentPassphrase = null
+        nearbyAdvertiser?.stop()
+        nearbyAdvertiser = null
     }
 
     fun invitePayload(): String? = currentInvitePayload
@@ -188,6 +192,16 @@ class LocalHotspotHost(
         fun enc(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8.name())
         val pass = passphrase.orEmpty()
         return "ridemesh://offline?ssid=${enc(ssid)}&pass=${enc(pass)}&ride=${enc(rideCodeNormalized)}&token=${enc(identity.rideToken)}"
+    }
+
+    private fun startNearbyAdvertisement(payload: String) {
+        nearbyAdvertiser?.stop()
+        nearbyAdvertiser = NearbyHotspotAdvertiser(
+            context = appContext,
+            rideToken = identity.rideToken,
+            invitePayload = payload,
+            onStatus = listener::onStatus,
+        ).also { it.start() }
     }
 
     private fun startServer() {
@@ -258,6 +272,8 @@ class LocalHotspotHost(
     }
 
     private fun closeServerAndLinks() {
+        nearbyAdvertiser?.stop()
+        nearbyAdvertiser = null
         val peers = links.values.toList()
         links.clear()
         peers.forEach { it.close() }

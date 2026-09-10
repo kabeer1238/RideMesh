@@ -1,4 +1,4 @@
-name: Build RideMesh Offline Mesh v1 Test APK
+name: Build RideMesh Offline Mesh v1 Automatic Same-Code Test APK
 
 on:
   workflow_dispatch:
@@ -98,11 +98,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/RideMesh-vc25-OFFLINE-MESH-V1-NO-SUBSCRIPTION-SIGNED-TEST.apk
-          sha256sum dist/RideMesh-vc25-OFFLINE-MESH-V1-NO-SUBSCRIPTION-SIGNED-TEST.apk > dist/SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk dist/RideMesh-vc25-OFFLINE-MESH-V1-AUTO-SAME-CODE-NO-SUBSCRIPTION-SIGNED-TEST.apk
+          sha256sum dist/RideMesh-vc25-OFFLINE-MESH-V1-AUTO-SAME-CODE-NO-SUBSCRIPTION-SIGNED-TEST.apk > dist/SHA256SUMS.txt
       - name: Upload offline mesh test APK
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-vc25-Offline-Mesh-v1-No-Subscription-Test-APK
-          path: dist/
+          name: RideMesh-vc25-Offline-Mesh-v1-Auto-Same-Code-Test-APK
+          path: |
+            dist/RideMesh-vc25-OFFLINE-MESH-V1-AUTO-SAME-CODE-NO-SUBSCRIPTION-SIGNED-TEST.apk
+            dist/SHA256SUMS.txt
           if-no-files-found: error
