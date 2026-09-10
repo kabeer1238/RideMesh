@@ -87,10 +87,30 @@ jobs:
                   raise SystemExit('Could not locate dependency anchor for Concentus Opus')
               s = s.replace(anchor, anchor + dep, 1)
           p.write_text(s)
-          print('Concentus Java Opus dependency present in materialized offline build')
           PY
       - name: Disable subscriptions for offline test
         run: python3 tools/apply_offline_test_no_subscription.py
+      - name: Stamp build number into Settings
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p = Path('app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt')
+          s = p.read_text()
+          n = os.environ['GITHUB_RUN_NUMBER']
+          old = '.setTitle("RideMesh Beta4 settings & help")'
+          new = f'.setTitle("RideMesh Offline • Build #{n}")'
+          if old not in s:
+              raise SystemExit('Settings title anchor not found')
+          s = s.replace(old, new, 1)
+          old_msg = '"Voice engine: WebRTC + Opus over Internet\\n\\n" +'
+          new_msg = f'"Build: #{n} • Offline Mesh Low-Latency Test\\nVoice engine: Nearby P2P_CLUSTER + Opus 20ms\\n\\n" +'
+          if old_msg not in s:
+              raise SystemExit('Settings message anchor not found')
+          s = s.replace(old_msg, new_msg, 1)
+          p.write_text(s)
+          PY
       - name: Require Google Maps key
         shell: bash
         run: test -n "$MAPS_API_KEY" || (echo "GOOGLE_MAPS_API_KEY is required" && exit 1)
@@ -117,13 +137,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/RideMesh-vc25-OFFLINE-MESH-V1-AUTO-SAME-CODE-NO-SUBSCRIPTION-SIGNED-TEST.apk
-          sha256sum dist/RideMesh-vc25-OFFLINE-MESH-V1-AUTO-SAME-CODE-NO-SUBSCRIPTION-SIGNED-TEST.apk > dist/SHA256SUMS.txt
+          OUT="dist/RideMesh-Build${GITHUB_RUN_NUMBER}-OFFLINE-OPUS-LOW-LATENCY-SIGNED.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "$OUT"
+          sha256sum "$OUT" > dist/SHA256SUMS.txt
       - name: Upload offline mesh test APK
         uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-vc25-Offline-Mesh-v1-Auto-Same-Code-Test-APK
+          name: RideMesh-Build${{ github.run_number }}-Offline-Opus-Low-Latency-SIGNED
           path: |
-            dist/RideMesh-vc25-OFFLINE-MESH-V1-AUTO-SAME-CODE-NO-SUBSCRIPTION-SIGNED-TEST.apk
+            dist/RideMesh-Build${{ github.run_number }}-OFFLINE-OPUS-LOW-LATENCY-SIGNED.apk
             dist/SHA256SUMS.txt
           if-no-files-found: error
