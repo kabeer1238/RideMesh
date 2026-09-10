@@ -14,12 +14,12 @@ import java.util.concurrent.ConcurrentHashMap
 class OpusVoiceCodec {
     private val encodeLock = Any()
     private val encoder = OpusEncoder(SAMPLE_RATE, CHANNELS, OpusApplication.OPUS_APPLICATION_VOIP).apply {
-        bitrate = TARGET_BITRATE_BPS
-        useVBR = true
-        useConstrainedVBR = true
-        useInbandFEC = true
-        packetLossPercent = EXPECTED_PACKET_LOSS_PERCENT
-        complexity = ENCODER_COMPLEXITY
+        setBitrate(TARGET_BITRATE_BPS)
+        setUseVBR(true)
+        setUseConstrainedVBR(true)
+        setUseInbandFEC(true)
+        setPacketLossPercent(EXPECTED_PACKET_LOSS_PERCENT)
+        setComplexity(ENCODER_COMPLEXITY)
     }
 
     private val decoders = ConcurrentHashMap<String, OpusDecoder>()
