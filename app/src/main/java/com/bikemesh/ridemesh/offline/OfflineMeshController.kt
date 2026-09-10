@@ -14,6 +14,8 @@ class OfflineMeshController(
     private val prefs = appContext.getSharedPreferences("ridemesh_offline_mesh", Context.MODE_PRIVATE)
 
     @Volatile private var cluster: NearbyClusterTransport? = null
+    @Volatile private var router: MeshRelayRouter? = null
+    @Volatile private var localNodeId: UUID? = null
     @Volatile private var lastPeerName: String? = null
     @Volatile private var lastRttMs: Int? = null
     @Volatile private var lastNearbyStatus: String = "NEARBY DIAG • NOT STARTED"
@@ -26,28 +28,56 @@ class OfflineMeshController(
             onLog("OFFLINE MESH • enter or scan a ride code first")
             return
         }
-        val nodeId = prefs.getString(KEY_NODE_ID, null)
+        val nodeIdText = prefs.getString(KEY_NODE_ID, null)
             ?.takeIf { it.isNotBlank() }
             ?: UUID.randomUUID().toString().also { prefs.edit().putString(KEY_NODE_ID, it).apply() }
+        val nodeId = runCatching { UUID.fromString(nodeIdText) }.getOrElse {
+            UUID.randomUUID().also { replacement ->
+                prefs.edit().putString(KEY_NODE_ID, replacement.toString()).apply()
+            }
+        }
+        localNodeId = nodeId
 
         val token = WifiAwareWireProtocol.rideToken(normalizedCode)
         lastPeerName = null
         lastRttMs = null
         lastNearbyStatus = "NEARBY DIAG • START REQUESTED"
-        cluster = NearbyClusterTransport(
+
+        val newCluster = NearbyClusterTransport(
             context = appContext,
-            nodeId = nodeId,
+            nodeId = nodeId.toString(),
             riderName = riderName.ifBlank { "Rider" },
             rideToken = token,
             listener = this,
-        ).also { it.start() }
+        )
+        cluster = newCluster
+        router = MeshRelayRouter(
+            localNodeId = nodeId,
+            sendToNeighborsExcept = { excludedNode, payload ->
+                newCluster.sendExceptNode(excludedNode, payload)
+            },
+            onDeliver = { envelope ->
+                when (envelope.type) {
+                    RideMeshEnvelope.Type.DIAGNOSTIC -> {
+                        val text = envelope.payload.toString(Charsets.UTF_8).take(80)
+                        onLog("MESH ENVELOPE • hop=${envelope.hopCount} ttl=${envelope.ttl} • $text")
+                    }
+                    else -> onLog("MESH ENVELOPE • ${envelope.type} • hop=${envelope.hopCount} ttl=${envelope.ttl}")
+                }
+            },
+            onStatus = onLog,
+        )
+        newCluster.start()
 
         onLog("OFFLINE MESH ACTIVE • same-code Nearby P2P_CLUSTER • hotspot disabled")
+        onLog("ROUTER READY • RME1 envelope • TTL 4 • dedup 2048")
     }
 
     fun stop() {
         cluster?.stop()
         cluster = null
+        router = null
+        localNodeId = null
         lastPeerName = null
         lastRttMs = null
         lastNearbyStatus = "NEARBY DIAG • STOPPED"
@@ -61,8 +91,9 @@ class OfflineMeshController(
     fun currentRttMs(): Int? = lastRttMs
     fun diagnosticSummary(): String = lastNearbyStatus.removePrefix("NEARBY DIAG • ")
 
+    /** Sends a real RideMesh RME1 envelope, suitable for direct and relayed tests. */
     fun sendDiagnosticEnvelope(text: String): Boolean =
-        cluster?.send(text.toByteArray(Charsets.UTF_8)) == true
+        router?.originateDiagnostic(text) == true
 
     override fun onStatus(message: String) {
         lastNearbyStatus = message
@@ -73,7 +104,7 @@ class OfflineMeshController(
         lastPeerName = riderName.ifBlank { "Android rider" }
         lastNearbyStatus = "NEARBY DIAG • IDENTITY OK • $lastPeerName"
         onLog("OFFLINE ANDROID↔ANDROID CONNECTED • $lastPeerName")
-        cluster?.send("RIDEMESH_OFFLINE_LINK_OK".toByteArray(Charsets.UTF_8))
+        router?.originateDiagnostic("RIDEMESH_ROUTE_PROBE:${localNodeId.toString().take(8)}")
     }
 
     override fun onPeerDisconnected(nodeId: String) {
@@ -92,8 +123,8 @@ class OfflineMeshController(
     }
 
     override fun onData(nodeId: String, payload: ByteArray) {
-        val preview = payload.toString(Charsets.UTF_8).take(80)
-        onLog("Offline packet from ${lastPeerName ?: nodeId.take(8)}: $preview")
+        router?.receive(nodeId, payload)
+            ?: onLog("ROUTER DROP • router unavailable")
     }
 
     companion object { private const val KEY_NODE_ID = "node_id" }
