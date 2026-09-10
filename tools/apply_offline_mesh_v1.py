@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import re
 
 main = Path("app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt")
 manifest = Path("app/src/main/AndroidManifest.xml")
@@ -33,34 +34,30 @@ if "OfflineMeshController(applicationContext)" not in s:
     )
     s = s.replace(anchor, init + anchor, 1)
 
-# JOIN must never show a newly-created code. It may offer only the last ACTIVE
-# ride code. CREATE RIDE remains the only action that generates a fresh code.
-old_join = (
-    "        binding.joinRide.setOnClickListener {\n"
-    "            if (!ensureBetaUsable()) return@setOnClickListener\n"
-    "            binding.setupTitle.text = \"JOIN RIDE\"\n"
-    "            showScreen(Screen.SETUP)\n"
-    "            binding.rideCode.requestFocus()\n"
-    "        }\n"
-)
-new_join = (
-    "        binding.joinRide.setOnClickListener {\n"
-    "            if (!ensureBetaUsable()) return@setOnClickListener\n"
-    "            binding.setupTitle.text = \"JOIN RIDE\"\n"
-    "            val lastRide = prefs.getString(\"last_active_ride_code\", \"\").orEmpty()\n"
-    "            binding.rideCode.setText(lastRide)\n"
-    "            showScreen(Screen.SETUP)\n"
-    "            binding.rideCode.requestFocus()\n"
-    "            binding.rideCode.setSelection(binding.rideCode.text?.length ?: 0)\n"
-    "        }\n"
-)
-if old_join in s:
-    s = s.replace(old_join, new_join, 1)
-elif 'prefs.getString("last_active_ride_code"' not in s:
-    raise SystemExit("Offline mesh patch: JOIN button anchor not found")
+# JOIN must never show a newly-created code. It may show only the last ride that
+# actually entered active state. CREATE RIDE remains the only fresh-code action.
+if 'prefs.getString("last_active_ride_code"' not in s:
+    join_re = re.compile(
+        r'        binding\.joinRide\.setOnClickListener \{.*?\n        \}\n\n(?=        binding\.backHome)',
+        re.S,
+    )
+    new_join = (
+        "        binding.joinRide.setOnClickListener {\n"
+        "            if (!ensureBetaUsable()) return@setOnClickListener\n"
+        "            binding.setupTitle.text = \"JOIN RIDE\"\n"
+        "            val lastRide = prefs.getString(\"last_active_ride_code\", \"\").orEmpty()\n"
+        "            binding.rideCode.setText(lastRide)\n"
+        "            showScreen(Screen.SETUP)\n"
+        "            binding.rideCode.requestFocus()\n"
+        "            binding.rideCode.setSelection(binding.rideCode.text?.length ?: 0)\n"
+        "        }\n\n"
+    )
+    s, count = join_re.subn(new_join, s, count=1)
+    if count != 1:
+        raise SystemExit("Offline mesh patch: JOIN listener not found after production UI materialization")
 
 # Remember the most recent ride only after the rider actually starts it. This
-# makes the JOIN prefill a real rejoin convenience rather than a random code.
+# makes JOIN prefill a real rejoin convenience rather than a random code.
 if 'putString("last_active_ride_code", code)' not in s:
     anchor = "        saveSettings()\n\n        try {\n"
     if anchor not in s:
