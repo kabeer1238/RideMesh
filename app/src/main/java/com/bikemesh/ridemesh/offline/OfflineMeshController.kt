@@ -22,7 +22,7 @@ class OfflineMeshController(
 
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences("ridemesh_offline_mesh", Context.MODE_PRIVATE)
-    private val packetizerLock = Any()
+    private val opus = OpusVoiceCodec()
 
     @Volatile private var cluster: NearbyClusterTransport? = null
     @Volatile private var router: MeshRelayRouter? = null
@@ -30,12 +30,11 @@ class OfflineMeshController(
     @Volatile private var lastPeerName: String? = null
     @Volatile private var lastRttMs: Int? = null
     @Volatile private var lastNearbyStatus: String = "NEARBY DIAG • NOT STARTED"
-    @Volatile private var pendingPcmFrame: ByteArray? = null
 
     private val peerRttMs = ConcurrentHashMap<String, Int>()
     private val txAudioFrames = AtomicLong(0)
     private val rxAudioFrames = AtomicLong(0)
-    private val congestionDroppedFrames = AtomicLong(0)
+    private val codecDroppedFrames = AtomicLong(0)
 
     fun start(riderName: String, rideCode: String, deviceName: String = "Android device") {
         stop()
@@ -45,6 +44,7 @@ class OfflineMeshController(
             onLog("OFFLINE MESH • enter or scan a ride code first")
             return
         }
+
         val nodeIdText = prefs.getString(KEY_NODE_ID, null)
             ?.takeIf { it.isNotBlank() }
             ?: UUID.randomUUID().toString().also { prefs.edit().putString(KEY_NODE_ID, it).apply() }
@@ -58,11 +58,11 @@ class OfflineMeshController(
         val token = WifiAwareWireProtocol.rideToken(normalizedCode)
         lastPeerName = null
         lastRttMs = null
-        pendingPcmFrame = null
         peerRttMs.clear()
         txAudioFrames.set(0)
         rxAudioFrames.set(0)
-        congestionDroppedFrames.set(0)
+        codecDroppedFrames.set(0)
+        opus.reset()
         lastNearbyStatus = "NEARBY DIAG • START REQUESTED"
 
         val newCluster = NearbyClusterTransport(
@@ -74,6 +74,7 @@ class OfflineMeshController(
             listener = this,
         )
         cluster = newCluster
+
         router = MeshRelayRouter(
             localNodeId = nodeId,
             sendToNeighborsExcept = { excludedNode, payload ->
@@ -83,22 +84,13 @@ class OfflineMeshController(
                 when (envelope.type) {
                     RideMeshEnvelope.Type.AUDIO -> {
                         if (envelope.originNodeId != nodeId) {
-                            val linkRtt = peerRttMs.values.maxOrNull() ?: lastRttMs ?: 0
-                            if (linkRtt >= CONGESTION_HARD_RTT_MS) {
-                                congestionDroppedFrames.addAndGet(RealtimeVoicePacket.FRAMES_PER_PACKET.toLong())
+                            val sourceId = envelope.originNodeId.toString()
+                            val pcm = opus.decode20ms(sourceId, envelope.payload)
+                            if (pcm != null) {
+                                rxAudioFrames.incrementAndGet()
+                                onAudioFrame(sourceId, envelope.sequence, envelope.createdAtMs, pcm)
                             } else {
-                                val frames = RealtimeVoicePacket.decode(envelope.payload)
-                                    ?: envelope.payload.takeIf { it.size == RealtimeVoicePacket.FRAME_BYTES }?.let { listOf(it) }
-                                    ?: emptyList()
-                                frames.forEachIndexed { index, pcm ->
-                                    rxAudioFrames.incrementAndGet()
-                                    onAudioFrame(
-                                        envelope.originNodeId.toString(),
-                                        envelope.sequence * RealtimeVoicePacket.FRAMES_PER_PACKET + index,
-                                        envelope.createdAtMs + (index * 20L),
-                                        pcm,
-                                    )
-                                }
+                                codecDroppedFrames.incrementAndGet()
                             }
                         }
                     }
@@ -111,10 +103,10 @@ class OfflineMeshController(
             },
             onStatus = onLog,
         )
-        newCluster.start()
 
+        newCluster.start()
         onLog("OFFLINE MESH ACTIVE • same-code Nearby P2P_CLUSTER • hotspot disabled")
-        onLog("VOICE LOW-LATENCY • 40ms packets • congestion guard ${CONGESTION_SOFT_RTT_MS}ms")
+        onLog("VOICE OPUS • 16kHz mono • 20ms • ${OpusVoiceCodec.TARGET_BITRATE_BPS / 1000}kbps • FEC • latest-frame-wins")
         onLog("ROUTER READY • RME1 envelope • TTL 4 • dedup 2048")
     }
 
@@ -125,11 +117,11 @@ class OfflineMeshController(
         localNodeId = null
         lastPeerName = null
         lastRttMs = null
-        pendingPcmFrame = null
         peerRttMs.clear()
         txAudioFrames.set(0)
         rxAudioFrames.set(0)
-        congestionDroppedFrames.set(0)
+        codecDroppedFrames.set(0)
+        opus.reset()
         lastNearbyStatus = "NEARBY DIAG • STOPPED"
     }
 
@@ -142,7 +134,7 @@ class OfflineMeshController(
     fun diagnosticSummary(): String = lastNearbyStatus.removePrefix("NEARBY DIAG • ")
     fun audioTxCount(): Long = txAudioFrames.get()
     fun audioRxCount(): Long = rxAudioFrames.get()
-    fun audioDropCount(): Long = congestionDroppedFrames.get()
+    fun audioDropCount(): Long = codecDroppedFrames.get() + (cluster?.realtimeAudioDropped() ?: 0L)
 
     fun connectedPeerDetails(): List<PeerDetails> = cluster?.peerSnapshots()?.map { peer ->
         PeerDetails(
@@ -153,46 +145,17 @@ class OfflineMeshController(
         )
     } ?: emptyList()
 
-    /** Sends a real RideMesh RME1 envelope, suitable for direct and relayed tests. */
     fun sendDiagnosticEnvelope(text: String): Boolean = router?.originateDiagnostic(text) == true
 
-    /**
-     * Accepts the existing 20 ms PCM capture frames, combines two into one 40 ms
-     * network packet and stops feeding the reliable Nearby queue if RTT shows it
-     * is falling behind. Live intercom drops stale speech instead of becoming
-     * seconds late.
-     */
+    /** Encode each captured 20 ms PCM frame to Opus before it reaches Nearby. */
     fun sendAudioFrame(audio: ByteArray): Boolean {
-        if (audio.size != RealtimeVoicePacket.FRAME_BYTES) return false
-
-        val rtt = lastRttMs ?: 0
-        if (rtt >= CONGESTION_HARD_RTT_MS) {
-            synchronized(packetizerLock) { pendingPcmFrame = null }
-            congestionDroppedFrames.incrementAndGet()
+        if (audio.size != OpusVoiceCodec.PCM_FRAME_BYTES) return false
+        val packet = opus.encode20ms(audio) ?: run {
+            codecDroppedFrames.incrementAndGet()
             return false
         }
-
-        val packet = synchronized(packetizerLock) {
-            val first = pendingPcmFrame
-            if (first == null) {
-                pendingPcmFrame = audio.copyOf()
-                null
-            } else {
-                pendingPcmFrame = null
-                RealtimeVoicePacket.encode(first, audio)
-            }
-        } ?: return true
-
-        // Begin shedding alternate 40 ms packets before the link reaches multi-second
-        // queueing. This is intentionally lossy: fresh speech is more important than
-        // perfect delivery in a realtime intercom.
-        if (rtt >= CONGESTION_SOFT_RTT_MS && (txAudioFrames.get() / 2L) % 2L == 1L) {
-            congestionDroppedFrames.addAndGet(2)
-            return false
-        }
-
         val sent = router?.originateAudio(packet) == true
-        if (sent) txAudioFrames.addAndGet(2) else congestionDroppedFrames.addAndGet(2)
+        if (sent) txAudioFrames.incrementAndGet() else codecDroppedFrames.incrementAndGet()
         return sent
     }
 
@@ -210,6 +173,7 @@ class OfflineMeshController(
 
     override fun onPeerDisconnected(nodeId: String) {
         peerRttMs.remove(nodeId)
+        opus.forgetPeer(nodeId)
         val peers = cluster?.peerSnapshots().orEmpty()
         lastPeerName = peers.firstOrNull()?.riderName
         lastRttMs = peers.firstOrNull()?.nodeId?.let(peerRttMs::get)
@@ -223,19 +187,15 @@ class OfflineMeshController(
         lastRttMs = rttMs
         if (previousBucket != rttMs.div(10)) {
             val name = connectedPeerDetails().firstOrNull { it.nodeId == nodeId }?.riderName ?: lastPeerName ?: "peer"
-            val congestion = if (rttMs >= CONGESTION_SOFT_RTT_MS) " • CONGESTION GUARD" else ""
-            onLog("OFFLINE LINK • $name • ${rttMs}ms RTT$congestion")
+            onLog("OFFLINE LINK • $name • ${rttMs}ms RTT • OPUS")
         }
     }
 
     override fun onData(nodeId: String, payload: ByteArray) {
-        router?.receive(nodeId, payload)
-            ?: onLog("ROUTER DROP • router unavailable")
+        router?.receive(nodeId, payload) ?: onLog("ROUTER DROP • router unavailable")
     }
 
     companion object {
         private const val KEY_NODE_ID = "node_id"
-        private const val CONGESTION_SOFT_RTT_MS = 550
-        private const val CONGESTION_HARD_RTT_MS = 900
     }
 }
