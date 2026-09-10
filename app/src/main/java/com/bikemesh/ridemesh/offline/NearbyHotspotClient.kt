@@ -5,7 +5,6 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
@@ -20,26 +19,26 @@ import android.os.Looper
 import android.os.ParcelUuid
 import androidx.core.content.ContextCompat
 import java.security.MessageDigest
+import java.util.UUID
 
 /**
  * Android-side companion to [NearbyHotspotAdvertiser].
  *
- * Every rider scans while starting a ride.  The advertisement carries the
- * 8-byte ride fingerprint plus an 8-byte deterministic node rank.  Only the
- * lower-ranked node yields and becomes the client, which prevents two Android
- * devices from both tearing down their LocalOnlyHotspot at the same time.
+ * Every rider scans while starting a ride. The advertisement carries the
+ * 8-byte ride fingerprint plus an 8-byte deterministic device rank. Only the
+ * lower-ranked device yields and becomes client, preventing both Android
+ * devices from tearing down their LocalOnlyHotspot at the same time.
  */
 class NearbyHotspotClient(
     context: Context,
     private val rideToken: String,
-    nodeId: String,
     private val onStatus: (String) -> Unit,
     private val onInvite: (String) -> Unit,
 ) {
     private val appContext = context.applicationContext
     private val bluetoothManager = appContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val handler = Handler(Looper.getMainLooper())
-    private val localRank = nodeRank(nodeId)
+    private val localRank = deviceRank(appContext)
     private val expectedToken = rideTokenBytes(rideToken)
 
     @Volatile private var started = false
@@ -62,9 +61,7 @@ class NearbyHotspotClient(
         }
 
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(NearbyHotspotAdvertiser.SERVICE_UUID)).build()
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
+        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) = consider(result)
             override fun onBatchScanResults(results: MutableList<ScanResult>) = results.forEach(::consider)
@@ -241,9 +238,17 @@ class NearbyHotspotClient(
         .map { it.toInt(16).toByte() }.toByteArray()
 
     companion object {
-        fun nodeRank(nodeId: String): ByteArray = MessageDigest.getInstance("SHA-256")
-            .digest(nodeId.toByteArray(Charsets.UTF_8))
-            .copyOfRange(0, 8)
+        private const val PREFS = "ridemesh_offline_bootstrap"
+        private const val KEY_RANK_SEED = "device_rank_seed"
+
+        fun deviceRank(context: Context): ByteArray {
+            val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val seed = prefs.getString(KEY_RANK_SEED, null)?.takeIf { it.isNotBlank() }
+                ?: UUID.randomUUID().toString().also { prefs.edit().putString(KEY_RANK_SEED, it).apply() }
+            return MessageDigest.getInstance("SHA-256")
+                .digest(seed.toByteArray(Charsets.UTF_8))
+                .copyOfRange(0, 8)
+        }
 
         private fun compareUnsigned(a: ByteArray, b: ByteArray): Int {
             for (i in 0 until minOf(a.size, b.size)) {
