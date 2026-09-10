@@ -1,38 +1,37 @@
 package com.bikemesh.ridemesh.offline
 
 import android.content.Context
+import com.bikemesh.ridemesh.transport.WifiAwareWireProtocol
 import java.util.UUID
 
 /**
- * Cross-platform offline coordinator for the dedicated test build.
+ * Offline coordinator for the dedicated Android test build.
  *
- * The first reliable Android <-> iPhone path is Android LocalOnlyHotspot +
- * Bonjour + TCP. Wi-Fi Aware remains in the codebase for later capability-based
- * use, but this controller intentionally does not start it so both transports do
- * not compete for TCP 49355 during the proof-of-connectivity test.
+ * All Android riders initially start a LocalOnlyHotspot and BLE scan. Same-code
+ * advertisements include a deterministic per-install rank; the higher-ranked
+ * device remains host while the lower-ranked device automatically yields,
+ * securely reads the host invitation, asks Android to join that local Wi-Fi,
+ * discovers _ridemesh._tcp and completes the RMESH1 handshake.
  */
 class OfflineMeshController(
     context: Context,
     private val onLog: (String) -> Unit,
-) : LocalHotspotHost.Listener {
+) : LocalHotspotHost.Listener, AndroidHotspotClient.Listener {
 
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences("ridemesh_offline_mesh", Context.MODE_PRIVATE)
 
-    @Volatile
-    private var host: LocalHotspotHost? = null
-
-    @Volatile
-    private var invitePayload: String? = null
-
-    @Volatile
-    private var hotspotSummary: String? = null
-
-    @Volatile
-    private var lastPeerName: String? = null
-
-    @Volatile
-    private var lastRttMs: Int? = null
+    @Volatile private var host: LocalHotspotHost? = null
+    @Volatile private var scanner: NearbyHotspotClient? = null
+    @Volatile private var client: AndroidHotspotClient? = null
+    @Volatile private var invitePayload: String? = null
+    @Volatile private var hotspotSummary: String? = null
+    @Volatile private var lastPeerName: String? = null
+    @Volatile private var lastRttMs: Int? = null
+    @Volatile private var clientConnected = false
+    @Volatile private var currentNodeId: String? = null
+    @Volatile private var currentRiderName: String = "Rider"
+    @Volatile private var currentRideCode: String = ""
 
     fun start(riderName: String, rideCode: String) {
         stop()
@@ -42,43 +41,78 @@ class OfflineMeshController(
                 prefs.edit().putString(KEY_NODE_ID, it).apply()
             }
 
+        currentNodeId = nodeId
+        currentRiderName = riderName.ifBlank { "Rider" }
+        currentRideCode = rideCode.trim().uppercase()
         invitePayload = null
         hotspotSummary = null
         lastPeerName = null
         lastRttMs = null
+        clientConnected = false
 
         host = LocalHotspotHost(
             context = appContext,
             nodeId = nodeId,
-            riderName = riderName,
-            rideCode = rideCode,
+            riderName = currentRiderName,
+            rideCode = currentRideCode,
             listener = this,
         ).also { it.start() }
 
-        onLog("Offline cross-platform link starting • Android hotspot + Bonjour + TCP")
+        scanner = NearbyHotspotClient(
+            context = appContext,
+            rideToken = WifiAwareWireProtocol.rideToken(currentRideCode),
+            onStatus = onLog,
+            onInvite = ::becomeAndroidClient,
+        ).also { it.start() }
+
+        onLog("Offline Android link starting • same-code BLE election + direct Wi-Fi + RMESH1")
     }
 
     fun stop() {
+        scanner?.stop()
+        scanner = null
+        client?.stop()
+        client = null
         host?.stop()
         host = null
         invitePayload = null
         hotspotSummary = null
         lastPeerName = null
         lastRttMs = null
+        clientConnected = false
     }
 
     fun hotspotInvitePayload(): String? = invitePayload
-
     fun hotspotCredentialsSummary(): String? = hotspotSummary
-
-    fun connectedPeerCount(): Int = host?.connectedPeerCount() ?: 0
-
+    fun connectedPeerCount(): Int = if (clientConnected) 1 else (host?.connectedPeerCount() ?: 0)
     fun connectedPeerName(): String? = lastPeerName
-
     fun currentRttMs(): Int? = lastRttMs
 
-    fun sendDiagnosticEnvelope(text: String): Boolean =
-        host?.send(text.toByteArray(Charsets.UTF_8)) == true
+    fun sendDiagnosticEnvelope(text: String): Boolean {
+        val data = text.toByteArray(Charsets.UTF_8)
+        return client?.send(data) == true || host?.send(data) == true
+    }
+
+    private fun becomeAndroidClient(payload: String) {
+        val nodeId = currentNodeId ?: return
+        if (client != null) return
+        onLog("OFFLINE ROLE ELECTED • this device is CLIENT")
+
+        // Stop our own temporary hotspot before Android requests the winner's
+        // LocalOnlyHotspot. The higher-ranked peer keeps advertising/hosting.
+        host?.stop()
+        host = null
+        invitePayload = null
+        hotspotSummary = null
+
+        client = AndroidHotspotClient(
+            context = appContext,
+            nodeId = nodeId,
+            riderName = currentRiderName,
+            rideCode = currentRideCode,
+            listener = this,
+        ).also { it.start(payload) }
+    }
 
     override fun onStatus(message: String) {
         onLog(message)
@@ -91,12 +125,13 @@ class OfflineMeshController(
         } else {
             "SSID: $ssid • Password: $passphrase"
         }
-        onLog("OFFLINE LINK READY • tap INVITE → SHOW QR on Android, then scan it on iPhone")
+        onLog("OFFLINE HOST READY • waiting for same-code Android rider")
     }
 
     override fun onPeerConnected(nodeId: String, riderName: String) {
-        lastPeerName = riderName.ifBlank { "iPhone rider" }
-        onLog("OFFLINE PEER CONNECTED • ${lastPeerName}")
+        lastPeerName = riderName.ifBlank { "Android rider" }
+        clientConnected = false
+        onLog("OFFLINE PEER CONNECTED • $lastPeerName")
         host?.send("RIDEMESH_OFFLINE_LINK_OK".toByteArray(Charsets.UTF_8), nodeId)
     }
 
@@ -104,6 +139,20 @@ class OfflineMeshController(
         lastPeerName = null
         lastRttMs = null
         onLog("OFFLINE PEER LOST • waiting for reconnect")
+    }
+
+    override fun onConnected(nodeId: String, riderName: String) {
+        clientConnected = true
+        lastPeerName = riderName.ifBlank { "Android rider" }
+        onLog("OFFLINE ANDROID↔ANDROID CONNECTED • $lastPeerName")
+        client?.send("RIDEMESH_OFFLINE_LINK_OK".toByteArray(Charsets.UTF_8))
+    }
+
+    override fun onDisconnected(nodeId: String?) {
+        clientConnected = false
+        lastPeerName = null
+        lastRttMs = null
+        onLog("OFFLINE ANDROID CLIENT LOST • restart ride to reconnect")
     }
 
     override fun onRtt(nodeId: String, rttMs: Int) {
