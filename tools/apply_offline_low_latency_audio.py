@@ -71,4 +71,60 @@ if "FRESHNESS_RESYNC_FRAMES" not in s:
     )
 
 p.write_text(s)
+
+# Nearby BYTES optimization: do not wait for remote transfer SUCCESS before allowing
+# the next 20 ms voice frame. That serialized audio at transfer-completion latency and
+# produced slow/choppy speech. Gate only until sendPayload() is accepted locally, while
+# retaining newest-frame-wins if Android/Play Services is briefly busy.
+np = Path("app/src/main/java/com/bikemesh/ridemesh/offline/NearbyClusterTransport.kt")
+ns = np.read_text()
+
+old_callback = '''        override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
+            val current = audioInFlightPayload[endpointId] ?: return
+            if (current != update.payloadId) return
+
+            when (update.status) {
+                PayloadTransferUpdate.Status.SUCCESS,
+                PayloadTransferUpdate.Status.FAILURE,
+                PayloadTransferUpdate.Status.CANCELED -> {
+                    audioInFlightPayload.remove(endpointId, current)
+                    val newest = audioLatestPending.remove(endpointId)
+                    if (started && connectedEndpoints.contains(endpointId) && newest != null) {
+                        sendRealtimeAudio(endpointId, newest)
+                    }
+                }
+            }
+        }
+'''
+if old_callback in ns:
+    ns = ns.replace(old_callback, '', 1)
+
+old_send = '''        client.sendPayload(endpointId, payload)
+            .addOnFailureListener {
+                audioInFlightPayload.remove(endpointId, payload.id)
+                val newest = audioLatestPending.remove(endpointId)
+                if (newest != null && started && connectedEndpoints.contains(endpointId)) {
+                    sendRealtimeAudio(endpointId, newest)
+                }
+            }
+'''
+new_send = '''        client.sendPayload(endpointId, payload)
+            .addOnCompleteListener {
+                audioInFlightPayload.remove(endpointId, payload.id)
+                val newest = audioLatestPending.remove(endpointId)
+                if (newest != null && started && connectedEndpoints.contains(endpointId)) {
+                    sendRealtimeAudio(endpointId, newest)
+                }
+            }
+'''
+if old_send in ns:
+    ns = ns.replace(old_send, new_send, 1)
+elif new_send not in ns:
+    raise SystemExit("Nearby low-latency send anchor missing")
+
+# Remove now-unused transfer-update import after switching to local enqueue completion.
+ns = ns.replace('import com.google.android.gms.nearby.connection.PayloadTransferUpdate\n', '')
+np.write_text(ns)
+
 print("Applied offline low-latency audio policy: 20ms prime, <=80ms queue, burst resync, 20ms PLC")
+print("Applied Nearby realtime voice policy: local-enqueue gate, newest-frame-wins, no transfer-completion serialization")
