@@ -8,6 +8,7 @@ import java.util.UUID
 class OfflineMeshController(
     context: Context,
     private val onLog: (String) -> Unit,
+    private val onAudioFrame: (sourceNodeId: String, sequence: Int, timestampMs: Long, audio: ByteArray) -> Unit = { _, _, _, _ -> },
 ) : NearbyClusterTransport.Listener {
 
     private val appContext = context.applicationContext
@@ -58,6 +59,16 @@ class OfflineMeshController(
             },
             onDeliver = { envelope ->
                 when (envelope.type) {
+                    RideMeshEnvelope.Type.AUDIO -> {
+                        if (envelope.originNodeId != nodeId) {
+                            onAudioFrame(
+                                envelope.originNodeId.toString(),
+                                envelope.sequence,
+                                envelope.createdAtMs,
+                                envelope.payload,
+                            )
+                        }
+                    }
                     RideMeshEnvelope.Type.DIAGNOSTIC -> {
                         val text = envelope.payload.toString(Charsets.UTF_8).take(80)
                         onLog("MESH ENVELOPE • hop=${envelope.hopCount} ttl=${envelope.ttl} • $text")
@@ -92,8 +103,10 @@ class OfflineMeshController(
     fun diagnosticSummary(): String = lastNearbyStatus.removePrefix("NEARBY DIAG • ")
 
     /** Sends a real RideMesh RME1 envelope, suitable for direct and relayed tests. */
-    fun sendDiagnosticEnvelope(text: String): Boolean =
-        router?.originateDiagnostic(text) == true
+    fun sendDiagnosticEnvelope(text: String): Boolean = router?.originateDiagnostic(text) == true
+
+    /** First field voice milestone: 20 ms PCM frame through the exact same relay path. */
+    fun sendAudioFrame(audio: ByteArray): Boolean = router?.originateAudio(audio) == true
 
     override fun onStatus(message: String) {
         lastNearbyStatus = message
