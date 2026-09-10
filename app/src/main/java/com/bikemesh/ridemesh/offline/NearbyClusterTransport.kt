@@ -47,7 +47,6 @@ class NearbyClusterTransport(
 
     private val serviceId = "in.autopilotindia.ridemesh.offline.$rideToken"
     private val localEndpointName = riderName.ifBlank { "Rider" }.take(24)
-    private val localTieBreak = stableRank("$rideToken|$nodeId")
 
     private fun status(message: String) = listener.onStatus("NEARBY DIAG • $message")
 
@@ -82,7 +81,8 @@ class NearbyClusterTransport(
             } else {
                 val code = resolution.status.statusCode
                 retryAfterMs[endpointId] = SystemClock.elapsedRealtime() + RETRY_BACKOFF_MS
-                status("CONNECTION FAILED • code=$code • ${resolution.status.statusMessage.orEmpty().take(60)} • retry in ${RETRY_BACKOFF_MS / 1000}s")
+                status("CONNECTION FAILED • code=$code • retry in ${RETRY_BACKOFF_MS / 1000}s")
+                scheduler.schedule({ restartDiscovery() }, RETRY_BACKOFF_MS, TimeUnit.MILLISECONDS)
             }
         }
 
@@ -94,7 +94,10 @@ class NearbyClusterTransport(
             val name = endpointToName.remove(endpointId)
             retryAfterMs[endpointId] = SystemClock.elapsedRealtime() + RETRY_BACKOFF_MS
             if (remoteNode != null) listener.onPeerDisconnected(remoteNode)
-            if (started) status("DISCONNECTED • ${name ?: endpointId.take(6)} • discovery continues")
+            if (started) {
+                status("DISCONNECTED • ${name ?: endpointId.take(6)} • rediscovering")
+                scheduler.schedule({ restartDiscovery() }, RETRY_BACKOFF_MS, TimeUnit.MILLISECONDS)
+            }
         }
     }
 
@@ -108,33 +111,27 @@ class NearbyClusterTransport(
             val now = SystemClock.elapsedRealtime()
             val waitUntil = retryAfterMs[endpointId] ?: 0L
             if (now < waitUntil) {
-                status("WAITING RETRY BACKOFF • $name • ${(waitUntil - now + 999) / 1000}s")
+                status("WAITING RETRY • $name • ${(waitUntil - now + 999) / 1000}s")
                 return
             }
 
-            val remoteTieBreak = stableRank("$rideToken|${info.endpointName}|$endpointId")
-            val shouldInitiate = localTieBreak < remoteTieBreak
-            if (!shouldInitiate) {
-                status("PASSIVE ACCEPT ROLE • $name • waiting for peer request")
-                return
-            }
-
+            // Restore the field-proven Build #24 behavior: every discovered endpoint
+            // is allowed to request a connection. Nearby resolves simultaneous requests.
+            // The passive/passive tie-break used later could deadlock two Xiaomi devices.
             if (!pendingEndpoints.add(endpointId)) return
-            status("INITIATOR ROLE • $name")
             status("REQUESTING CONNECTION • $name")
             client.requestConnection(localEndpointName, endpointId, lifecycleCallback)
                 .addOnSuccessListener { status("REQUEST SENT • $name") }
                 .addOnFailureListener {
                     pendingEndpoints.remove(endpointId)
                     retryAfterMs[endpointId] = SystemClock.elapsedRealtime() + RETRY_BACKOFF_MS
-                    status("REQUEST FAILED • ${shortError(it)} • retry in ${RETRY_BACKOFF_MS / 1000}s")
+                    status("REQUEST FAILED • ${shortError(it)} • retrying")
                     scheduler.schedule({ restartDiscovery() }, RETRY_BACKOFF_MS, TimeUnit.MILLISECONDS)
                 }
         }
 
         override fun onEndpointLost(endpointId: String) {
             pendingEndpoints.remove(endpointId)
-            retryAfterMs.remove(endpointId)
             status("ENDPOINT LOST • ${endpointToName[endpointId] ?: endpointId.take(6)}")
         }
     }
@@ -145,25 +142,33 @@ class NearbyClusterTransport(
         status("STARTING P2P_CLUSTER • service=${rideToken.take(8)} • no hotspot")
         val strategy = Strategy.P2P_CLUSTER
 
-        client.startAdvertising(localEndpointName, serviceId, lifecycleCallback,
-            AdvertisingOptions.Builder().setStrategy(strategy).build())
-            .addOnSuccessListener { status("ADVERTISING ON • $localEndpointName") }
-            .addOnFailureListener { status("ADVERTISING FAILED • ${shortError(it)}") }
+        client.startAdvertising(
+            localEndpointName,
+            serviceId,
+            lifecycleCallback,
+            AdvertisingOptions.Builder().setStrategy(strategy).build(),
+        ).addOnSuccessListener {
+            status("ADVERTISING ON • $localEndpointName")
+        }.addOnFailureListener {
+            status("ADVERTISING FAILED • ${shortError(it)}")
+        }
 
-        client.startDiscovery(serviceId, discoveryCallback,
-            DiscoveryOptions.Builder().setStrategy(strategy).build())
-            .addOnSuccessListener { status("DISCOVERY ON • searching same-code riders") }
-            .addOnFailureListener { status("DISCOVERY FAILED • ${shortError(it)}") }
+        client.startDiscovery(
+            serviceId,
+            discoveryCallback,
+            DiscoveryOptions.Builder().setStrategy(strategy).build(),
+        ).addOnSuccessListener {
+            status("DISCOVERY ON • searching same-code riders")
+        }.addOnFailureListener {
+            status("DISCOVERY FAILED • ${shortError(it)}")
+        }
 
         scheduler.scheduleAtFixedRate({
             if (!started) return@scheduleAtFixedRate
             val now = SystemClock.elapsedRealtime()
             connectedEndpoints.forEach { endpointId ->
-                if (!endpointToNode.containsKey(endpointId)) {
-                    sendHello(endpointId)
-                } else {
-                    sendRaw(endpointId, "PING|$now".toByteArray())
-                }
+                if (!endpointToNode.containsKey(endpointId)) sendHello(endpointId)
+                else sendRaw(endpointId, "PING|$now".toByteArray())
             }
         }, 1, 1, TimeUnit.SECONDS)
     }
@@ -186,7 +191,6 @@ class NearbyClusterTransport(
 
     fun send(payload: ByteArray): Boolean = sendExceptNode(null, payload)
 
-    /** Send a RideMesh payload to all directly connected neighbors except one source node. */
     fun sendExceptNode(excludedNodeId: String?, payload: ByteArray): Boolean {
         val endpoints = connectedEndpoints.filter { endpointId ->
             val peerNodeId = endpointToNode[endpointId]
@@ -202,7 +206,7 @@ class NearbyClusterTransport(
     }
 
     private fun restartDiscovery() {
-        if (!started) return
+        if (!started || connectedEndpoints.isNotEmpty()) return
         runCatching { client.stopDiscovery() }
         pendingEndpoints.clear()
         client.startDiscovery(
@@ -224,10 +228,7 @@ class NearbyClusterTransport(
                 if (!acceptIdentity(endpointId, parts)) return
                 sendRaw(endpointId, helloAck())
             }
-            text.startsWith("HELLO_ACK|") -> {
-                val parts = text.split('|', limit = 4)
-                acceptIdentity(endpointId, parts)
-            }
+            text.startsWith("HELLO_ACK|") -> acceptIdentity(endpointId, text.split('|', limit = 4))
             text.startsWith("PING|") -> sendRaw(endpointId, "PONG|${text.substringAfter('|')}".toByteArray())
             text.startsWith("PONG|") -> {
                 val sent = text.substringAfter('|').toLongOrNull() ?: return
@@ -272,12 +273,6 @@ class NearbyClusterTransport(
             client.sendPayload(endpointId, Payload.fromBytes(bytes))
                 .addOnFailureListener { status("PAYLOAD SEND FAILED • ${shortError(it)}") }
         }
-    }
-
-    private fun stableRank(value: String): Long {
-        var hash = 1125899906842597L
-        value.forEach { hash = 31L * hash + it.code }
-        return hash and Long.MAX_VALUE
     }
 
     private fun hello() = "HELLO|$rideToken|$nodeId|${riderName.ifBlank { "Rider" }}".toByteArray()
