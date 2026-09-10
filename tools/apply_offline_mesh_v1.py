@@ -32,6 +32,7 @@ if "OfflineMeshController(applicationContext" not in s:
         "                }\n"
         "            },\n"
         "            onAudioFrame = { sourceNodeId, sequence, timestampMs, pcm ->\n"
+        "                markRiderSpeaking(\"offline:$sourceNodeId\")\n"
         "                audioEngine.playIncoming(sourceNodeId, sequence, timestampMs, pcm)\n"
         "            },\n"
         "        )\n\n"
@@ -100,9 +101,8 @@ if "Manifest.permission.BLUETOOTH_ADVERTISE" not in s:
         1,
     )
 
-# Dedicated offline field build: do not start WebRTC capture. The production source
-# and production branch stay untouched; this prevents two microphone owners from
-# fighting while we prove Nearby voice.
+# Dedicated offline field build: keep WebRTC from competing for the microphone
+# while Nearby voice quality is being tuned. Production online code is untouched.
 webrtc_start = (
     "            internetNode.start(code, rider, deviceLabel())\n"
     "            internetNode.setMuted(micMuted)\n"
@@ -117,14 +117,14 @@ if webrtc_start in s:
         1,
     )
 
-if "offlineMeshController.start(rider, code)" not in s:
+if "offlineMeshController.start(rider, code" not in s:
     anchor = "            rideStarted = true\n"
     if anchor not in s:
         raise SystemExit("Offline mesh patch: rideStarted anchor not found")
     s = s.replace(
         anchor,
         anchor +
-        "            offlineMeshController.start(rider, code)\n"
+        "            offlineMeshController.start(rider, code, deviceLabel())\n"
         "            audioEngine.setUserMuted(micMuted)\n"
         "            audioEngine.startTransmit()\n",
         1,
@@ -196,8 +196,6 @@ if old_mute in s and "audioEngine.setUserMuted(muted)" not in s:
         1,
     )
 
-# In the offline test build, capture policy should report the local PCM path rather
-# than a WebRTC state that is intentionally disabled.
 policy_start = "    private fun updateCapturePolicy() {\n        if (!rideStarted) return\n"
 if policy_start in s and "OFFLINE VOICE ACTIVE" not in s:
     replacement = (
@@ -209,6 +207,114 @@ if policy_start in s and "OFFLINE VOICE ACTIVE" not in s:
         "        }\n"
     )
     s = s.replace(policy_start, replacement, 1)
+
+# Populate the main rider grid from the live Nearby identity table, so every
+# Android device sees the other rider's real name, device and link state.
+self_old = (
+    "                qualityBars = if (internetNode.isConnected() || directPeerCount > 0) 4 else 1,\n"
+    "                path = if (internetNode.isConnected()) \"Internet\" else if (directPeerCount > 0) \"Local\" else \"Searching\",\n"
+)
+self_new = (
+    "                qualityBars = if (::offlineMeshController.isInitialized && offlineMeshController.connectedPeerCount() > 0) 4 else if (internetNode.isConnected() || directPeerCount > 0) 4 else 1,\n"
+    "                path = when {\n"
+    "                    ::offlineMeshController.isInitialized && offlineMeshController.connectedPeerCount() > 0 -> \"Offline Nearby\"\n"
+    "                    internetNode.isConnected() -> \"Internet\"\n"
+    "                    directPeerCount > 0 -> \"Local\"\n"
+    "                    else -> \"Searching\"\n"
+    "                },\n"
+)
+if self_old in s:
+    s = s.replace(self_old, self_new, 1)
+
+remote_anchor = (
+    "        if (internetNode.isConnected()) {\n"
+    "            internetNode.remotePeers().forEach { peer ->\n"
+)
+if remote_anchor in s and "offlineMeshController.connectedPeerDetails().forEach" not in s:
+    remote_block = (
+        "        if (::offlineMeshController.isInitialized && offlineMeshController.isActive() && offlineMeshController.connectedPeerCount() > 0) {\n"
+        "            offlineMeshController.connectedPeerDetails().forEach { peer ->\n"
+        "                val bars = when {\n"
+        "                    peer.rttMs == null -> 3\n"
+        "                    peer.rttMs <= 120 -> 4\n"
+        "                    peer.rttMs <= 250 -> 3\n"
+        "                    peer.rttMs <= 450 -> 2\n"
+        "                    else -> 1\n"
+        "                }\n"
+        "                riders += RiderTile(\n"
+        "                    key = \"offline:${peer.nodeId}\",\n"
+        "                    name = peer.riderName,\n"
+        "                    device = peer.deviceName,\n"
+        "                    qualityBars = bars,\n"
+        "                    path = peer.rttMs?.let { \"Offline Nearby • ${it}ms\" } ?: \"Offline Nearby\",\n"
+        "                )\n"
+        "            }\n"
+        "        } else if (internetNode.isConnected()) {\n"
+        "            internetNode.remotePeers().forEach { peer ->\n"
+    )
+    s = s.replace(remote_anchor, remote_block, 1)
+
+# Show device + transport under each rider name instead of hiding those fields.
+height_old = "                height = dp(136)\n"
+if height_old in s and "height = dp(158)" not in s:
+    s = s.replace(height_old, "                height = dp(158)\n", 1)
+
+quality_anchor = (
+    "        val quality = TextView(this).apply {\n"
+    "            text = if (rider.self) \"YOU  ${qualityGlyphs(rider.qualityBars)}\" else qualityGlyphs(rider.qualityBars)\n"
+)
+if quality_anchor in s and "val riderDetail = TextView(this).apply" not in s:
+    detail_block = (
+        "        val riderDetail = TextView(this).apply {\n"
+        "            text = if (rider.self) rider.device else \"${rider.device} • ${rider.path}\"\n"
+        "            gravity = Gravity.CENTER\n"
+        "            maxLines = 1\n"
+        "            ellipsize = android.text.TextUtils.TruncateAt.END\n"
+        "            textSize = 9.5f\n"
+        "            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.muted))\n"
+        "        }\n"
+        "        card.addView(riderDetail, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(20)))\n\n"
+    )
+    s = s.replace(quality_anchor, detail_block + quality_anchor, 1)
+
+# The RIDERS dialog now uses the same Nearby peer identities and per-peer RTT.
+dialog_anchor = (
+    "        val internetPeers = if (internetNode.isConnected()) internetNode.remotePeers() else emptyList()\n"
+    "        val localPeers = if (meshRunning) meshNode.directPeers() else emptyList()\n"
+    "        val riderLines = linkedMapOf<String, String>()\n\n"
+)
+if dialog_anchor in s and "val offlinePeers = if (::offlineMeshController.isInitialized" not in s:
+    dialog_replacement = (
+        "        val offlinePeers = if (::offlineMeshController.isInitialized && offlineMeshController.isActive()) offlineMeshController.connectedPeerDetails() else emptyList()\n"
+        "        val internetPeers = if (internetNode.isConnected()) internetNode.remotePeers() else emptyList()\n"
+        "        val localPeers = if (meshRunning) meshNode.directPeers() else emptyList()\n"
+        "        val riderLines = linkedMapOf<String, String>()\n\n"
+        "        offlinePeers.forEach { peer ->\n"
+        "            val device = peer.deviceName.ifBlank { \"Android device\" }\n"
+        "            val rtt = peer.rttMs?.let { \" • ${it}ms RTT\" }.orEmpty()\n"
+        "            val key = \"${peer.riderName}|$device\".lowercase(Locale.ROOT)\n"
+        "            riderLines[key] = \"• ${peer.riderName}\\n  $device • Offline Nearby$rtt\"\n"
+        "        }\n\n"
+    )
+    s = s.replace(dialog_anchor, dialog_replacement, 1)
+
+path_old = (
+    "                when {\n"
+    "                    internetNode.isConnected() -> \"Internet\"\n"
+    "                    directPeerCount > 0 -> \"Local mesh\"\n"
+    "                    else -> \"Reconnecting\"\n"
+    "                }\n"
+)
+path_new = (
+    "                when {\n"
+    "                    ::offlineMeshController.isInitialized && offlineMeshController.connectedPeerCount() > 0 -> \"Offline Nearby\"\n"
+    "                    internetNode.isConnected() -> \"Internet\"\n"
+    "                    directPeerCount > 0 -> \"Local mesh\"\n"
+    "                    else -> \"Reconnecting\"\n"
+    "                }\n"
+)
+if path_old in s:
+    s = s.replace(path_old, path_new, 1)
 
 main.write_text(s)
 
@@ -237,4 +343,4 @@ if missing:
     m = m.replace(application_anchor, "\n".join(missing) + "\n\n" + application_anchor, 1)
 manifest.write_text(m)
 
-print("Offline Nearby RME1 mesh + exclusive PCM voice diagnostics applied; production online code preserved")
+print("Offline Nearby voice + live rider identity/details applied; production online code preserved")

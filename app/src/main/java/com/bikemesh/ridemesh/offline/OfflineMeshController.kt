@@ -3,6 +3,7 @@ package com.bikemesh.ridemesh.offline
 import android.content.Context
 import com.bikemesh.ridemesh.transport.WifiAwareWireProtocol
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /** Dedicated Android offline coordinator. Existing online mesh and Maps stay untouched. */
@@ -11,6 +12,13 @@ class OfflineMeshController(
     private val onLog: (String) -> Unit,
     private val onAudioFrame: (sourceNodeId: String, sequence: Int, timestampMs: Long, audio: ByteArray) -> Unit = { _, _, _, _ -> },
 ) : NearbyClusterTransport.Listener {
+
+    data class PeerDetails(
+        val nodeId: String,
+        val riderName: String,
+        val deviceName: String,
+        val rttMs: Int?,
+    )
 
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences("ridemesh_offline_mesh", Context.MODE_PRIVATE)
@@ -21,10 +29,11 @@ class OfflineMeshController(
     @Volatile private var lastPeerName: String? = null
     @Volatile private var lastRttMs: Int? = null
     @Volatile private var lastNearbyStatus: String = "NEARBY DIAG • NOT STARTED"
+    private val peerRttMs = ConcurrentHashMap<String, Int>()
     private val txAudioFrames = AtomicLong(0)
     private val rxAudioFrames = AtomicLong(0)
 
-    fun start(riderName: String, rideCode: String) {
+    fun start(riderName: String, rideCode: String, deviceName: String = "Android device") {
         stop()
         val normalizedCode = rideCode.trim().uppercase()
         if (normalizedCode.isBlank()) {
@@ -45,6 +54,7 @@ class OfflineMeshController(
         val token = WifiAwareWireProtocol.rideToken(normalizedCode)
         lastPeerName = null
         lastRttMs = null
+        peerRttMs.clear()
         txAudioFrames.set(0)
         rxAudioFrames.set(0)
         lastNearbyStatus = "NEARBY DIAG • START REQUESTED"
@@ -54,6 +64,7 @@ class OfflineMeshController(
             nodeId = nodeId.toString(),
             riderName = riderName.ifBlank { "Rider" },
             rideToken = token,
+            deviceName = deviceName.ifBlank { "Android device" },
             listener = this,
         )
         cluster = newCluster
@@ -97,6 +108,7 @@ class OfflineMeshController(
         localNodeId = null
         lastPeerName = null
         lastRttMs = null
+        peerRttMs.clear()
         txAudioFrames.set(0)
         rxAudioFrames.set(0)
         lastNearbyStatus = "NEARBY DIAG • STOPPED"
@@ -111,6 +123,15 @@ class OfflineMeshController(
     fun diagnosticSummary(): String = lastNearbyStatus.removePrefix("NEARBY DIAG • ")
     fun audioTxCount(): Long = txAudioFrames.get()
     fun audioRxCount(): Long = rxAudioFrames.get()
+
+    fun connectedPeerDetails(): List<PeerDetails> = cluster?.peerSnapshots()?.map { peer ->
+        PeerDetails(
+            nodeId = peer.nodeId,
+            riderName = peer.riderName,
+            deviceName = peer.deviceName,
+            rttMs = peerRttMs[peer.nodeId],
+        )
+    } ?: emptyList()
 
     /** Sends a real RideMesh RME1 envelope, suitable for direct and relayed tests. */
     fun sendDiagnosticEnvelope(text: String): Boolean = router?.originateDiagnostic(text) == true
@@ -135,17 +156,21 @@ class OfflineMeshController(
     }
 
     override fun onPeerDisconnected(nodeId: String) {
-        lastPeerName = null
-        lastRttMs = null
+        peerRttMs.remove(nodeId)
+        val peers = cluster?.peerSnapshots().orEmpty()
+        lastPeerName = peers.firstOrNull()?.riderName
+        lastRttMs = peers.firstOrNull()?.nodeId?.let(peerRttMs::get)
         lastNearbyStatus = "NEARBY DIAG • PEER LOST • REDISCOVERING"
         onLog("OFFLINE PEER LOST • automatic discovery/reconnect remains active")
     }
 
     override fun onRtt(nodeId: String, rttMs: Int) {
-        val previousBucket = lastRttMs?.div(10)
+        val previousBucket = peerRttMs[nodeId]?.div(10)
+        peerRttMs[nodeId] = rttMs
         lastRttMs = rttMs
         if (previousBucket != rttMs.div(10)) {
-            onLog("OFFLINE LINK • ${lastPeerName ?: "peer"} • ${rttMs}ms RTT")
+            val name = connectedPeerDetails().firstOrNull { it.nodeId == nodeId }?.riderName ?: lastPeerName ?: "peer"
+            onLog("OFFLINE LINK • $name • ${rttMs}ms RTT")
         }
     }
 
