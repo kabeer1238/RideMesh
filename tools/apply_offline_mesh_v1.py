@@ -18,8 +18,6 @@ if "private lateinit var offlineMeshController: OfflineMeshController" not in s:
         raise SystemExit("Offline mesh patch: audioEngine property anchor not found")
     s = s.replace(anchor, anchor + "    private lateinit var offlineMeshController: OfflineMeshController\n", 1)
 
-# The controller is created only after AudioEngine, so incoming offline frames can
-# go straight into the existing per-rider jitter buffer/playback path.
 if "OfflineMeshController(applicationContext" not in s:
     anchor = "        applySelectedAudioRoute()\n"
     if anchor not in s:
@@ -102,9 +100,23 @@ if "Manifest.permission.BLUETOOTH_ADVERTISE" not in s:
         1,
     )
 
-# Start the known-good Nearby cluster, then start the legacy AudioEngine for the
-# first physical offline voice milestone. Its 20 ms PCM/VAD/jitter pipeline is
-# intentionally reused before Opus is introduced, keeping the transport proof small.
+# Dedicated offline field build: do not start WebRTC capture. The production source
+# and production branch stay untouched; this prevents two microphone owners from
+# fighting while we prove Nearby voice.
+webrtc_start = (
+    "            internetNode.start(code, rider, deviceLabel())\n"
+    "            internetNode.setMuted(micMuted)\n"
+    "            applySelectedAudioRoute()\n"
+)
+if webrtc_start in s:
+    s = s.replace(
+        webrtc_start,
+        "            // OFFLINE TEST BUILD: WebRTC audio intentionally not started.\n"
+        "            // Nearby + AudioEngine exclusively own this voice test.\n"
+        "            applySelectedAudioRoute()\n",
+        1,
+    )
+
 if "offlineMeshController.start(rider, code)" not in s:
     anchor = "            rideStarted = true\n"
     if anchor not in s:
@@ -118,9 +130,6 @@ if "offlineMeshController.start(rider, code)" not in s:
         1,
     )
 
-# The production Beta4 method is deliberately empty because WebRTC owns online
-# audio. In this dedicated offline test build, feed captured 20 ms frames into
-# RME1/Nearby. Online WebRTC/Maps code remains present and unmodified otherwise.
 old_send = (
     "    private fun sendHybridAudio(audio: ByteArray) {\n"
     "        // Beta4 does not send PCM frames from this legacy engine. WebRTC owns voice capture.\n"
@@ -150,8 +159,6 @@ if "if (::offlineMeshController.isInitialized) offlineMeshController.stop()" not
         raise SystemExit("Offline mesh patch: onDestroy anchor not found")
     s = s.replace(anchor, anchor + "        if (::offlineMeshController.isInitialized) offlineMeshController.stop()\n", 1)
 
-# Keep the UI pointed at the live Nearby state. Once a peer is connected, make
-# it explicit that this build is also running the offline PCM voice test path.
 status_anchor = "    private fun updateTransportStatus() {\n        if (!rideStarted) return\n"
 if status_anchor in s and "OFFLINE P2P_CLUSTER" not in s:
     block = (
@@ -164,7 +171,9 @@ if status_anchor in s and "OFFLINE P2P_CLUSTER" not in s:
         "            binding.meshStatus.text = if (offlinePeers > 0) {\n"
         "                val peer = offlineMeshController.connectedPeerName() ?: \"ANDROID RIDER\"\n"
         "                val rtt = offlineMeshController.currentRttMs()?.let { \" • ${it}ms\" }.orEmpty()\n"
-        "                \"OFFLINE P2P_CLUSTER CONNECTED • $peer$rtt • VOICE TEST\"\n"
+        "                val tx = offlineMeshController.audioTxCount()\n"
+        "                val rx = offlineMeshController.audioRxCount()\n"
+        "                \"OFFLINE P2P_CLUSTER CONNECTED • $peer$rtt • VOICE TX $tx RX $rx\"\n"
         "            } else {\n"
         "                \"OFFLINE P2P_CLUSTER • ${offlineMeshController.diagnosticSummary()}\"\n"
         "            }\n"
@@ -179,7 +188,6 @@ if status_anchor in s and "OFFLINE P2P_CLUSTER" not in s:
 elif "OFFLINE P2P_CLUSTER" not in s:
     raise SystemExit("Offline mesh patch: updateTransportStatus anchor not found")
 
-# Mirror the UI mute button into both WebRTC and the offline AudioEngine.
 old_mute = "        if (::internetNode.isInitialized) internetNode.setMuted(muted)\n"
 if old_mute in s and "audioEngine.setUserMuted(muted)" not in s:
     s = s.replace(
@@ -187,6 +195,20 @@ if old_mute in s and "audioEngine.setUserMuted(muted)" not in s:
         old_mute + "        if (::audioEngine.isInitialized) audioEngine.setUserMuted(muted)\n",
         1,
     )
+
+# In the offline test build, capture policy should report the local PCM path rather
+# than a WebRTC state that is intentionally disabled.
+policy_start = "    private fun updateCapturePolicy() {\n        if (!rideStarted) return\n"
+if policy_start in s and "OFFLINE VOICE ACTIVE" not in s:
+    replacement = (
+        "    private fun updateCapturePolicy() {\n"
+        "        if (!rideStarted) return\n"
+        "        if (::offlineMeshController.isInitialized && offlineMeshController.isActive()) {\n"
+        "            updateAudioUi(if (micMuted) \"MIC MUTED • LISTENING ONLY\" else \"OFFLINE VOICE ACTIVE • MIC + JITTER BUFFER\")\n"
+        "            return\n"
+        "        }\n"
+    )
+    s = s.replace(policy_start, replacement, 1)
 
 main.write_text(s)
 
@@ -215,4 +237,4 @@ if missing:
     m = m.replace(application_anchor, "\n".join(missing) + "\n\n" + application_anchor, 1)
 manifest.write_text(m)
 
-print("Offline Nearby RME1 mesh + live PCM voice test applied; online mesh and Maps preserved")
+print("Offline Nearby RME1 mesh + exclusive PCM voice diagnostics applied; production online code preserved")
