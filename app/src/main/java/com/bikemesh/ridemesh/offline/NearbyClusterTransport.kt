@@ -41,10 +41,12 @@ class NearbyClusterTransport(
     private val pendingEndpoints = ConcurrentHashMap.newKeySet<String>()
     private val endpointToNode = ConcurrentHashMap<String, String>()
     private val endpointToName = ConcurrentHashMap<String, String>()
+    private val retryAfterMs = ConcurrentHashMap<String, Long>()
     @Volatile private var started = false
 
     private val serviceId = "in.autopilotindia.ridemesh.offline.$rideToken"
     private val localEndpointName = riderName.ifBlank { "Rider" }.take(24)
+    private val localTieBreak = stableRank("$rideToken|$nodeId")
 
     private fun status(message: String) = listener.onStatus("NEARBY DIAG • $message")
 
@@ -71,11 +73,14 @@ class NearbyClusterTransport(
             pendingEndpoints.remove(endpointId)
             if (!started) return
             if (resolution.status.isSuccess) {
+                retryAfterMs.remove(endpointId)
                 connectedEndpoints.add(endpointId)
                 status("CONNECTED • ${endpointToName[endpointId] ?: endpointId.take(6)} • exchanging identity")
                 sendRaw(endpointId, hello())
             } else {
-                status("CONNECTION FAILED • code=${resolution.status.statusCode} • ${resolution.status.statusMessage.orEmpty().take(60)}")
+                val code = resolution.status.statusCode
+                retryAfterMs[endpointId] = SystemClock.elapsedRealtime() + RETRY_BACKOFF_MS
+                status("CONNECTION FAILED • code=$code • ${resolution.status.statusMessage.orEmpty().take(60)} • retry in ${RETRY_BACKOFF_MS / 1000}s")
             }
         }
 
@@ -84,6 +89,7 @@ class NearbyClusterTransport(
             pendingEndpoints.remove(endpointId)
             val remoteNode = endpointToNode.remove(endpointId)
             val name = endpointToName.remove(endpointId)
+            retryAfterMs[endpointId] = SystemClock.elapsedRealtime() + RETRY_BACKOFF_MS
             if (remoteNode != null) listener.onPeerDisconnected(remoteNode)
             if (started) status("DISCONNECTED • ${name ?: endpointId.take(6)} • discovery continues")
         }
@@ -91,21 +97,47 @@ class NearbyClusterTransport(
 
     private val discoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            if (!started || connectedEndpoints.contains(endpointId) || !pendingEndpoints.add(endpointId)) return
+            if (!started || connectedEndpoints.contains(endpointId)) return
             val name = info.endpointName.ifBlank { "Android rider" }
             endpointToName[endpointId] = name
             status("ENDPOINT FOUND • $name • ${endpointId.take(6)}")
+
+            val now = SystemClock.elapsedRealtime()
+            val waitUntil = retryAfterMs[endpointId] ?: 0L
+            if (now < waitUntil) {
+                status("WAITING RETRY BACKOFF • $name • ${(waitUntil - now + 999) / 1000}s")
+                return
+            }
+
+            // Deterministic initiator election: every device computes a stable rank for
+            // itself and the discovered endpoint. Only one side will request first,
+            // avoiding the symmetric request/request collision that produced 8012 on
+            // the POCO F5 + Xiaomi Pad 6 test. The non-initiator keeps advertising and
+            // accepts the incoming request.
+            val remoteTieBreak = stableRank("$rideToken|${info.endpointName}|$endpointId")
+            val shouldInitiate = localTieBreak < remoteTieBreak
+            if (!shouldInitiate) {
+                status("PASSIVE ACCEPT ROLE • $name • waiting for peer request")
+                return
+            }
+
+            if (!pendingEndpoints.add(endpointId)) return
+            status("INITIATOR ROLE • $name")
             status("REQUESTING CONNECTION • $name")
             client.requestConnection(localEndpointName, endpointId, lifecycleCallback)
                 .addOnSuccessListener { status("REQUEST SENT • $name") }
                 .addOnFailureListener {
                     pendingEndpoints.remove(endpointId)
-                    status("REQUEST FAILED • ${shortError(it)} • discovery remains active")
+                    retryAfterMs[endpointId] = SystemClock.elapsedRealtime() + RETRY_BACKOFF_MS
+                    status("REQUEST FAILED • ${shortError(it)} • retry in ${RETRY_BACKOFF_MS / 1000}s")
+                    // Force a clean Nearby rediscovery cycle after IO-layer failures.
+                    scheduler.schedule({ restartDiscovery() }, RETRY_BACKOFF_MS, TimeUnit.MILLISECONDS)
                 }
         }
 
         override fun onEndpointLost(endpointId: String) {
             pendingEndpoints.remove(endpointId)
+            retryAfterMs.remove(endpointId)
             status("ENDPOINT LOST • ${endpointToName[endpointId] ?: endpointId.take(6)}")
         }
     }
@@ -138,7 +170,7 @@ class NearbyClusterTransport(
         runCatching { client.stopAdvertising() }
         runCatching { client.stopDiscovery() }
         runCatching { client.stopAllEndpoints() }
-        connectedEndpoints.clear(); pendingEndpoints.clear(); endpointToNode.clear(); endpointToName.clear()
+        connectedEndpoints.clear(); pendingEndpoints.clear(); endpointToNode.clear(); endpointToName.clear(); retryAfterMs.clear()
     }
 
     fun connectedPeerCount(): Int = endpointToNode.size
@@ -151,6 +183,21 @@ class NearbyClusterTransport(
         DATA_PREFIX.copyInto(encoded); payload.copyInto(encoded, DATA_PREFIX.size)
         client.sendPayload(endpoints, Payload.fromBytes(encoded))
         return true
+    }
+
+    private fun restartDiscovery() {
+        if (!started) return
+        runCatching { client.stopDiscovery() }
+        pendingEndpoints.clear()
+        client.startDiscovery(
+            serviceId,
+            discoveryCallback,
+            DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build(),
+        ).addOnSuccessListener {
+            status("DISCOVERY RESTARTED • searching same-code riders")
+        }.addOnFailureListener {
+            status("DISCOVERY RESTART FAILED • ${shortError(it)}")
+        }
     }
 
     private fun handleMessage(endpointId: String, bytes: ByteArray) {
@@ -184,9 +231,19 @@ class NearbyClusterTransport(
     private fun sendRaw(endpointId: String, bytes: ByteArray) {
         if (connectedEndpoints.contains(endpointId)) client.sendPayload(endpointId, Payload.fromBytes(bytes))
     }
+
+    private fun stableRank(value: String): Long {
+        var hash = 1125899906842597L
+        value.forEach { hash = 31L * hash + it.code }
+        return hash and Long.MAX_VALUE
+    }
+
     private fun hello() = "HELLO|$rideToken|$nodeId|${riderName.ifBlank { "Rider" }}".toByteArray()
     private fun startsWith(bytes: ByteArray, prefix: ByteArray): Boolean = bytes.size >= prefix.size && prefix.indices.all { bytes[it] == prefix[it] }
     private fun shortError(t: Throwable): String = "${t.javaClass.simpleName}: ${t.message.orEmpty().take(90)}"
 
-    companion object { private val DATA_PREFIX = byteArrayOf(0x52, 0x4d, 0x44, 0x31) }
+    companion object {
+        private const val RETRY_BACKOFF_MS = 3500L
+        private val DATA_PREFIX = byteArrayOf(0x52, 0x4d, 0x44, 0x31)
+    }
 }
