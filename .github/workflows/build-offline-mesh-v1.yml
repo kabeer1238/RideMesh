@@ -77,14 +77,18 @@ jobs:
           from pathlib import Path
           p = Path('app/build.gradle.kts')
           s = p.read_text()
-          dep = '    implementation("io.github.jaredmdobson:concentus:1.0.2")\n'
-          if 'io.github.jaredmdobson:concentus:1.0.2' not in s:
+          # com.plasmoverse:concentus is the published Java Concentus artifact
+          # containing the org.concentus.OpusEncoder/OpusDecoder classes used by
+          # OpusVoiceCodec. Remove the incompatible fork coordinate if present.
+          s = s.replace('    implementation("io.github.jaredmdobson:concentus:1.0.2")\n', '')
+          dep = '    implementation("com.plasmoverse:concentus:1.0.0")\n'
+          if 'com.plasmoverse:concentus:1.0.0' not in s:
               anchor = '    implementation("io.github.webrtc-sdk:android:144.7559.09")\n'
               if anchor not in s:
                   raise SystemExit('Could not locate dependency anchor for Concentus Opus')
               s = s.replace(anchor, anchor + dep, 1)
-              p.write_text(s)
-          print('Concentus Opus dependency present in materialized offline build')
+          p.write_text(s)
+          print('Concentus Java Opus dependency present in materialized offline build')
           PY
       - name: Disable subscriptions for offline test
         run: python3 tools/apply_offline_test_no_subscription.py
