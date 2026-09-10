@@ -6,8 +6,6 @@ main = Path("app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt")
 manifest = Path("app/src/main/AndroidManifest.xml")
 s = main.read_text()
 
-# Offline is additive: import/controller hooks only. Existing Internet/WebRTC and
-# Maps code is left in place and production branch is never modified by this job.
 if "import com.bikemesh.ridemesh.offline.OfflineMeshController" not in s:
     anchor = "import com.bikemesh.ridemesh.mesh.MeshNode\n"
     if anchor not in s:
@@ -34,8 +32,6 @@ if "OfflineMeshController(applicationContext)" not in s:
     )
     s = s.replace(anchor, init + anchor, 1)
 
-# JOIN must never show a newly-created code. It may show only the last ride that
-# actually entered active state. CREATE RIDE remains the only fresh-code action.
 if 'prefs.getString("last_active_ride_code"' not in s:
     join_re = re.compile(
         r'        binding\.joinRide\.setOnClickListener \{.*?\n        \}\n\n(?=        binding\.backHome)',
@@ -56,20 +52,12 @@ if 'prefs.getString("last_active_ride_code"' not in s:
     if count != 1:
         raise SystemExit("Offline mesh patch: JOIN listener not found after production UI materialization")
 
-# Remember the most recent ride only after the rider actually starts it. This
-# makes JOIN prefill a real rejoin convenience rather than a random code.
 if 'putString("last_active_ride_code", code)' not in s:
     anchor = "        saveSettings()\n\n        try {\n"
     if anchor not in s:
         raise SystemExit("Offline mesh patch: startRide saveSettings anchor not found")
-    s = s.replace(
-        anchor,
-        "        saveSettings()\n        prefs.edit().putString(\"last_active_ride_code\", code).apply()\n\n        try {\n",
-        1,
-    )
+    s = s.replace(anchor, "        saveSettings()\n        prefs.edit().putString(\"last_active_ride_code\", code).apply()\n\n        try {\n", 1)
 
-# Nearby Connections on modern Android needs nearby Wi-Fi + Bluetooth runtime
-# permissions. Android <=12 keeps the location permission used by discovery.
 if "Manifest.permission.NEARBY_WIFI_DEVICES" not in s:
     anchor = "    private fun requiredPermissions(): List<String> = buildList {\n        add(Manifest.permission.RECORD_AUDIO)\n"
     if anchor not in s:
@@ -106,8 +94,6 @@ if "Manifest.permission.BLUETOOTH_ADVERTISE" not in s:
         1,
     )
 
-# Start Nearby P2P_CLUSTER only after the ride itself has successfully entered
-# active state. No LocalOnlyHotspot/AndroidShare is created by the controller.
 if "offlineMeshController.start(rider, code)" not in s:
     anchor = "            rideStarted = true\n"
     if anchor not in s:
@@ -126,10 +112,6 @@ if "if (::offlineMeshController.isInitialized) offlineMeshController.stop()" not
         raise SystemExit("Offline mesh patch: onDestroy anchor not found")
     s = s.replace(anchor, anchor + "        if (::offlineMeshController.isInitialized) offlineMeshController.stop()\n", 1)
 
-# QR remains a simple RideMesh ride-code QR. It is NOT a hotspot credential QR.
-# This keeps manual code entry and QR scanning equivalent.
-
-# Surface the Nearby state without deleting the original online status logic.
 status_anchor = "    private fun updateTransportStatus() {\n        if (!rideStarted) return\n"
 if status_anchor in s and "OFFLINE P2P_CLUSTER" not in s:
     block = (
@@ -144,9 +126,9 @@ if status_anchor in s and "OFFLINE P2P_CLUSTER" not in s:
         "                val rtt = offlineMeshController.currentRttMs()?.let { \" • ${it}ms\" }.orEmpty()\n"
         "                \"OFFLINE P2P_CLUSTER CONNECTED • $peer$rtt\"\n"
         "            } else {\n"
-        "                \"OFFLINE P2P_CLUSTER • SEARCHING SAME-CODE RIDERS\"\n"
+        "                \"OFFLINE P2P_CLUSTER • ${offlineMeshController.diagnosticSummary()}\"\n"
         "            }\n"
-        "            binding.homeNetworkStatus.text = if (offlinePeers > 0) \"Offline Mesh\\nConnected\" else \"Offline Mesh\\nSearching\"\n"
+        "            binding.homeNetworkStatus.text = if (offlinePeers > 0) \"Offline Mesh\\nConnected\" else \"Offline Mesh\\nDiagnosing\"\n"
         "            binding.activeRiders.text = \"RIDERS ${offlinePeers + 1}\"\n"
         "            renderRiderGrid()\n"
         "            applyPowerUi()\n"
@@ -184,4 +166,4 @@ if missing:
     m = m.replace(application_anchor, "\n".join(missing) + "\n\n" + application_anchor, 1)
 manifest.write_text(m)
 
-print("Offline Nearby P2P_CLUSTER integration applied; online mesh and Maps preserved")
+print("Offline Nearby P2P_CLUSTER integration + live diagnostics applied; online mesh and Maps preserved")
