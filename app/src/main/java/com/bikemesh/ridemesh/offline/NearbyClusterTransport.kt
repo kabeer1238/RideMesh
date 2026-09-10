@@ -18,6 +18,7 @@ import com.google.android.gms.nearby.connection.Strategy
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 /** Android offline transport using Google Nearby Connections P2P_CLUSTER. */
 class NearbyClusterTransport(
@@ -51,6 +52,15 @@ class NearbyClusterTransport(
     private val endpointToDevice = ConcurrentHashMap<String, String>()
     private val retryAfterMs = ConcurrentHashMap<String, Long>()
     private val helloAttempts = ConcurrentHashMap<String, Int>()
+
+    // Realtime voice rule: never allow an unbounded Nearby BYTES backlog.
+    // One audio payload may be in flight per peer. While it is transferring we
+    // retain only the newest frame; older pending frames are discarded. For an
+    // intercom, a missing 20 ms frame is far better than hearing speech seconds late.
+    private val audioInFlightPayload = ConcurrentHashMap<String, Long>()
+    private val audioLatestPending = ConcurrentHashMap<String, ByteArray>()
+    private val audioDropped = AtomicLong(0)
+
     @Volatile private var started = false
 
     private val serviceId = "in.autopilotindia.ridemesh.offline.$rideToken"
@@ -64,7 +74,23 @@ class NearbyClusterTransport(
             val bytes = payload.asBytes() ?: return
             handleMessage(endpointId, bytes)
         }
-        override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) = Unit
+
+        override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
+            val current = audioInFlightPayload[endpointId] ?: return
+            if (current != update.payloadId) return
+
+            when (update.status) {
+                PayloadTransferUpdate.Status.SUCCESS,
+                PayloadTransferUpdate.Status.FAILURE,
+                PayloadTransferUpdate.Status.CANCELED -> {
+                    audioInFlightPayload.remove(endpointId, current)
+                    val newest = audioLatestPending.remove(endpointId)
+                    if (started && connectedEndpoints.contains(endpointId) && newest != null) {
+                        sendRealtimeAudio(endpointId, newest)
+                    }
+                }
+            }
+        }
     }
 
     private val lifecycleCallback = object : ConnectionLifecycleCallback() {
@@ -99,6 +125,8 @@ class NearbyClusterTransport(
             connectedEndpoints.remove(endpointId)
             pendingEndpoints.remove(endpointId)
             helloAttempts.remove(endpointId)
+            audioInFlightPayload.remove(endpointId)
+            audioLatestPending.remove(endpointId)
             val remoteNode = endpointToNode.remove(endpointId)
             val name = endpointToName.remove(endpointId)
             endpointToDevice.remove(endpointId)
@@ -195,10 +223,14 @@ class NearbyClusterTransport(
         endpointToDevice.clear()
         retryAfterMs.clear()
         helloAttempts.clear()
+        audioInFlightPayload.clear()
+        audioLatestPending.clear()
+        audioDropped.set(0)
     }
 
     fun connectedPeerCount(): Int = endpointToNode.size
     fun firstPeerName(): String? = endpointToNode.entries.firstOrNull()?.key?.let(endpointToName::get)
+    fun realtimeAudioDropped(): Long = audioDropped.get()
 
     fun peerSnapshots(): List<PeerSnapshot> = endpointToNode.entries.map { (endpointId, remoteNodeId) ->
         PeerSnapshot(
@@ -216,12 +248,47 @@ class NearbyClusterTransport(
             excludedNodeId == null || peerNodeId == null || peerNodeId != excludedNodeId
         }
         if (endpoints.isEmpty()) return false
+
         val encoded = ByteArray(DATA_PREFIX.size + payload.size)
         DATA_PREFIX.copyInto(encoded)
         payload.copyInto(encoded, DATA_PREFIX.size)
-        client.sendPayload(endpoints, Payload.fromBytes(encoded))
-            .addOnFailureListener { status("PAYLOAD BROADCAST FAILED • ${shortError(it)}") }
+
+        val isRealtimeAudio = RideMeshEnvelope.decode(payload)?.type == RideMeshEnvelope.Type.AUDIO
+        if (isRealtimeAudio) {
+            endpoints.forEach { endpointId ->
+                if (audioInFlightPayload.containsKey(endpointId)) {
+                    if (audioLatestPending.put(endpointId, encoded) != null) {
+                        val dropped = audioDropped.incrementAndGet()
+                        if (dropped % 250L == 0L) status("VOICE REALTIME • dropped $dropped stale frames • staying live")
+                    }
+                } else {
+                    sendRealtimeAudio(endpointId, encoded)
+                }
+            }
+        } else {
+            client.sendPayload(endpoints, Payload.fromBytes(encoded))
+                .addOnFailureListener { status("PAYLOAD BROADCAST FAILED • ${shortError(it)}") }
+        }
         return true
+    }
+
+    private fun sendRealtimeAudio(endpointId: String, encoded: ByteArray) {
+        if (!started || !connectedEndpoints.contains(endpointId)) return
+        val payload = Payload.fromBytes(encoded)
+        val previous = audioInFlightPayload.putIfAbsent(endpointId, payload.id)
+        if (previous != null) {
+            if (audioLatestPending.put(endpointId, encoded) != null) audioDropped.incrementAndGet()
+            return
+        }
+
+        client.sendPayload(endpointId, payload)
+            .addOnFailureListener {
+                audioInFlightPayload.remove(endpointId, payload.id)
+                val newest = audioLatestPending.remove(endpointId)
+                if (newest != null && started && connectedEndpoints.contains(endpointId)) {
+                    sendRealtimeAudio(endpointId, newest)
+                }
+            }
     }
 
     private fun restartDiscovery() {
