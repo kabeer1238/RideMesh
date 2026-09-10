@@ -58,7 +58,9 @@ class OfflineMeshController(
         lastRttMs = null
     }
 
-    // Compatibility with the existing test-only UI patch. Returning null is
+    fun isActive(): Boolean = cluster != null
+
+    // Compatibility with older test-only QR/status hooks. Returning null is
     // deliberate: AndroidShare/LocalOnlyHotspot is no longer the primary path.
     fun hotspotInvitePayload(): String? = null
     fun hotspotCredentialsSummary(): String? = null
