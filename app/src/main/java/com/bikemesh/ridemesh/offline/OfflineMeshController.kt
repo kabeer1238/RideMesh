@@ -3,6 +3,7 @@ package com.bikemesh.ridemesh.offline
 import android.content.Context
 import com.bikemesh.ridemesh.transport.WifiAwareWireProtocol
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 
 /** Dedicated Android offline coordinator. Existing online mesh and Maps stay untouched. */
 class OfflineMeshController(
@@ -20,6 +21,8 @@ class OfflineMeshController(
     @Volatile private var lastPeerName: String? = null
     @Volatile private var lastRttMs: Int? = null
     @Volatile private var lastNearbyStatus: String = "NEARBY DIAG • NOT STARTED"
+    private val txAudioFrames = AtomicLong(0)
+    private val rxAudioFrames = AtomicLong(0)
 
     fun start(riderName: String, rideCode: String) {
         stop()
@@ -42,6 +45,8 @@ class OfflineMeshController(
         val token = WifiAwareWireProtocol.rideToken(normalizedCode)
         lastPeerName = null
         lastRttMs = null
+        txAudioFrames.set(0)
+        rxAudioFrames.set(0)
         lastNearbyStatus = "NEARBY DIAG • START REQUESTED"
 
         val newCluster = NearbyClusterTransport(
@@ -61,6 +66,7 @@ class OfflineMeshController(
                 when (envelope.type) {
                     RideMeshEnvelope.Type.AUDIO -> {
                         if (envelope.originNodeId != nodeId) {
+                            rxAudioFrames.incrementAndGet()
                             onAudioFrame(
                                 envelope.originNodeId.toString(),
                                 envelope.sequence,
@@ -91,6 +97,8 @@ class OfflineMeshController(
         localNodeId = null
         lastPeerName = null
         lastRttMs = null
+        txAudioFrames.set(0)
+        rxAudioFrames.set(0)
         lastNearbyStatus = "NEARBY DIAG • STOPPED"
     }
 
@@ -101,12 +109,18 @@ class OfflineMeshController(
     fun connectedPeerName(): String? = lastPeerName ?: cluster?.firstPeerName()
     fun currentRttMs(): Int? = lastRttMs
     fun diagnosticSummary(): String = lastNearbyStatus.removePrefix("NEARBY DIAG • ")
+    fun audioTxCount(): Long = txAudioFrames.get()
+    fun audioRxCount(): Long = rxAudioFrames.get()
 
     /** Sends a real RideMesh RME1 envelope, suitable for direct and relayed tests. */
     fun sendDiagnosticEnvelope(text: String): Boolean = router?.originateDiagnostic(text) == true
 
     /** First field voice milestone: 20 ms PCM frame through the exact same relay path. */
-    fun sendAudioFrame(audio: ByteArray): Boolean = router?.originateAudio(audio) == true
+    fun sendAudioFrame(audio: ByteArray): Boolean {
+        val sent = router?.originateAudio(audio) == true
+        if (sent) txAudioFrames.incrementAndGet()
+        return sent
+    }
 
     override fun onStatus(message: String) {
         lastNearbyStatus = message
