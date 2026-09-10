@@ -56,7 +56,8 @@ dependencies {
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     implementation("com.google.zxing:core:3.5.4")
     implementation("io.github.webrtc-sdk:android:144.7559.09")
-    implementation("io.github.jaredmdobson:concentus:1.0.2")
+    implementation("com.plasmoverse:concentus:1.0.0")
+    implementation("com.android.billingclient:billing-ktx:8.0.0")
 
     testImplementation("junit:junit:4.13.2")
 }
