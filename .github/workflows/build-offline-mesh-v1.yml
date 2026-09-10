@@ -77,8 +77,8 @@ jobs:
           from pathlib import Path
           p = Path('app/build.gradle.kts')
           s = p.read_text()
-          dep = '    implementation("org.concentus:concentus:1.0.2")\n'
-          if 'org.concentus:concentus:1.0.2' not in s:
+          dep = '    implementation("io.github.jaredmdobson:concentus:1.0.2")\n'
+          if 'io.github.jaredmdobson:concentus:1.0.2' not in s:
               anchor = '    implementation("io.github.webrtc-sdk:android:144.7559.09")\n'
               if anchor not in s:
                   raise SystemExit('Could not locate dependency anchor for Concentus Opus')
