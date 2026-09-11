@@ -96,8 +96,7 @@ jobs:
           grep -F 'versionCode = 26' app/build.gradle.kts
           grep -F 'versionName = "1.0.1"' app/build.gradle.kts
           grep -F 'com.android.billingclient:billing-ktx:8.0.0' app/build.gradle.kts
-          grep -F 'BuildConfig.VERSION_NAME' "$MAIN"
-          grep -F 'BuildConfig.VERSION_CODE' "$MAIN"
+          grep -F 'packageManager.getPackageInfo' "$MAIN"
           grep -F 'MAX_VISIBLE_RIDER_TILES = 8' "$MAIN"
           grep -F 'MAX_REMOTE_RIDERS = 7' "$NET"
           grep -F 'usedtx=1' "$NET"
@@ -105,6 +104,7 @@ jobs:
           grep -F 'maxaveragebitrate=56000' "$NET"
           grep -F 'RIDE ACTIVE' "$LAYOUT"
           grep -F 'HANDS-FREE INTERCOM' "$LAYOUT"
+          grep -F 'android:id="@+id/audioTile"' "$LAYOUT"
           for bad in 'RIDE MESH  •  BETA' 'RideMesh Beta4 settings & help' 'Beta access:' 'BETA ACCESS' 'BETA PERIOD ENDED' 'RideMesh Beta •' '60 DAYS REMAINING'; do
             if grep -Fq "$bad" "$MAIN" "$LAYOUT"; then
               echo "Forbidden rider-facing beta text found: $bad"
