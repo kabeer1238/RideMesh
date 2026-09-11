@@ -1,0 +1,207 @@
+name: Build RideMesh Production vc31 Approved UI Billing
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "production-vc31-approved-ui-billing" ]
+
+permissions:
+  contents: read
+
+env:
+  MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+
+jobs:
+  build-vc31-production:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 16 build tools
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Materialize vc25 production baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt && grep -Fq 'WEBRTC OPUS' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt; then
+            echo 'Beta4 runtime already materialized'
+          else
+            python tools/apply_beta4_internet_only_ui.py
+          fi
+          python tools/apply_beta43_public_ui.py
+          python tools/apply_beta44_stability_speed.py
+          python tools/apply_beta441_crashfix.py
+          python tools/apply_beta45_themed_ui.py
+          python tools/fix_beta45_generated_kotlin.py
+          python tools/apply_beta46_music_coexistence.py
+          python tools/apply_beta47_smart_duck.py
+          python tools/apply_beta48_noise_aware_duck.py
+          python tools/apply_beta49_battery_optimizations.py
+          python tools/apply_beta50_adaptive_reliability.py
+          python tools/fix_beta50_constants.py
+          python tools/apply_beta51_live_rider_map.py
+          python tools/fix_beta51_map_compile.py
+          python tools/apply_beta52_clean_shutdown_map_visibility.py
+          python tools/fix_beta52_constants.py
+          python tools/apply_beta52_ios_location_compat.py
+          python tools/apply_beta53_compact_contacts.py
+          python tools/apply_beta54_cluster_bottomsheet.py
+          python tools/fix_beta54_generated_kotlin.py
+          python tools/apply_beta55_subscription_paywall.py
+          python tools/apply_production_vc25_billing8.py
+          python tools/apply_production_no_beta.py
+          python tools/apply_production_final_cleanup.py
+          python tools/fix_production_premium_enum.py
+
+      - name: Apply approved Active UI and 8-rider audio optimization
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d tools/apply_production_vc26_active_ui_8rider.py.gz.b64 | gzip -d > /tmp/apply_vc26.py
+          python /tmp/apply_vc26.py
+
+      - name: Bump production version to vc31
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('app/build.gradle.kts')
+          s = p.read_text()
+          s = s.replace('versionCode = 26', 'versionCode = 31', 1)
+          s = s.replace('versionName = "1.0.1"', 'versionName = "1.0.2"', 1)
+          p.write_text(s)
+          PY
+
+      - name: Materialize approved RideMesh branding
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/res/drawable-nodpi
+          base64 -d branding/ridemesh_logo_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
+          base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
+          base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
+
+      - name: Verify production identity billing UI and audio safeguards
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN="app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt"
+          NET="app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt"
+          LAYOUT="app/src/main/res/layout/activity_main.xml"
+          grep -F 'applicationId = "in.autopilotindia.ridemesh"' app/build.gradle.kts
+          grep -F 'versionCode = 31' app/build.gradle.kts
+          grep -F 'versionName = "1.0.2"' app/build.gradle.kts
+          grep -F 'com.android.billingclient:billing-ktx:8.0.0' app/build.gradle.kts
+          grep -F 'packageManager.getPackageInfo' "$MAIN"
+          grep -F 'MAX_VISIBLE_RIDER_TILES = 8' "$MAIN"
+          grep -F 'MAX_REMOTE_RIDERS = 7' "$NET"
+          grep -F 'usedtx=1' "$NET"
+          grep -F 'useinbandfec=1' "$NET"
+          grep -F 'maxaveragebitrate=56000' "$NET"
+          grep -F 'RIDE ACTIVE' "$LAYOUT"
+          grep -F 'HANDS-FREE INTERCOM' "$LAYOUT"
+          grep -F 'android:id="@+id/audioTile"' "$LAYOUT"
+          if grep -Fq 'VC28_TEST_NO_BILLING' "$MAIN"; then
+            echo 'ERROR: no-billing test bypass leaked into production'
+            exit 1
+          fi
+          if grep -Fq 'VC27 TEST RIDER DASHBOARD' "$LAYOUT"; then
+            echo 'ERROR: rejected vc27 dashboard leaked into production'
+            exit 1
+          fi
+          if grep -Fq 'VC29_HELMET_AVATAR_STYLE' "$MAIN" || grep -Fq 'vc29_active_screen_bg' "$LAYOUT"; then
+            echo 'ERROR: rejected vc29 visual patch leaked into production'
+            exit 1
+          fi
+          test -n "$MAPS_API_KEY" || (echo 'GOOGLE_MAPS_API_KEY is required' && exit 1)
+
+      - name: Resolve dependencies
+        run: gradle --no-daemon :app:dependencies --configuration releaseRuntimeClasspath > /tmp/ridemesh-deps-vc31.txt
+
+      - name: Unit tests
+        run: gradle --no-daemon testDebugUnitTest
+
+      - name: Release lint
+        run: gradle --no-daemon lintRelease
+
+      - name: Build release APK and AAB
+        run: gradle --no-daemon assembleRelease bundleRelease
+
+      - name: Restore upload signing key
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.RIDEMESH_UPLOAD_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" || (echo 'Missing RIDEMESH_UPLOAD_KEYSTORE_B64' && exit 1)
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/ridemesh-upload.jks"
+          test -s "$RUNNER_TEMP/ridemesh-upload.jks"
+          chmod 600 "$RUNNER_TEMP/ridemesh-upload.jks"
+
+      - name: Sign production APK and AAB
+        shell: bash
+        env:
+          STORE_PASSWORD: ${{ secrets.RIDEMESH_UPLOAD_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RIDEMESH_UPLOAD_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RIDEMESH_UPLOAD_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
+          APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          AAB="app/build/outputs/bundle/release/app-release.aab"
+          TOOLS="$ANDROID_SDK_ROOT/build-tools/36.0.0"
+          mkdir -p dist
+          test -s "$APK" && test -s "$AAB"
+          jarsigner -keystore "$RUNNER_TEMP/ridemesh-upload.jks" -storepass "$STORE_PASSWORD" -keypass "$KEY_PASSWORD" -sigalg SHA256withRSA -digestalg SHA-256 "$AAB" "$KEY_ALIAS"
+          jarsigner -verify -verbose -certs "$AAB" | tee "$RUNNER_TEMP/aab-verify-vc31.txt"
+          grep -qi 'jar verified' "$RUNNER_TEMP/aab-verify-vc31.txt"
+          cp "$AAB" dist/RideMesh-v1.0.2-vc31-ApprovedUI-Billing8-GOOGLE-PLAY-SIGNED.aab
+          "$TOOLS/zipalign" -P 16 -f 4 "$APK" "$RUNNER_TEMP/ridemesh-vc31-aligned.apk"
+          "$TOOLS/apksigner" sign --ks "$RUNNER_TEMP/ridemesh-upload.jks" --ks-pass "pass:$STORE_PASSWORD" --ks-key-alias "$KEY_ALIAS" --key-pass "pass:$KEY_PASSWORD" --out dist/RideMesh-v1.0.2-vc31-ApprovedUI-Billing8-INSTALLABLE-SIGNED.apk "$RUNNER_TEMP/ridemesh-vc31-aligned.apk"
+          "$TOOLS/apksigner" verify --verbose --print-certs dist/RideMesh-v1.0.2-vc31-ApprovedUI-Billing8-INSTALLABLE-SIGNED.apk | tee "$RUNNER_TEMP/apk-verify-vc31.txt"
+
+      - name: Build delivery package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > dist/README.txt <<'TXT'
+          RideMesh 1.0.2 (Build 31)
+          PRODUCTION / GOOGLE PLAY READY
+          UI: last approved vc28/vc26-style Active Ride interface
+          Billing: Google Play Billing 8 production paywall restored
+          Package: in.autopilotindia.ridemesh
+          Audio: 8-rider WebRTC/Opus tuning retained
+          Rider-facing beta/test UI removed
+          Signed with RideMesh Google Play upload key
+          TXT
+          sha256sum dist/*.apk dist/*.aab > dist/SHA256SUMS.txt
+          (cd dist && zip -9 RideMesh-v1.0.2-vc31-ApprovedUI-Billing8-Package.zip *.apk *.aab README.txt SHA256SUMS.txt)
+
+      - name: Upload production vc31 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: RideMesh-v1.0.2-vc31-ApprovedUI-Billing8-GooglePlay-Package
+          path: dist/
+          if-no-files-found: error
+
+      - name: Cleanup signing key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/ridemesh-upload.jks" "$RUNNER_TEMP/ridemesh-vc31-aligned.apk"
