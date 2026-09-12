@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
-    <application android:label="RideMesh Offline Test" tools:replace="android:label">
+    <application android:label="RideMesh Hybrid Test" tools:replace="android:label">
         <!-- Keep the real SplashActivity launcher from main, not the static UI demo. -->
         <activity android:name=".DesignPreviewActivity" android:exported="false" android:screenOrientation="portrait" />
     </application>

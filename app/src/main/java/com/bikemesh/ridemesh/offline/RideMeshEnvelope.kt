@@ -21,6 +21,7 @@ data class RideMeshEnvelope(
     val hopCount: Int,
     val type: Type,
     val payload: ByteArray,
+    val internetHops: Int = 0,
 ) {
     enum class Type(val wire: Int) {
         DIAGNOSTIC(1),
@@ -44,6 +45,7 @@ data class RideMeshEnvelope(
 
     fun encode(): ByteArray {
         require(payload.size <= MAX_PAYLOAD) { "RideMesh envelope payload too large" }
+        require(internetHops in 0..1)
         require(ttl in 0..255)
         require(hopCount in 0..255)
 
@@ -51,6 +53,7 @@ data class RideMeshEnvelope(
         out.putInt(MAGIC)
         out.put(VERSION)
         out.put(type.wire.toByte())
+        out.put(internetHops.toByte())
         out.put(ttl.toByte())
         out.put(hopCount.toByte())
         putUuid(out, messageId)
@@ -65,8 +68,8 @@ data class RideMeshEnvelope(
 
     companion object {
         private const val MAGIC = 0x524D4531 // RME1
-        private const val VERSION: Byte = 1
-        private const val HEADER_SIZE = 72
+        private const val VERSION: Byte = 2
+        private const val HEADER_SIZE = 73
         const val MAX_PAYLOAD = 256 * 1024
 
         fun decode(bytes: ByteArray): RideMeshEnvelope? = runCatching {
@@ -75,6 +78,8 @@ data class RideMeshEnvelope(
             if (input.int != MAGIC) return null
             if (input.get() != VERSION) return null
             val type = Type.fromWire(input.get().toInt() and 0xff) ?: return null
+            val internetHops = input.get().toInt() and 0xff
+            if (internetHops > 1) return null
             val ttl = input.get().toInt() and 0xff
             val hops = input.get().toInt() and 0xff
             val messageId = getUuid(input)
@@ -86,10 +91,10 @@ data class RideMeshEnvelope(
             if (payloadSize < 0 || payloadSize > MAX_PAYLOAD || payloadSize != input.remaining()) return null
             val payload = ByteArray(payloadSize)
             input.get(payload)
-            RideMeshEnvelope(messageId, origin, previousHop, sequence, createdAt, ttl, hops, type, payload)
+            RideMeshEnvelope(messageId, origin, previousHop, sequence, createdAt, ttl, hops, type, payload, internetHops)
         }.getOrNull()
 
-        fun newDiagnostic(nodeId: UUID, sequence: Int, text: String, ttl: Int = 4): RideMeshEnvelope =
+        fun newDiagnostic(nodeId: UUID, sequence: Int, text: String, ttl: Int = 6): RideMeshEnvelope =
             RideMeshEnvelope(
                 messageId = UUID.randomUUID(),
                 originNodeId = nodeId,

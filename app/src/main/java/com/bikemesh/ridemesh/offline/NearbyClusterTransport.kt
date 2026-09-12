@@ -75,7 +75,7 @@ class NearbyClusterTransport(
     fun refreshDiscovery(reason: String) { if (started) restartDiscovery() }
     private fun allowed(name: String): Boolean {
         val parts = name.split('|', limit = 3)
-        if (parts.size != 3 || parts[0] != "RM32") return false
+        if (parts.size != 3 || parts[0] != "RM33") return false
         val remote = parts[1].toIntOrNull() ?: return false
         return com.bikemesh.ridemesh.mesh.MeshRelayPolicy.allows(labRole, remote)
     }
@@ -83,8 +83,8 @@ class NearbyClusterTransport(
 
     @Volatile private var started = false
 
-    private val serviceId = "in.autopilotindia.ridemesh.offline32.$rideToken"
-    private val localEndpointName = "RM32|$labRole|${sanitize(riderName.ifBlank { "Rider" }).take(24)}"
+    private val serviceId = "in.autopilotindia.ridemesh.hybrid33.$rideToken"
+    private val localEndpointName = "RM33|$labRole|${sanitize(riderName.ifBlank { "Rider" }).take(24)}"
     private val localDeviceName = sanitize(deviceName.ifBlank { "Android device" }).take(48)
 
     private fun status(message: String) = listener.onStatus("NEARBY DIAG • $message")
@@ -111,7 +111,7 @@ class NearbyClusterTransport(
     private val lifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
             if (!started) return
-            if (!allowed(info.endpointName) || connectedEndpoints.size >= 5) {
+            if (!allowed(info.endpointName) || connectedEndpoints.size >= 7) {
                 client.rejectConnection(endpointId)
                 return
             }
@@ -179,7 +179,7 @@ class NearbyClusterTransport(
             endpointToName[endpointId] = name
             status("ENDPOINT FOUND • $name • ${endpointId.take(6)}")
 
-            if (connectedEndpoints.size >= 5) return
+            if (connectedEndpoints.size >= 7) return
 
             val now = SystemClock.elapsedRealtime()
             val waitUntil = retryAfterMs[endpointId] ?: 0L

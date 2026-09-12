@@ -5,7 +5,7 @@ import com.bikemesh.ridemesh.offline.OfflineMeshController
 
 /** Cyan UI adapter to the September 11 offline controller, codec and router. */
 class MeshNode(private val context: Context, private val listener: Listener) {
-    enum class LabRole { NORMAL, A, B, C, D, E, F }
+    enum class LabRole { NORMAL, A, B, C, D, E, F, G, H }
     data class RiderPeer(val endpointId: String, val riderName: String, val deviceName: String,
         val qualityBars: Int = 0, val hopCount: Int = 1) {
         val displayName: String get() = riderName.ifBlank { deviceName.ifBlank { "Rider" } }
@@ -20,15 +20,19 @@ class MeshNode(private val context: Context, private val listener: Listener) {
         fun onDirectPeerCount(count: Int)
         fun onAudioPacket(sourceId: String, sequence: Int, timestampMs: Long, audio: ByteArray)
     }
+    var internetPeers: () -> Set<String> = { emptySet() }
+    var internetSend: (String, ByteArray) -> Boolean = { _, _ -> false }
+    fun receiveInternet(peer: String, bytes: ByteArray) { controller?.receiveInternet(peer, bytes) }
+    fun bridgeSummary() = controller?.bridgeSummary().orEmpty()
     @Volatile private var controller: OfflineMeshController? = null
     fun start(riderName: String, rideCode: String, labRole: LabRole = LabRole.NORMAL,
-              deviceName: String = "", preferOffline: Boolean = false) {
+              deviceName: String = "", preferOffline: Boolean = false, sharedNodeId: java.util.UUID? = null) {
         stop()
         val next = OfflineMeshController(context,
             onLog = { listener.onLog(it); listener.onDirectPeerCount(controller?.connectedPeerCount() ?: 0) },
-            onAudioFrame = listener::onAudioPacket)
+            onAudioFrame = listener::onAudioPacket, internetPeers = internetPeers, internetSend = internetSend)
         controller = next
-        next.start(riderName, rideCode, deviceName, labRole.ordinal)
+        next.start(riderName, rideCode, deviceName, labRole.ordinal, sharedNodeId)
     }
     fun stop() { controller?.stop(); controller = null; listener.onDirectPeerCount(0) }
     fun sendLocalAudio(pcm: ByteArray) { controller?.sendAudioFrame(pcm) }
@@ -48,7 +52,7 @@ class MeshNode(private val context: Context, private val listener: Listener) {
             (c?.relayCount() ?: 0).toInt(), c?.maximumHops() ?: 0,
             t?.advertising ?: false, t?.discovering ?: false, t?.found ?: 0,
             t?.attempts ?: 0, t?.connected ?: 0, t?.failed ?: 0, t?.pending ?: 0,
-            t?.sendFailed ?: 0, c?.diagnosticSummary().orEmpty(), "OFFLINE OPUS • SIX-RIDER TEST",
+            t?.sendFailed ?: 0, c?.diagnosticSummary().orEmpty(), "OFFLINE OPUS • EIGHT-RIDER TEST",
             if (c?.isActive() == true) c.reachablePeerDetails().size + 1 else 0, c?.audioDropCount() ?: 0)
     }
 }

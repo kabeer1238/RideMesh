@@ -13,7 +13,7 @@ public final class FreshAudioQueue {
     private long dropped;
     public synchronized void offer(String origin, byte[] bytes, long now) {
         if (frames.put(origin, new Frame(bytes, now)) != null) dropped++;
-        while (frames.size() > 6) { frames.remove(frames.keySet().iterator().next()); dropped++; }
+        while (frames.size() > 8) { frames.remove(frames.keySet().iterator().next()); dropped++; }
     }
     public synchronized byte[] poll(long now) {
         while (!frames.isEmpty()) {

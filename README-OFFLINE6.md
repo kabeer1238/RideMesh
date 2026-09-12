@@ -1,3 +1,5 @@
+> vc33 supersedes this vc32 historical guide. See [README-HYBRID8.md](README-HYBRID8.md) for the current APK and setup.
+
 # RideMesh Cyan UI — six-rider offline test source (vc32)
 
 STATUS: GitHub Actions has passed the Android unit tests and built a signed debug APK. Download the latest successful offline-mesh-v1 workflow artifact. Physical six-phone testing is still required.

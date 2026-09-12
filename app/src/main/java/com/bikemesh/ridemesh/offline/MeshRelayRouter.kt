@@ -17,6 +17,7 @@ class MeshRelayRouter(
     private val sendToNeighborsExcept: (excludedNodeId: String?, payload: ByteArray) -> Boolean,
     private val onDeliver: (RideMeshEnvelope) -> Unit,
     private val onStatus: (String) -> Unit,
+    private val sendToInternet: (RideMeshEnvelope) -> Boolean = { false },
 ) {
     // Playout ordering applies only to media. Control traffic must not create
     // artificial gaps that the receiver mistakes for lost audio frames.
@@ -29,7 +30,7 @@ class MeshRelayRouter(
     fun originatePresence(payload: ByteArray): Boolean {
         val envelope = newEnvelope(RideMeshEnvelope.Type.PRESENCE, payload, DEFAULT_TTL)
         remember(envelope.messageId)
-        return sendToNeighborsExcept(null, envelope.encode())
+        return send(null, envelope)
     }
     private val seen = object : LinkedHashMap<UUID, Unit>(SEEN_LIMIT + 1, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<UUID, Unit>?): Boolean = size > SEEN_LIMIT
@@ -43,7 +44,7 @@ class MeshRelayRouter(
         )
         remember(envelope.messageId)
         onDeliver(envelope)
-        return sendToNeighborsExcept(null, envelope.encode())
+        return send(null, envelope)
     }
 
     /**
@@ -60,7 +61,7 @@ class MeshRelayRouter(
         )
         remember(envelope.messageId)
         // Do not deliver our own microphone frame back to local playback.
-        return sendToNeighborsExcept(null, envelope.encode())
+        return send(null, envelope)
     }
 
     fun receive(fromNodeId: String, bytes: ByteArray) {
@@ -91,11 +92,19 @@ class MeshRelayRouter(
             return
         }
 
-        val sent = sendToNeighborsExcept(fromNodeId, forwarded.encode())
+        val sent = send(fromNodeId, forwarded)
         if (sent) relays.incrementAndGet()
         if (sent && envelope.type != RideMeshEnvelope.Type.AUDIO) {
             onStatus("ROUTER RELAY • ${shortId(envelope.messageId)} • hop ${forwarded.hopCount} • ttl ${forwarded.ttl}")
         }
+    }
+
+    private fun send(exclude: String?, envelope: RideMeshEnvelope): Boolean {
+        val local = sendToNeighborsExcept(exclude, envelope.encode())
+        // A packet may cross the internet boundary once. It can continue across
+        // local links afterwards, but can never bounce back into the internet.
+        val internet = envelope.internetHops == 0 && sendToInternet(envelope.copy(internetHops = 1))
+        return local || internet
     }
 
     private fun newEnvelope(type: RideMeshEnvelope.Type, payload: ByteArray, ttl: Int): RideMeshEnvelope =
@@ -124,7 +133,7 @@ class MeshRelayRouter(
     private fun shortId(id: UUID): String = id.toString().take(8)
 
     companion object {
-        private const val DEFAULT_TTL = 4
+        private const val DEFAULT_TTL = 6
         private const val SEEN_LIMIT = 8192
     }
 }

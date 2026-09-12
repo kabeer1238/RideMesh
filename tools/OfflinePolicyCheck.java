@@ -32,7 +32,7 @@ public class OfflinePolicyCheck {
         check(q.poll(10)[0]==3&&q.poll(10)[0]==2,"speaker fairness");
         q.offer("A",new byte[]{4},0); check(q.poll(141)==null,"stale frame rejection");
         for(int n=0;n<100;n++)q.offer("source"+n,new byte[]{1},200);
-        check(q.size()==6,"bounded source queue");
+        check(q.size()==8,"bounded source queue");
         System.out.println("PASS: 6-source chain/ring, partition, alternate route, TTL, lab isolation, per-speaker fairness, stale frames, bounded queue");
     }
 }
