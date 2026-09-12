@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>RideMesh</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.4</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.autopilotindia.ridemesh</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>ridemesh</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>32</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>comgooglemaps</string>
+		<string>whatsapp</string>
+	</array>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>RideMesh connects to nearby riders for offline and hybrid voice.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_9e63edbf2cfa._tcp</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>RideMesh uses the camera to scan ride invitation QR codes.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>RideMesh relays voice between nearby riders without internet.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>During an active RideMesh ride, location can continue updating when the screen is locked or another app is open. Sharing stops automatically when you end the ride.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>RideMesh shares your live location only with riders in your active RideMesh group so the group can see where riders are during the ride.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>RideMesh uses the microphone for live group rider voice communication.</string>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>location</string>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+		<key>UIImageName</key>
+		<string>RideMeshLogoExact</string>
+		<key>UIImageRespectsSafeAreaInsets</key>
+		<true/>
+	</dict>
+	<key>UIRequiresFullScreen</key>
+	<true/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>WiFiAwareServices</key>
+	<dict>
+		<key>_ridemesh._tcp</key>
+		<dict>
+			<key>Publishable</key>
+			<true/>
+			<key>Subscribable</key>
+			<true/>
+		</dict>
+	</dict>
+</dict>
+</plist>

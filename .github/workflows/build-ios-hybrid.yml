@@ -1,0 +1,46 @@
+name: RideMesh iOS Hybrid Eight Rider Test
+on:
+  workflow_dispatch:
+  push:
+    branches: [offline-mesh-v1]
+    paths: ['ios/**', '.github/workflows/build-ios-hybrid.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ios-hybrid-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test hybrid routing
+        working-directory: ios
+        run: |
+          swiftc RideMeshIOS/Hybrid/HybridRouter.swift Tests/main.swift -o /tmp/hybrid-tests
+          /tmp/hybrid-tests
+      - name: Generate Xcode project
+        working-directory: ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Build iOS device app without signing
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild -project RideMeshIOS.xcodeproj -scheme RideMeshIOS -configuration Debug -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build.log
+      - name: Package unsigned build and source
+        working-directory: ios
+        run: |
+          ditto -c -k --keepParent build/Build/Products/Debug-iphoneos/RideMesh.app RideMesh-iOS-Hybrid8-UNSIGNED.zip
+          zip -r RideMesh-iOS-Hybrid8-source.zip RideMeshIOS project.yml Tests README-HYBRID.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RideMesh-iOS-Hybrid8-${{ github.run_number }}
+          path: ios/RideMesh-*.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iOS-build-log-${{ github.run_number }}
+          path: ios/build.log

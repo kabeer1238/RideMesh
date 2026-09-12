@@ -1,0 +1,6 @@
+.DS_Store
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+RideMeshIOS.xcodeproj/project.xcworkspace/xcuserdata/

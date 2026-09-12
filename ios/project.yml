@@ -1,0 +1,48 @@
+name: RideMeshIOS
+options:
+  bundleIdPrefix: com.autopilotindia
+  deploymentTarget:
+    iOS: "16.0"
+packages:
+  WebRTC:
+    url: https://github.com/stasel/WebRTC.git
+    exactVersion: 151.0.0
+  Nearby:
+    url: https://github.com/google/nearby.git
+    revision: 1b43697f9035ef0c583bb7631a7a281f8fdb4a4b
+  Opus:
+    url: https://github.com/alta/swift-opus.git
+    revision: 6f3cb6bd3ffed1fe5f06d00a962d5c191a50daf8
+targets:
+  RideMeshIOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: RideMeshIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.autopilotindia.ridemesh
+        PRODUCT_NAME: RideMesh
+        SWIFT_OBJC_BRIDGING_HEADER: RideMeshIOS/Hybrid/HybridOpusBridge.h
+        SWIFT_VERSION: 5.0
+        SWIFT_STRICT_CONCURRENCY: targeted
+        MARKETING_VERSION: "1.4"
+        CURRENT_PROJECT_VERSION: "32"
+        CODE_SIGN_ENTITLEMENTS: RideMeshIOS/RideMeshIOS.entitlements
+        INFOPLIST_FILE: RideMeshIOS/Info.plist
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+    dependencies:
+      - package: WebRTC
+      - package: Nearby
+        product: NearbyConnections
+      - package: Opus
+        product: Copus
+schemes:
+  RideMeshIOS:
+    build:
+      targets:
+        RideMeshIOS: all
+    run:
+      config: Debug

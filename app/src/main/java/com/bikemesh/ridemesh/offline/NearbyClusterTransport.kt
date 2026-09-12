@@ -74,8 +74,8 @@ class NearbyClusterTransport(
     fun stats() = Stats(advertising, discovering, foundEndpoints.size, attempts.get(), successful.get(), failures.get(), pendingEndpoints.size, sendFailures.get())
     fun refreshDiscovery(reason: String) { if (started) restartDiscovery() }
     private fun allowed(name: String): Boolean {
-        val parts = name.split('|', limit = 3)
-        if (parts.size != 3 || parts[0] != "RM33") return false
+        val parts = name.split('|', limit = 4)
+        if (parts.size != 4 || parts[0] != "RM34" || parts[2] != rideToken) return false
         val remote = parts[1].toIntOrNull() ?: return false
         return com.bikemesh.ridemesh.mesh.MeshRelayPolicy.allows(labRole, remote)
     }
@@ -83,8 +83,8 @@ class NearbyClusterTransport(
 
     @Volatile private var started = false
 
-    private val serviceId = "in.autopilotindia.ridemesh.hybrid33.$rideToken"
-    private val localEndpointName = "RM33|$labRole|${sanitize(riderName.ifBlank { "Rider" }).take(24)}"
+    private val serviceId = "in.autopilotindia.ridemesh.hybrid34"
+    private val localEndpointName = "RM34|$labRole|$rideToken|${sanitize(riderName.ifBlank { "Rider" }).take(24)}"
     private val localDeviceName = sanitize(deviceName.ifBlank { "Android device" }).take(48)
 
     private fun status(message: String) = listener.onStatus("NEARBY DIAG • $message")
