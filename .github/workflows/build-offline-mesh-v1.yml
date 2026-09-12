@@ -1,131 +1,58 @@
-name: Build RideMesh Offline Mesh v1 Automatic Same-Code Test APK
-
+name: RideMesh Cyan Offline Six Rider Test
 on:
   workflow_dispatch:
   push:
-    branches:
-      - offline-mesh-v1
+    branches: [offline-mesh-v1]
     paths:
-      - "app/**"
-      - "tools/**"
-      - "build.gradle.kts"
-      - "settings.gradle.kts"
-      - "gradle.properties"
-      - ".github/workflows/build-offline-mesh-v1.yml"
-
+      - 'app/**'
+      - 'tools/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - 'gradle/**'
+      - '.github/workflows/build-offline-mesh-v1.yml'
 permissions:
   contents: read
-
-env:
-  MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
-
+concurrency:
+  group: offline-six-rider-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  build-offline-mesh-v1:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 30
+    env:
+      MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-      - name: Install Android 16 build tools
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
-      - name: Set up Gradle 8.13
-        uses: gradle/actions/setup-gradle@v4
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.13"
-      - name: Materialize production vc25 runtime
-        shell: bash
-        run: |
-          set -e
-          if grep -Fq 'Beta4 does not send PCM frames' app/src/main/java/com/bikemesh/ridemesh/MainActivity.kt && grep -Fq 'WEBRTC OPUS' app/src/main/java/com/bikemesh/ridemesh/transport/InternetNode.kt; then echo 'Runtime already materialized'; else python tools/apply_beta4_internet_only_ui.py; fi
-          python tools/apply_beta43_public_ui.py
-          python tools/apply_beta44_stability_speed.py
-          python tools/apply_beta441_crashfix.py
-          python tools/apply_beta45_themed_ui.py
-          python tools/fix_beta45_generated_kotlin.py
-          python tools/apply_beta46_music_coexistence.py
-          python tools/apply_beta47_smart_duck.py
-          python tools/apply_beta48_noise_aware_duck.py
-          python tools/apply_beta49_battery_optimizations.py
-          python tools/apply_beta50_adaptive_reliability.py
-          python tools/fix_beta50_constants.py
-          python tools/apply_beta51_live_rider_map.py
-          python tools/fix_beta51_map_compile.py
-          python tools/apply_beta52_clean_shutdown_map_visibility.py
-          python tools/fix_beta52_constants.py
-          python tools/apply_beta52_ios_location_compat.py
-          python tools/apply_beta53_compact_contacts.py
-          python tools/apply_beta54_cluster_bottomsheet.py
-          python tools/fix_beta54_generated_kotlin.py
-          python tools/apply_beta55_subscription_paywall.py
-          python tools/apply_production_vc25_billing8.py
-          python tools/apply_production_no_beta.py
-          python tools/apply_production_final_cleanup.py
-          python tools/fix_production_premium_enum.py
-      - name: Apply offline mesh v1
-        run: python3 tools/apply_offline_mesh_v1.py
-      - name: Apply offline low-latency audio policy
-        run: python3 tools/apply_offline_low_latency_audio.py
-      - name: Ensure offline Opus dependency
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('app/build.gradle.kts')
-          s = p.read_text()
-          s = s.replace('    implementation("io.github.jaredmdobson:concentus:1.0.2")\n', '')
-          dep = '    implementation("com.plasmoverse:concentus:1.0.0")\n'
-          if 'com.plasmoverse:concentus:1.0.0' not in s:
-              anchor = '    implementation("io.github.webrtc-sdk:android:144.7559.09")\n'
-              if anchor not in s:
-                  raise SystemExit('Could not locate dependency anchor for Concentus Opus')
-              s = s.replace(anchor, anchor + dep, 1)
-          p.write_text(s)
-          PY
-      - name: Disable subscriptions for offline test
-        run: python3 tools/apply_offline_test_no_subscription.py
-      - name: Stamp build number into Settings
-        run: python3 tools/apply_ci_build_stamp.py
-      - name: Require Google Maps key
-        shell: bash
-        run: test -n "$MAPS_API_KEY" || (echo "GOOGLE_MAPS_API_KEY is required" && exit 1)
-      - name: Materialize branding
-        shell: bash
-        run: |
-          mkdir -p app/src/main/res/drawable-nodpi
-          base64 -d branding/ridemesh_logo_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo_exact.webp
-          base64 -d branding/ridemesh_icon_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon_exact.webp
-          base64 -d branding/ridemesh_boot_exact.webp.b64 > app/src/main/res/drawable-nodpi/ridemesh_boot_exact.webp
-      - name: Run unit tests
+          gradle-version: '8.13'
+      - name: Test canonical source
         run: gradle --no-daemon :app:testDebugUnitTest
-      - name: Build signed debug test APK
+      - name: Build offline APK
         run: gradle --no-daemon :app:assembleDebug
-      - name: Verify APK signing
-        shell: bash
+      - name: Verify debug APK signature
         run: |
-          set -euo pipefail
-          APK="app/build/outputs/apk/debug/app-debug.apk"
+          APK='app/build/outputs/apk/debug/RideMesh-offline6-vc32-debug.apk'
           test -s "$APK"
-          "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
-      - name: Prepare installable APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          OUT="dist/RideMesh-Build${GITHUB_RUN_NUMBER}-OFFLINE-OPUS-LOW-LATENCY-SIGNED.apk"
-          cp app/build/outputs/apk/debug/app-debug.apk "$OUT"
-          sha256sum "$OUT" > dist/SHA256SUMS.txt
-      - name: Upload offline mesh test APK
-        uses: actions/upload-artifact@v4
+          "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --verbose "$APK"
+          sha256sum "$APK" > app/build/outputs/apk/debug/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Build${{ github.run_number }}-Offline-Opus-Low-Latency-SIGNED
+          name: RideMesh-vc32-Offline6-NoBilling-${{ github.run_number }}
           path: |
-            dist/RideMesh-Build${{ github.run_number }}-OFFLINE-OPUS-LOW-LATENCY-SIGNED.apk
-            dist/SHA256SUMS.txt
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/debug/SHA256SUMS.txt
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results-${{ github.run_number }}
+          path: app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore

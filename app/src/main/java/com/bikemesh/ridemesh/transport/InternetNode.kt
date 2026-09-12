@@ -2,11 +2,18 @@ package com.bikemesh.ridemesh.transport
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
+import android.media.AudioDeviceCallback
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import org.json.JSONObject
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
@@ -58,6 +65,7 @@ class InternetNode(
         fun onInternetAudio(sourceId: String, sequence: Int, timestampMs: Long, audio: ByteArray)
         fun onInternetPeerCount(count: Int)
         fun onInternetAudioStatus(message: String) = Unit
+        fun onInternetRiderLocation(location: RiderLocation) = Unit
     }
 
     data class RiderPeer(
@@ -66,12 +74,25 @@ class InternetNode(
         val deviceName: String,
         val lastSeenMs: Long,
         val qualityBars: Int = 4,
+        val qualityLabel: String = "Good",
     ) {
         val displayName: String
             get() = riderName.ifBlank {
                 deviceName.ifBlank { "Rider ${id.toString().take(4).uppercase()}" }
             }
     }
+
+    data class RiderLocation(
+        val riderId: UUID,
+        val displayName: String,
+        val latitude: Double,
+        val longitude: Double,
+        val speedKmh: Float,
+        val heading: Float,
+        val timestampMs: Long,
+        val connectionQuality: String,
+        val phoneNumber: String = "",
+    )
 
     data class Diagnostics(
         val signalingConnected: Boolean,
@@ -98,6 +119,14 @@ class InternetNode(
         @Volatile var lastOfferMs: Long = 0L,
         @Volatile var lastStateChangeMs: Long = System.currentTimeMillis(),
         @Volatile var reconnectScheduled: Boolean = false,
+        @Volatile var measuredQualityBars: Int = 3,
+        @Volatile var measuredQualityLabel: String = "Good",
+        @Volatile var lastRttMs: Double = -1.0,
+        @Volatile var lastJitterMs: Double = -1.0,
+        @Volatile var lastLossPercent: Double = -1.0,
+        @Volatile var lastPacketsLost: Long = -1L,
+        @Volatile var lastPacketsReceived: Long = -1L,
+        @Volatile var audioQualityTier: Int = 0,
     )
 
     private val appContext: Context?
@@ -125,6 +154,9 @@ class InternetNode(
     private val answersSent = AtomicInteger(0)
     private val candidatesSent = AtomicInteger(0)
     private val reconnects = AtomicInteger(0)
+    private val healthStatsPending = ConcurrentHashMap.newKeySet<UUID>()
+    private val mediaFocusRecoveryPending = AtomicBoolean(false)
+    private val smartDuckStatsPending = AtomicBoolean(false)
 
     private val peers = ConcurrentHashMap<UUID, RiderPeer>()
     private val sessions = ConcurrentHashMap<UUID, PeerSession>()
@@ -135,6 +167,7 @@ class InternetNode(
     @Volatile private var baseTopic: String = ""
     @Volatile private var presenceTopic: String = ""
     @Volatile private var signalTopic: String = ""
+    @Volatile private var locationTopic: String = ""
     @Volatile private var subscriptionTopic: String = ""
     @Volatile private var socket: SSLSocket? = null
     @Volatile private var output: BufferedOutputStream? = null
@@ -145,6 +178,28 @@ class InternetNode(
     @Volatile private var focusPaused = false
     @Volatile private var audioRoute = "AUTO"
     @Volatile private var audioStatus = "WEBRTC AUDIO READY"
+    @Volatile private var connectionHealthThread: Thread? = null
+    @Volatile private var networkHandoverPending = false
+    @Volatile private var lastNetworkHandle = -1L
+    @Volatile private var lastNetworkTransport = ""
+    @Volatile private var smartDuckThread: Thread? = null
+    @Volatile private var lastVoiceActivityMs = 0L
+    @Volatile private var musicVolumeBeforeDuck: Int? = null
+    @Volatile private var musicDuckTargetVolume: Int? = null
+    @Volatile private var musicDucked = false
+    private val smartDuckLevelLock = Any()
+    private var smartDuckRoundLocalMax = 0.0
+    private var smartDuckRoundRemoteMax = 0.0
+    private var smartDuckRoundLocalVadKnown = false
+    private var smartDuckRoundRemoteVadKnown = false
+    private var smartDuckRoundLocalVad = false
+    private var smartDuckRoundRemoteVad = false
+    @Volatile private var localNoiseFloor = NOISE_FLOOR_INITIAL
+    @Volatile private var remoteNoiseFloor = NOISE_FLOOR_INITIAL
+    @Volatile private var localSpeechHits = 0
+    @Volatile private var remoteSpeechHits = 0
+    @Volatile private var noiseCalibrationUntilMs = 0L
+    @Volatile private var smartDuckMusicWasActive = false
 
     private var factory: PeerConnectionFactory? = null
     private var audioSource: AudioSource? = null
@@ -152,6 +207,10 @@ class InternetNode(
     private var audioDeviceModule: JavaAudioDeviceModule? = null
     private var audioManager: AudioManager? = null
     private var audioFocusRequest: AudioFocusRequest? = null
+    private var recoveryHandler: Handler? = null
+    private var audioDeviceCallback: AudioDeviceCallback? = null
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     fun start(rideCode: String, riderName: String, deviceName: String) {
         val ctx = appContext ?: throw IllegalStateException("Android context required for WebRTC voice")
@@ -166,6 +225,7 @@ class InternetNode(
         baseTopic = "ridemesh/test/v3/$safeRide"
         presenceTopic = "$baseTopic/presence"
         signalTopic = "$baseTopic/signal"
+        locationTopic = "$baseTopic/location"
         subscriptionTopic = "$baseTopic/#"
 
         lastError = ""
@@ -180,6 +240,9 @@ class InternetNode(
         requestAudioFocus()
         selectAudioRoute()
         applyVoiceEnabled()
+        registerRecoveryCallbacks(ctx)
+        startSmartDucking()
+        startConnectionHealthMonitor()
 
         listener.onInternetState(false, "WEBRTC SIGNALING CONNECTING • OPUS VOICE")
         worker = Thread({ connectionLoop() }, "RideMesh-WebRTC-Signaling").apply {
@@ -213,6 +276,9 @@ class InternetNode(
         runCatching { audioDeviceModule?.release() }
         audioDeviceModule = null
 
+        stopConnectionHealthMonitor()
+        unregisterRecoveryCallbacks()
+        stopSmartDucking(restoreVolume = true)
         abandonAudioFocus()
         clearCommunicationRoute()
     }
@@ -224,7 +290,12 @@ class InternetNode(
     fun voicePeerCount(): Int = sessions.values.count { it.connected }
 
     fun remotePeers(): List<RiderPeer> = peers.values
-        .map { peer -> peer.copy(qualityBars = qualityBarsFor(peer.id)) }
+        .map { peer ->
+            peer.copy(
+                qualityBars = qualityBarsFor(peer.id),
+                qualityLabel = qualityLabelFor(peer.id),
+            )
+        }
         .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.displayName })
 
     /**
@@ -254,6 +325,42 @@ class InternetNode(
     }
 
     fun currentAudioStatus(): String = audioStatus
+
+    fun localRiderId(): UUID = nodeId
+
+    fun currentConnectionQualityLabel(): String {
+        val active = sessions.values.filter { it.connected }
+        if (!signalingConnected.get() && active.isEmpty()) return "Reconnecting"
+        if (active.any { it.measuredQualityLabel.equals("Poor", true) }) return "Poor"
+        if (active.isNotEmpty() && active.all { it.measuredQualityLabel.equals("Excellent", true) }) return "Excellent"
+        return "Good"
+    }
+
+    fun publishRiderLocation(
+        latitude: Double,
+        longitude: Double,
+        speedKmh: Float,
+        heading: Float,
+        phoneNumber: String = "",
+    ): Boolean {
+        if (!running.get() || !signalingConnected.get()) return false
+        if (latitude !in -90.0..90.0 || longitude !in -180.0..180.0) return false
+        val packet = RiderLocation(
+            riderId = nodeId,
+            displayName = riderName,
+            latitude = latitude,
+            longitude = longitude,
+            speedKmh = speedKmh.coerceIn(0f, 450f),
+            heading = ((heading % 360f) + 360f) % 360f,
+            timestampMs = System.currentTimeMillis(),
+            connectionQuality = currentConnectionQualityLabel(),
+            phoneNumber = sanitizePhone(phoneNumber),
+        )
+        return runCatching {
+            sendMqttPublish(locationTopic, encodeLocation(packet))
+            true
+        }.getOrDefault(false)
+    }
 
     fun diagnostics(): Diagnostics {
         val stateText = sessions.values
@@ -444,7 +551,7 @@ class InternetNode(
         val session = PeerSession(peerId, pc, initiator)
         sessions[peerId] = session
         pc.addTrack(localTrack, listOf(MEDIA_STREAM_ID))
-        runCatching { pc.setBitrate(24_000, 40_000, 64_000) }
+        runCatching { pc.setBitrate(28_000, 42_000, 60_000) }
         updatePeerState(peerId, if (initiator) "READY TO OFFER" else "WAITING OFFER")
 
         if (allowOffer && initiator) maybeCreateOffer(session)
@@ -615,6 +722,13 @@ class InternetNode(
         session.connected = connected
         session.state = state
         session.lastStateChangeMs = System.currentTimeMillis()
+        if (!connected) {
+            session.measuredQualityBars = 1
+            session.measuredQualityLabel = "Reconnecting"
+        } else if (session.measuredQualityLabel == "Reconnecting") {
+            session.measuredQualityBars = 3
+            session.measuredQualityLabel = "Good"
+        }
         peers.computeIfPresent(peerId) { _, peer ->
             peer.copy(qualityBars = qualityBarsFor(peerId))
         }
@@ -654,14 +768,305 @@ class InternetNode(
 
     private fun qualityBarsFor(id: UUID): Int {
         val session = sessions[id] ?: return 2
-        return when {
-            session.connected -> 4
-            session.state.contains("CONNECT", ignoreCase = true) ||
-                session.state.contains("CHECK", ignoreCase = true) -> 3
-            session.state.contains("FAIL", ignoreCase = true) ||
-                session.state.contains("DISCONNECT", ignoreCase = true) -> 1
-            else -> 2
+        if (!session.connected) return 1
+        return session.measuredQualityBars.coerceIn(1, 4)
+    }
+
+    private fun qualityLabelFor(id: UUID): String {
+        val session = sessions[id] ?: return "Connecting"
+        if (!session.connected) return "Reconnecting"
+        return session.measuredQualityLabel.ifBlank { "Good" }
+    }
+
+    private fun startConnectionHealthMonitor() {
+        stopConnectionHealthMonitor()
+        healthStatsPending.clear()
+        connectionHealthThread = Thread({
+            try {
+                while (running.get() && !Thread.currentThread().isInterrupted) {
+                    val snapshot = sessions.values.toList()
+                    snapshot.forEach { session ->
+                        if (session.connected) collectPeerHealth(session)
+                    }
+                    Thread.sleep(CONNECTION_HEALTH_POLL_MS)
+                }
+            } catch (_: InterruptedException) {
+                // Ride stopped/restarted.
+            }
+        }, "RideMesh-ConnectionHealth").apply {
+            isDaemon = true
+            start()
         }
+    }
+
+    private fun stopConnectionHealthMonitor() {
+        connectionHealthThread?.interrupt()
+        connectionHealthThread = null
+        healthStatsPending.clear()
+    }
+
+    private fun collectPeerHealth(session: PeerSession) {
+        if (!healthStatsPending.add(session.id)) return
+        runCatching {
+            session.pc.getStats { report ->
+                try {
+                    var rttMs = -1.0
+                    var jitterMs = -1.0
+                    var packetsLost = -1L
+                    var packetsReceived = -1L
+
+                    report.statsMap.values.forEach { stat ->
+                        val members = stat.members
+                        when (stat.type) {
+                            "candidate-pair" -> {
+                                val state = members["state"]?.toString().orEmpty()
+                                val nominated = members["nominated"] as? Boolean ?: false
+                                if ((state.equals("succeeded", true) || nominated) && rttMs < 0.0) {
+                                    val seconds = (members["currentRoundTripTime"] as? Number)?.toDouble()
+                                    if (seconds != null && seconds >= 0.0) rttMs = seconds * 1000.0
+                                }
+                            }
+
+                            "remote-inbound-rtp" -> {
+                                val kind = (members["kind"] ?: members["mediaType"])?.toString().orEmpty()
+                                if (kind.equals("audio", true) && rttMs < 0.0) {
+                                    val seconds = (members["roundTripTime"] as? Number)?.toDouble()
+                                    if (seconds != null && seconds >= 0.0) rttMs = seconds * 1000.0
+                                }
+                            }
+
+                            "inbound-rtp" -> {
+                                val kind = (members["kind"] ?: members["mediaType"])?.toString().orEmpty()
+                                if (!kind.equals("audio", true)) return@forEach
+                                val jitterSeconds = (members["jitter"] as? Number)?.toDouble()
+                                if (jitterSeconds != null && jitterSeconds >= 0.0) {
+                                    jitterMs = maxOf(jitterMs, jitterSeconds * 1000.0)
+                                }
+                                val lost = (members["packetsLost"] as? Number)?.toLong()
+                                val received = (members["packetsReceived"] as? Number)?.toLong()
+                                if (lost != null) packetsLost = maxOf(packetsLost, lost)
+                                if (received != null) packetsReceived = maxOf(packetsReceived, received)
+                            }
+                        }
+                    }
+
+                    val lossPercent = calculateLossPercent(session, packetsLost, packetsReceived)
+                    updateMeasuredQuality(session, rttMs, jitterMs, lossPercent)
+                } finally {
+                    healthStatsPending.remove(session.id)
+                }
+            }
+        }.onFailure {
+            healthStatsPending.remove(session.id)
+        }
+    }
+
+    private fun calculateLossPercent(session: PeerSession, lost: Long, received: Long): Double {
+        if (lost < 0L || received < 0L) return session.lastLossPercent
+        val previousLost = session.lastPacketsLost
+        val previousReceived = session.lastPacketsReceived
+        session.lastPacketsLost = lost
+        session.lastPacketsReceived = received
+
+        val lostDelta = if (previousLost >= 0L && lost >= previousLost) lost - previousLost else lost
+        val receivedDelta = if (previousReceived >= 0L && received >= previousReceived) {
+            received - previousReceived
+        } else {
+            received
+        }
+        val total = lostDelta + receivedDelta
+        if (total <= 0L) return session.lastLossPercent
+        return (lostDelta.coerceAtLeast(0L).toDouble() * 100.0 / total.toDouble()).coerceIn(0.0, 100.0)
+    }
+
+    private fun updateMeasuredQuality(
+        session: PeerSession,
+        rttMs: Double,
+        jitterMs: Double,
+        lossPercent: Double,
+    ) {
+        if (!session.connected) return
+        if (rttMs >= 0.0) session.lastRttMs = rttMs
+        if (jitterMs >= 0.0) session.lastJitterMs = jitterMs
+        if (lossPercent >= 0.0) session.lastLossPercent = lossPercent
+
+        val rtt = session.lastRttMs
+        val jitter = session.lastJitterMs
+        val loss = session.lastLossPercent
+
+        val poor = (loss >= QUALITY_POOR_LOSS_PERCENT) ||
+            (rtt >= QUALITY_POOR_RTT_MS) ||
+            (jitter >= QUALITY_POOR_JITTER_MS)
+        val excellent = !poor &&
+            (loss < 0.0 || loss <= QUALITY_EXCELLENT_LOSS_PERCENT) &&
+            (rtt < 0.0 || rtt <= QUALITY_EXCELLENT_RTT_MS) &&
+            (jitter < 0.0 || jitter <= QUALITY_EXCELLENT_JITTER_MS)
+
+        when {
+            poor -> {
+                session.measuredQualityBars = 1
+                session.measuredQualityLabel = "Poor"
+                applyAdaptiveAudioTier(session, AUDIO_TIER_POOR)
+            }
+            excellent -> {
+                session.measuredQualityBars = 4
+                session.measuredQualityLabel = "Excellent"
+                applyAdaptiveAudioTier(session, AUDIO_TIER_EXCELLENT)
+            }
+            else -> {
+                session.measuredQualityBars = 3
+                session.measuredQualityLabel = "Good"
+                applyAdaptiveAudioTier(session, AUDIO_TIER_GOOD)
+            }
+        }
+
+        peers.computeIfPresent(session.id) { _, peer ->
+            peer.copy(
+                qualityBars = session.measuredQualityBars,
+                qualityLabel = session.measuredQualityLabel,
+            )
+        }
+    }
+
+    private fun applyAdaptiveAudioTier(session: PeerSession, tier: Int) {
+        if (session.audioQualityTier == tier) return
+        session.audioQualityTier = tier
+        val connectedPeers = sessions.values.count { it.connected }.coerceAtLeast(1)
+        val values = when {
+            connectedPeers >= 6 -> when (tier) {
+                AUDIO_TIER_POOR -> intArrayOf(18_000, 24_000, 34_000)
+                AUDIO_TIER_GOOD -> intArrayOf(24_000, 34_000, 46_000)
+                else -> intArrayOf(28_000, 42_000, 56_000)
+            }
+            connectedPeers >= 4 -> when (tier) {
+                AUDIO_TIER_POOR -> intArrayOf(20_000, 28_000, 40_000)
+                AUDIO_TIER_GOOD -> intArrayOf(28_000, 40_000, 54_000)
+                else -> intArrayOf(32_000, 48_000, 64_000)
+            }
+            else -> when (tier) {
+                AUDIO_TIER_POOR -> intArrayOf(22_000, 30_000, 44_000)
+                AUDIO_TIER_GOOD -> intArrayOf(30_000, 44_000, 60_000)
+                else -> intArrayOf(36_000, 54_000, 72_000)
+            }
+        }
+        // Keep speech quality high while preventing seven simultaneous outbound encodes
+        // from overloading a phone or mobile uplink. Opus FEC + DTX remain enabled.
+        runCatching { session.pc.setBitrate(values[0], values[1], values[2]) }
+    }
+
+    private fun registerRecoveryCallbacks(ctx: Context) {
+        val handler = Handler(Looper.getMainLooper())
+        recoveryHandler = handler
+
+        val manager = audioManager
+        if (manager != null && audioDeviceCallback == null) {
+            val callback = object : AudioDeviceCallback() {
+                override fun onAudioDevicesAdded(addedDevices: Array<AudioDeviceInfo>) {
+                    if (addedDevices.any { it.isVoiceBluetoothDevice() }) scheduleAudioRouteRecovery()
+                }
+
+                override fun onAudioDevicesRemoved(removedDevices: Array<AudioDeviceInfo>) {
+                    if (removedDevices.any { it.isVoiceBluetoothDevice() }) scheduleAudioRouteRecovery()
+                }
+            }
+            audioDeviceCallback = callback
+            runCatching { manager.registerAudioDeviceCallback(callback, handler) }
+        }
+
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        connectivityManager = cm
+        val active = cm.activeNetwork
+        lastNetworkHandle = active?.networkHandle ?: -1L
+        lastNetworkTransport = networkTransportLabel(active?.let(cm::getNetworkCapabilities))
+
+        if (networkCallback == null) {
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    observeDefaultNetwork(network)
+                }
+
+                override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                    observeDefaultNetwork(network, capabilities)
+                }
+            }
+            networkCallback = callback
+            runCatching { cm.registerDefaultNetworkCallback(callback, handler) }
+        }
+    }
+
+    private fun unregisterRecoveryCallbacks() {
+        audioDeviceCallback?.let { callback ->
+            runCatching { audioManager?.unregisterAudioDeviceCallback(callback) }
+        }
+        audioDeviceCallback = null
+        networkCallback?.let { callback ->
+            runCatching { connectivityManager?.unregisterNetworkCallback(callback) }
+        }
+        networkCallback = null
+        connectivityManager = null
+        recoveryHandler?.removeCallbacksAndMessages(null)
+        recoveryHandler = null
+        networkHandoverPending = false
+        lastNetworkHandle = -1L
+        lastNetworkTransport = ""
+    }
+
+    private fun scheduleAudioRouteRecovery() {
+        val handler = recoveryHandler ?: return
+        handler.removeCallbacksAndMessages(AUDIO_ROUTE_RECOVERY_TOKEN)
+        handler.postAtTime({
+            if (!running.get() || focusPaused) return@postAtTime
+            selectAudioRoute()
+            sessions.values.forEach { session ->
+                runCatching { session.pc.setAudioPlayout(true) }
+                runCatching { session.pc.setAudioRecording(true) }
+            }
+            applyVoiceEnabled()
+        }, AUDIO_ROUTE_RECOVERY_TOKEN, android.os.SystemClock.uptimeMillis() + AUDIO_ROUTE_RECOVERY_MS)
+    }
+
+    private fun observeDefaultNetwork(
+        network: Network,
+        capabilities: NetworkCapabilities? = connectivityManager?.getNetworkCapabilities(network),
+    ) {
+        if (!running.get()) return
+        val handle = network.networkHandle
+        val transport = networkTransportLabel(capabilities)
+        val changed = lastNetworkHandle >= 0L &&
+            (handle != lastNetworkHandle || (lastNetworkTransport.isNotBlank() && transport != lastNetworkTransport))
+        lastNetworkHandle = handle
+        lastNetworkTransport = transport
+        if (!changed) return
+
+        networkHandoverPending = true
+        reconnectAttempt = 0
+        listener.onInternetState(voicePeerCount() > 0, "CONNECTION CHANGED • RECOVERING")
+        // Force signaling onto the new default network.  Existing media can remain
+        // alive until ICE recovery is negotiated after signaling reconnects.
+        closeSocket()
+    }
+
+    private fun networkTransportLabel(capabilities: NetworkCapabilities?): String = when {
+        capabilities == null -> "UNKNOWN"
+        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WIFI"
+        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "CELLULAR"
+        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ETHERNET"
+        else -> "OTHER"
+    }
+
+    private fun recoverPeersAfterNetworkHandover() {
+        sessions.values.forEach { session ->
+            if (session.initiator) {
+                runCatching { session.pc.restartIce() }
+                session.connected = false
+                session.measuredQualityBars = 1
+                session.measuredQualityLabel = "Reconnecting"
+                maybeCreateOffer(session, force = true)
+            } else if (!session.connected) {
+                updatePeerState(session.id, "RECONNECTING")
+            }
+        }
+        notifyPeerCount(force = true)
     }
 
     private fun connectionLoop() {
@@ -720,6 +1125,10 @@ class InternetNode(
         lastError = ""
         listener.onInternetState(true, "WEBRTC SIGNALING READY • OPUS VOICE")
         publishPresence()
+        if (networkHandoverPending) {
+            networkHandoverPending = false
+            recoverPeersAfterNetworkHandover()
+        }
 
         var lastPing = System.currentTimeMillis()
         var lastPresence = 0L
@@ -733,9 +1142,15 @@ class InternetNode(
             }
 
             val now = System.currentTimeMillis()
-            if (now - lastPresence >= PRESENCE_INTERVAL_MS) {
+            val stableRoom = sessions.size >= peers.size && sessions.values.all { it.connected }
+            val presenceIntervalMs = if (stableRoom) {
+                PRESENCE_STABLE_INTERVAL_MS
+            } else {
+                PRESENCE_DISCOVERY_INTERVAL_MS
+            }
+            if (now - lastPresence >= presenceIntervalMs) {
                 publishPresence()
-                refreshPeerNegotiation(now)
+                if (!stableRoom) refreshPeerNegotiation(now)
                 prunePeers(now)
                 lastPresence = now
             }
@@ -756,6 +1171,9 @@ class InternetNode(
         when (receivedTopic) {
             presenceTopic -> handlePresence(payload)
             signalTopic -> decodeSignal(payload)?.let(::handleSignal)
+            locationTopic -> decodeLocationCompat(payload)?.let { location ->
+                if (location.riderId != nodeId) listener.onInternetRiderLocation(location)
+            }
         }
     }
 
@@ -780,15 +1198,25 @@ class InternetNode(
 
         val now = System.currentTimeMillis()
         val previous = peers[presence.origin]
+        if (previous == null && peers.size >= MAX_REMOTE_RIDERS) {
+            listener.onInternetAudioStatus("GROUP FULL • 8 RIDERS • VOICE ACTIVE")
+            return
+        }
         peers[presence.origin] = RiderPeer(
             id = presence.origin,
             riderName = presence.riderName.ifBlank { previous?.riderName.orEmpty() },
             deviceName = presence.deviceName.ifBlank { previous?.deviceName.orEmpty() },
             lastSeenMs = now,
             qualityBars = qualityBarsFor(presence.origin),
+            qualityLabel = qualityLabelFor(presence.origin),
         )
         notifyPeerCount(force = previous == null)
         ensurePeer(presence.origin, allowOffer = true)
+        if (previous == null) {
+            // Fast room convergence: tell the newcomer about us immediately instead of
+            // waiting for the next periodic presence heartbeat.
+            publishPresence()
+        }
     }
 
     private fun refreshPeerNegotiation(now: Long) {
@@ -924,27 +1352,96 @@ class InternetNode(
         val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
             when (change) {
                 AudioManager.AUDIOFOCUS_GAIN -> resumeAfterExternalAudio()
-                AudioManager.AUDIOFOCUS_LOSS,
-                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
-                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> pauseForExternalAudio()
+
+                // Phone/VoIP style interruptions are normally transient. RideMesh yields
+                // completely, releases the communication route, and auto-resumes later.
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pauseForExternalAudio()
+
+                // Navigation/prompts that only ask us to duck must not tear down the ride.
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                    if (!focusPaused && running.get()) {
+                        audioStatus = if (userMuted) {
+                            "MIC MUTED • MUSIC / NAV MIX ACTIVE"
+                        } else {
+                            "VOICE CONNECTED • MUSIC / NAV MIX ACTIVE"
+                        }
+                        listener.onInternetAudioStatus(audioStatus)
+                    }
+                }
+
+                // A normal media player commonly asks for long-lived GAIN. Re-acquire
+                // MAY_DUCK focus after a tiny settle period so the music app can stay
+                // playing at reduced volume while RideMesh voice remains live.
+                AudioManager.AUDIOFOCUS_LOSS -> recoverMusicMixFocus()
             }
         }
 
-        audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+        audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
             .setAudioAttributes(attributes)
             .setAcceptsDelayedFocusGain(true)
-            .setWillPauseWhenDucked(true)
+            .setWillPauseWhenDucked(false)
             .setOnAudioFocusChangeListener(focusListener)
             .build()
+
         val result = manager.requestAudioFocus(audioFocusRequest!!)
         focusPaused = result != AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         applyVoiceEnabled()
+        if (!focusPaused) {
+            audioStatus = if (userMuted) {
+                "MIC MUTED • MUSIC MIX READY"
+            } else {
+                "VOICE CONNECTED • MUSIC MIX READY"
+            }
+            listener.onInternetAudioStatus(audioStatus)
+        }
+    }
+
+    private fun recoverMusicMixFocus() {
+        if (!running.get() || focusPaused) return
+        if (!mediaFocusRecoveryPending.compareAndSet(false, true)) return
+
+        Thread({
+            try {
+                Thread.sleep(MEDIA_FOCUS_RECOVERY_MS)
+            } catch (_: InterruptedException) {
+                mediaFocusRecoveryPending.set(false)
+                return@Thread
+            }
+
+            mediaFocusRecoveryPending.set(false)
+            if (!running.get() || focusPaused) return@Thread
+            val manager = audioManager ?: return@Thread
+            val request = audioFocusRequest ?: return@Thread
+
+            when (manager.requestAudioFocus(request)) {
+                AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
+                    applyVoiceEnabled()
+                    audioStatus = if (userMuted) {
+                        "MIC MUTED • MUSIC PLAYING"
+                    } else {
+                        "VOICE CONNECTED • MUSIC PLAYING"
+                    }
+                    listener.onInternetAudioStatus(audioStatus)
+                }
+
+                AudioManager.AUDIOFOCUS_REQUEST_DELAYED,
+                AudioManager.AUDIOFOCUS_REQUEST_FAILED -> {
+                    // A locked high-priority owner is much more likely to be a real
+                    // phone/VoIP call than ordinary media. Yield instead of fighting it.
+                    pauseForExternalAudio()
+                }
+            }
+        }, "RideMesh-MediaFocus").apply {
+            isDaemon = true
+            start()
+        }
     }
 
     private fun abandonAudioFocus() {
         val manager = audioManager ?: return
         audioFocusRequest?.let { runCatching { manager.abandonAudioFocusRequest(it) } }
         audioFocusRequest = null
+        mediaFocusRecoveryPending.set(false)
         focusPaused = false
     }
 
@@ -986,6 +1483,325 @@ class InternetNode(
         }, "RideMesh-CallResume").apply {
             isDaemon = true
             start()
+        }
+    }
+
+    private fun startSmartDucking() {
+        stopSmartDucking(restoreVolume = true)
+        lastVoiceActivityMs = 0L
+        smartDuckStatsPending.set(false)
+        localNoiseFloor = NOISE_FLOOR_INITIAL
+        remoteNoiseFloor = NOISE_FLOOR_INITIAL
+        localSpeechHits = 0
+        remoteSpeechHits = 0
+        noiseCalibrationUntilMs = System.currentTimeMillis() + NOISE_CALIBRATION_MS
+        smartDuckMusicWasActive = false
+
+        smartDuckThread = Thread({
+            try {
+                while (running.get() && !Thread.currentThread().isInterrupted) {
+                    val manager = audioManager
+                    val musicActive = manager?.isMusicActive == true || musicDucked
+
+                    val sleepMs = when {
+                        focusPaused || sessions.isEmpty() -> {
+                            smartDuckMusicWasActive = false
+                            localSpeechHits = 0
+                            remoteSpeechHits = 0
+                            restoreMusicVolume(manager)
+                            SMART_DUCK_NO_MUSIC_POLL_MS
+                        }
+
+                        !musicActive -> {
+                            if (smartDuckMusicWasActive) {
+                                smartDuckMusicWasActive = false
+                                localSpeechHits = 0
+                                remoteSpeechHits = 0
+                            }
+                            restoreMusicVolume(manager)
+                            SMART_DUCK_NO_MUSIC_POLL_MS
+                        }
+
+                        else -> {
+                            if (!smartDuckMusicWasActive) {
+                                smartDuckMusicWasActive = true
+                                localNoiseFloor = NOISE_FLOOR_INITIAL
+                                remoteNoiseFloor = NOISE_FLOOR_INITIAL
+                                localSpeechHits = 0
+                                remoteSpeechHits = 0
+                                noiseCalibrationUntilMs = System.currentTimeMillis() +
+                                    SMART_DUCK_MUSIC_CALIBRATION_MS
+                            }
+                            collectVoiceActivity()
+                            applySmartDuckState()
+                            if (musicDucked) {
+                                SMART_DUCK_DUCKED_POLL_MS
+                            } else {
+                                SMART_DUCK_ACTIVE_POLL_MS
+                            }
+                        }
+                    }
+
+                    Thread.sleep(sleepMs)
+                }
+            } catch (_: InterruptedException) {
+                // Ride stopped or restarted.
+            } finally {
+                smartDuckMusicWasActive = false
+                restoreMusicVolume()
+            }
+        }, "RideMesh-SmartDuck").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun stopSmartDucking(restoreVolume: Boolean) {
+        smartDuckThread?.interrupt()
+        smartDuckThread = null
+        smartDuckStatsPending.set(false)
+        if (restoreVolume) restoreMusicVolume()
+    }
+
+    private fun collectVoiceActivity() {
+        val activeSessions = sessions.values.toList()
+        if (activeSessions.isEmpty()) return
+        if (!smartDuckStatsPending.compareAndSet(false, true)) return
+
+        synchronized(smartDuckLevelLock) {
+            smartDuckRoundLocalMax = 0.0
+            smartDuckRoundRemoteMax = 0.0
+            smartDuckRoundLocalVadKnown = false
+            smartDuckRoundRemoteVadKnown = false
+            smartDuckRoundLocalVad = false
+            smartDuckRoundRemoteVad = false
+        }
+
+        val remaining = AtomicInteger(activeSessions.size)
+        activeSessions.forEach { session ->
+            runCatching {
+                session.pc.getStats { report ->
+                    try {
+                        var localMax = 0.0
+                        var remoteMax = 0.0
+                        var localVadKnown = false
+                        var remoteVadKnown = false
+                        var localVad = false
+                        var remoteVad = false
+
+                        report.statsMap.values.forEach { stat ->
+                            if (stat.type != "inbound-rtp" && stat.type != "media-source") return@forEach
+                            val members = stat.members
+                            val kind = (members["kind"] ?: members["mediaType"])?.toString().orEmpty()
+                            if (!kind.equals("audio", ignoreCase = true)) return@forEach
+
+                            val level = (members["audioLevel"] as? Number)?.toDouble() ?: 0.0
+                            val vad = members["voiceActivityFlag"] as? Boolean
+
+                            if (stat.type == "media-source") {
+                                localMax = maxOf(localMax, level)
+                                if (vad != null) {
+                                    localVadKnown = true
+                                    localVad = localVad || vad
+                                }
+                            } else {
+                                remoteMax = maxOf(remoteMax, level)
+                                if (vad != null) {
+                                    remoteVadKnown = true
+                                    remoteVad = remoteVad || vad
+                                }
+                            }
+                        }
+
+                        synchronized(smartDuckLevelLock) {
+                            smartDuckRoundLocalMax = maxOf(smartDuckRoundLocalMax, localMax)
+                            smartDuckRoundRemoteMax = maxOf(smartDuckRoundRemoteMax, remoteMax)
+                            smartDuckRoundLocalVadKnown = smartDuckRoundLocalVadKnown || localVadKnown
+                            smartDuckRoundRemoteVadKnown = smartDuckRoundRemoteVadKnown || remoteVadKnown
+                            smartDuckRoundLocalVad = smartDuckRoundLocalVad || localVad
+                            smartDuckRoundRemoteVad = smartDuckRoundRemoteVad || remoteVad
+                        }
+                    } finally {
+                        if (remaining.decrementAndGet() == 0) {
+                            finalizeNoiseAwareVoiceRound()
+                            smartDuckStatsPending.set(false)
+                        }
+                    }
+                }
+            }.onFailure {
+                if (remaining.decrementAndGet() == 0) {
+                    finalizeNoiseAwareVoiceRound()
+                    smartDuckStatsPending.set(false)
+                }
+            }
+        }
+    }
+
+    private fun finalizeNoiseAwareVoiceRound() {
+        val snapshot = synchronized(smartDuckLevelLock) {
+            NoiseAwareLevels(
+                localLevel = smartDuckRoundLocalMax,
+                remoteLevel = smartDuckRoundRemoteMax,
+                localVadKnown = smartDuckRoundLocalVadKnown,
+                remoteVadKnown = smartDuckRoundRemoteVadKnown,
+                localVad = smartDuckRoundLocalVad,
+                remoteVad = smartDuckRoundRemoteVad,
+            )
+        }
+
+        val now = System.currentTimeMillis()
+        if (now < noiseCalibrationUntilMs) {
+            localNoiseFloor = updateNoiseFloor(localNoiseFloor, snapshot.localLevel, NOISE_CALIBRATION_ALPHA)
+            remoteNoiseFloor = updateNoiseFloor(remoteNoiseFloor, snapshot.remoteLevel, NOISE_CALIBRATION_ALPHA)
+            localSpeechHits = 0
+            remoteSpeechHits = 0
+            return
+        }
+
+        val localThreshold = maxOf(
+            LOCAL_SPEECH_ABSOLUTE_MIN,
+            localNoiseFloor * LOCAL_NOISE_MULTIPLIER,
+            localNoiseFloor + LOCAL_NOISE_MARGIN,
+        )
+        val remoteThreshold = maxOf(
+            REMOTE_SPEECH_ABSOLUTE_MIN,
+            remoteNoiseFloor * REMOTE_NOISE_MULTIPLIER,
+            remoteNoiseFloor + REMOTE_NOISE_MARGIN,
+        )
+
+        val localCandidate = if (snapshot.localVadKnown) {
+            snapshot.localVad && snapshot.localLevel >= LOCAL_SPEECH_ABSOLUTE_MIN
+        } else {
+            snapshot.localLevel >= localThreshold
+        }
+        val remoteCandidate = if (snapshot.remoteVadKnown) {
+            snapshot.remoteVad && snapshot.remoteLevel >= REMOTE_SPEECH_ABSOLUTE_MIN
+        } else {
+            snapshot.remoteLevel >= remoteThreshold
+        }
+
+        localSpeechHits = updateSpeechHits(localSpeechHits, localCandidate)
+        remoteSpeechHits = updateSpeechHits(remoteSpeechHits, remoteCandidate)
+
+        // Quiet/non-speech samples follow the environment fairly quickly. Elevated
+        // samples move the baseline only very slowly so a spoken sentence does not
+        // become the new noise floor, while sustained wind can still be relearned.
+        localNoiseFloor = updateNoiseFloor(
+            localNoiseFloor,
+            snapshot.localLevel,
+            if (localCandidate) NOISE_SLOW_RISE_ALPHA else NOISE_TRACK_ALPHA,
+        )
+        remoteNoiseFloor = updateNoiseFloor(
+            remoteNoiseFloor,
+            snapshot.remoteLevel,
+            if (remoteCandidate) NOISE_SLOW_RISE_ALPHA else NOISE_TRACK_ALPHA,
+        )
+
+        if (localSpeechHits >= SPEECH_CONFIRM_HITS || remoteSpeechHits >= SPEECH_CONFIRM_HITS) {
+            lastVoiceActivityMs = now
+        }
+    }
+
+    private fun updateSpeechHits(current: Int, candidate: Boolean): Int {
+        return if (candidate) {
+            minOf(current + 1, SPEECH_CONFIRM_HITS + 3)
+        } else {
+            maxOf(0, current - 1)
+        }
+    }
+
+    private fun updateNoiseFloor(current: Double, sample: Double, alpha: Double): Double {
+        if (sample <= 0.0) return current
+        val bounded = sample.coerceIn(NOISE_FLOOR_MIN, NOISE_FLOOR_MAX)
+        return (current + alpha * (bounded - current)).coerceIn(NOISE_FLOOR_MIN, NOISE_FLOOR_MAX)
+    }
+
+    private data class NoiseAwareLevels(
+        val localLevel: Double,
+        val remoteLevel: Double,
+        val localVadKnown: Boolean,
+        val remoteVadKnown: Boolean,
+        val localVad: Boolean,
+        val remoteVad: Boolean,
+    )
+
+    private fun applySmartDuckState() {
+        val manager = audioManager ?: return
+        if (!manager.isMusicActive) {
+            restoreMusicVolume(manager)
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        val voiceActive = lastVoiceActivityMs > 0L &&
+            now - lastVoiceActivityMs <= SMART_DUCK_HOLD_MS
+
+        if (voiceActive) {
+            duckMusicVolume(manager)
+        } else {
+            restoreMusicVolume(manager)
+        }
+    }
+
+    private fun duckMusicVolume(manager: AudioManager) {
+        if (musicDucked) return
+
+        val current = runCatching {
+            manager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        }.getOrNull() ?: return
+        if (current <= 1) return
+
+        val target = (current * SMART_DUCK_VOLUME_RATIO)
+            .toInt()
+            .coerceAtLeast(1)
+            .coerceAtMost(current - 1)
+        if (target >= current) return
+
+        val changed = runCatching {
+            manager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+            true
+        }.getOrDefault(false)
+        if (!changed) return
+
+        musicVolumeBeforeDuck = current
+        musicDuckTargetVolume = target
+        musicDucked = true
+        audioStatus = if (userMuted) {
+            "MIC MUTED • RIDER TALKING • MUSIC LOWERED"
+        } else {
+            "VOICE ACTIVE • MUSIC LOWERED"
+        }
+        listener.onInternetAudioStatus(audioStatus)
+    }
+
+    private fun restoreMusicVolume(manager: AudioManager? = audioManager) {
+        val original = musicVolumeBeforeDuck
+        val target = musicDuckTargetVolume
+        val wasDucked = musicDucked
+
+        musicVolumeBeforeDuck = null
+        musicDuckTargetVolume = null
+        musicDucked = false
+
+        if (!wasDucked || original == null || manager == null) return
+
+        // If the rider manually changed the media volume while it was ducked,
+        // respect that adjustment instead of overwriting it with an old value.
+        val current = runCatching {
+            manager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        }.getOrNull()
+        if (target != null && current != null && current != target) return
+
+        runCatching {
+            manager.setStreamVolume(AudioManager.STREAM_MUSIC, original, 0)
+        }
+        if (running.get() && !focusPaused) {
+            audioStatus = if (userMuted) {
+                "MIC MUTED • MUSIC NORMAL"
+            } else {
+                "VOICE CONNECTED • MUSIC NORMAL"
+            }
+            listener.onInternetAudioStatus(audioStatus)
         }
     }
 
@@ -1036,13 +1852,17 @@ class InternetNode(
         if (fmtpIndex >= 0) {
             var fmtp = lines[fmtpIndex]
             if (!fmtp.contains("useinbandfec=1", ignoreCase = true)) fmtp += ";useinbandfec=1"
+            if (!fmtp.contains("usedtx=", ignoreCase = true)) fmtp += ";usedtx=1"
             if (!fmtp.contains("minptime=", ignoreCase = true)) fmtp += ";minptime=10"
+            if (!fmtp.contains("maxaveragebitrate=", ignoreCase = true)) fmtp += ";maxaveragebitrate=56000"
+            if (!fmtp.contains("maxplaybackrate=", ignoreCase = true)) fmtp += ";maxplaybackrate=48000"
+            if (!fmtp.contains("cbr=", ignoreCase = true)) fmtp += ";cbr=0"
             if (!fmtp.contains("stereo=", ignoreCase = true)) fmtp += ";stereo=0"
             lines[fmtpIndex] = fmtp
         } else {
             val rtpIndex = lines.indexOf(opusLine)
             if (rtpIndex >= 0) {
-                lines.add(rtpIndex + 1, "$fmtpPrefix minptime=10;useinbandfec=1;stereo=0")
+                lines.add(rtpIndex + 1, "$fmtpPrefix minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=56000;maxplaybackrate=48000;cbr=0;stereo=0")
             }
         }
         return lines.joinToString(separator)
@@ -1151,8 +1971,14 @@ class InternetNode(
     }
 
     private fun nextReconnectDelayMs(): Long {
-        val exponent = reconnectAttempt.coerceAtMost(3)
-        val base = (RECONNECT_BASE_DELAY_MS * (1L shl exponent)).coerceAtMost(RECONNECT_MAX_DELAY_MS)
+        val voiceStillActive = voicePeerCount() > 0
+        val exponent = reconnectAttempt.coerceAtMost(if (voiceStillActive) 4 else 3)
+        val maxDelay = if (voiceStillActive) {
+            RECONNECT_MAX_DELAY_WITH_VOICE_MS
+        } else {
+            RECONNECT_MAX_DELAY_MS
+        }
+        val base = (RECONNECT_BASE_DELAY_MS * (1L shl exponent)).coerceAtMost(maxDelay)
         reconnectAttempt = (reconnectAttempt + 1).coerceAtMost(8)
         return base + Random.nextLong(0L, RECONNECT_JITTER_MS + 1L)
     }
@@ -1243,6 +2069,238 @@ class InternetNode(
             null
         }
     }
+
+    // -------------------------------------------------------------------------
+    // Live Rider Map location codec. Fixed binary contract for Android/iOS parity.
+    // Room isolation is provided by the existing ride-code MQTT topic namespace.
+    // -------------------------------------------------------------------------
+
+    internal fun encodeLocation(packet: RiderLocation): ByteArray {
+        val nameBytes = packet.displayName.toByteArray(Charsets.UTF_8).let {
+            if (it.size > MAX_RIDER_NAME_BYTES) it.copyOf(MAX_RIDER_NAME_BYTES) else it
+        }
+        val phoneBytes = sanitizePhone(packet.phoneNumber).toByteArray(Charsets.UTF_8).let {
+            if (it.size > MAX_PHONE_BYTES) it.copyOf(MAX_PHONE_BYTES) else it
+        }
+        val qualityCode = when (packet.connectionQuality.lowercase()) {
+            "excellent" -> 1
+            "good" -> 2
+            "poor" -> 3
+            "reconnecting" -> 4
+            else -> 0
+        }
+        return ByteBuffer.allocate(LOCATION_FIXED_BYTES + nameBytes.size + phoneBytes.size)
+            .order(ByteOrder.BIG_ENDIAN)
+            .putInt(LOCATION_MAGIC)
+            .put(LOCATION_VERSION)
+            .putLong(packet.riderId.mostSignificantBits)
+            .putLong(packet.riderId.leastSignificantBits)
+            .putLong(packet.timestampMs)
+            .putDouble(packet.latitude)
+            .putDouble(packet.longitude)
+            .putFloat(packet.speedKmh.coerceIn(0f, 450f))
+            .putFloat(((packet.heading % 360f) + 360f) % 360f)
+            .put(qualityCode.toByte())
+            .put(nameBytes.size.toByte())
+            .put(nameBytes)
+            .put(phoneBytes.size.toByte())
+            .put(phoneBytes)
+            .array()
+    }
+
+    internal fun decodeLocation(payload: ByteArray): RiderLocation? {
+        if (payload.size < LOCATION_FIXED_BYTES) return null
+        return try {
+            val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+            if (buffer.int != LOCATION_MAGIC || buffer.get() != LOCATION_VERSION) return null
+            val riderId = UUID(buffer.long, buffer.long)
+            val timestampMs = buffer.long
+            val latitude = buffer.double
+            val longitude = buffer.double
+            val speedKmh = buffer.float
+            val heading = buffer.float
+            val quality = when (buffer.get().toInt() and 0xff) {
+                1 -> "Excellent"
+                2 -> "Good"
+                3 -> "Poor"
+                4 -> "Reconnecting"
+                else -> "Good"
+            }
+            if (latitude !in -90.0..90.0 || longitude !in -180.0..180.0) return null
+            if (!buffer.hasRemaining()) return null
+            val nameLength = buffer.get().toInt() and 0xff
+            if (nameLength > MAX_RIDER_NAME_BYTES || nameLength > buffer.remaining()) return null
+            val nameBytes = ByteArray(nameLength)
+            buffer.get(nameBytes)
+            if (!buffer.hasRemaining()) return null
+            val phoneLength = buffer.get().toInt() and 0xff
+            if (phoneLength > MAX_PHONE_BYTES || phoneLength > buffer.remaining()) return null
+            val phoneBytes = ByteArray(phoneLength)
+            buffer.get(phoneBytes)
+            RiderLocation(
+                riderId = riderId,
+                displayName = nameBytes.toString(Charsets.UTF_8).trim().ifBlank { "Rider" },
+                latitude = latitude,
+                longitude = longitude,
+                speedKmh = speedKmh.coerceIn(0f, 450f),
+                heading = ((heading % 360f) + 360f) % 360f,
+                timestampMs = timestampMs,
+                connectionQuality = quality,
+                phoneNumber = sanitizePhone(phoneBytes.toString(Charsets.UTF_8)),
+            )
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * Accept all location representations currently used by RideMesh:
+     * 1) Android Beta5.x extended RML1 (existing decoder, includes phone tail)
+     * 2) Canonical RML1 v1 used by iOS vc23/vc24 (no phone tail)
+     * 3) JSON fallback retained for older experimental iOS builds
+     *
+     * Voice/signaling is not touched by this compatibility path.
+     */
+    private fun decodeLocationCompat(payload: ByteArray): RiderLocation? {
+        decodeLocation(payload)?.let { return it }
+        decodeCanonicalRml1Location(payload)?.let { return it }
+        return decodeJsonLocation(payload)
+    }
+
+    private fun decodeCanonicalRml1Location(payload: ByteArray): RiderLocation? {
+        // 55 bytes is the fixed canonical RML1 header including name-length byte.
+        if (payload.size < 55) return null
+        return try {
+            val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+            if (buffer.int != 0x524D4C31 || buffer.get().toInt() != 1) return null
+
+            val riderId = UUID(buffer.long, buffer.long)
+            val timestampMs = buffer.long
+            val latitude = buffer.double
+            val longitude = buffer.double
+            val speedKmh = buffer.float
+            val heading = buffer.float
+            val qualityRaw = buffer.get().toInt() and 0xff
+            val nameLength = buffer.get().toInt() and 0xff
+
+            if (latitude !in -90.0..90.0 || longitude !in -180.0..180.0) return null
+            if (!latitude.isFinite() || !longitude.isFinite()) return null
+            if (nameLength > 48 || buffer.remaining() < nameLength) return null
+
+            val nameBytes = ByteArray(nameLength)
+            buffer.get(nameBytes)
+
+            // Canonical iOS RML1 v1 quality values:
+            // 0=excellent, 1=good, 2=poor, 3=reconnecting.
+            val quality = when (qualityRaw) {
+                0 -> "Excellent"
+                1 -> "Good"
+                2 -> "Poor"
+                3 -> "Reconnecting"
+                else -> "Good"
+            }
+
+            RiderLocation(
+                riderId = riderId,
+                displayName = nameBytes.toString(Charsets.UTF_8).trim().ifBlank { "Rider" },
+                latitude = latitude,
+                longitude = longitude,
+                speedKmh = speedKmh.coerceIn(0f, 450f),
+                heading = ((heading % 360f) + 360f) % 360f,
+                timestampMs = timestampMs,
+                connectionQuality = quality,
+                phoneNumber = "",
+            )
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun decodeJsonLocation(payload: ByteArray): RiderLocation? {
+        val text = payload.toString(Charsets.UTF_8).trim()
+        if (!text.startsWith("{")) return null
+        return try {
+            val root = JSONObject(text)
+            val location = root.optJSONObject("location") ?: root
+            val rider = root.optJSONObject("rider") ?: root
+
+            fun firstString(source: JSONObject, vararg keys: String): String {
+                keys.forEach { key ->
+                    if (source.has(key) && !source.isNull(key)) {
+                        val value = source.optString(key, "").trim()
+                        if (value.isNotBlank()) return value
+                    }
+                }
+                return ""
+            }
+
+            fun firstDouble(source: JSONObject, vararg keys: String): Double? {
+                keys.forEach { key ->
+                    if (source.has(key) && !source.isNull(key)) {
+                        val value = source.opt(key)
+                        val parsed = when (value) {
+                            is Number -> value.toDouble()
+                            is String -> value.toDoubleOrNull()
+                            else -> null
+                        }
+                        if (parsed != null && parsed.isFinite()) return parsed
+                    }
+                }
+                return null
+            }
+
+            val idText = firstString(
+                rider,
+                "riderId", "riderID", "rider_id", "nodeId", "nodeID", "id", "origin"
+            ).ifBlank {
+                firstString(root, "riderId", "riderID", "rider_id", "nodeId", "nodeID", "id", "origin")
+            }
+            val riderId = runCatching { UUID.fromString(idText) }.getOrNull() ?: return null
+
+            val latitude = firstDouble(location, "latitude", "lat") ?: return null
+            val longitude = firstDouble(location, "longitude", "lng", "lon", "long") ?: return null
+            if (latitude !in -90.0..90.0 || longitude !in -180.0..180.0) return null
+
+            val speed = (firstDouble(location, "speedKmh", "speedKPH", "speedKph", "speed") ?: 0.0)
+                .toFloat().coerceIn(0f, 450f)
+            val heading = (firstDouble(location, "heading", "bearing", "course") ?: 0.0)
+                .toFloat().let { ((it % 360f) + 360f) % 360f }
+
+            var timestamp = (firstDouble(location, "timestampMs", "timestamp", "time", "ts")
+                ?: firstDouble(root, "timestampMs", "timestamp", "time", "ts")
+                ?: System.currentTimeMillis().toDouble()).toLong()
+            if (timestamp in 1..9_999_999_999L) timestamp *= 1_000L
+
+            val displayName = firstString(rider, "displayName", "riderName", "name")
+                .ifBlank { firstString(root, "displayName", "riderName", "name") }
+                .ifBlank { "Rider" }
+                .take(24)
+            val quality = firstString(location, "connectionQuality", "quality")
+                .ifBlank { firstString(root, "connectionQuality", "quality") }
+                .ifBlank { "Good" }
+            val phone = firstString(rider, "phoneNumber", "phone")
+                .ifBlank { firstString(root, "phoneNumber", "phone") }
+
+            RiderLocation(
+                riderId = riderId,
+                displayName = displayName,
+                latitude = latitude,
+                longitude = longitude,
+                speedKmh = speed,
+                heading = heading,
+                timestampMs = timestamp,
+                connectionQuality = quality,
+                phoneNumber = sanitizePhone(phone),
+            )
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun sanitizePhone(value: String): String = value
+        .trim()
+        .filter { it.isDigit() || it == '+' || it == ' ' || it == '-' || it == '(' || it == ')' }
+        .take(MAX_PHONE_BYTES)
 
     // -------------------------------------------------------------------------
     // Legacy-compatible presence/audio helpers retained for existing unit tests.
@@ -1358,19 +2416,58 @@ class InternetNode(
     companion object {
         private const val PUBLIC_BROKER = "broker.hivemq.com"
         private const val PUBLIC_BROKER_TLS_PORT = 8883
+        private const val MAX_REMOTE_RIDERS = 7
         private const val KEEP_ALIVE_SECONDS = 30
         private const val SOCKET_TIMEOUT_MS = 3_000
-        private const val PING_INTERVAL_MS = 12_000L
-        private const val PRESENCE_INTERVAL_MS = 2_000L
+        private const val PING_INTERVAL_MS = 24_000L
+        private const val PRESENCE_DISCOVERY_INTERVAL_MS = 1_000L
+        private const val PRESENCE_STABLE_INTERVAL_MS = 3_000L
         private const val PRESENCE_TIMEOUT_MS = 14_000L
-        private const val OFFER_RETRY_INTERVAL_MS = 4_000L
+        private const val OFFER_RETRY_INTERVAL_MS = 2_000L
         private const val ICE_DISCONNECTED_GRACE_MS = 6_000L
         private const val ICE_FAILED_RETRY_MS = 1_000L
         private const val CALL_RESUME_SETTLE_MS = 650L
+        private const val MEDIA_FOCUS_RECOVERY_MS = 180L
+        private const val SMART_DUCK_NO_MUSIC_POLL_MS = 500L
+        private const val SMART_DUCK_ACTIVE_POLL_MS = 200L
+        private const val SMART_DUCK_DUCKED_POLL_MS = 300L
+        private const val SMART_DUCK_MUSIC_CALIBRATION_MS = 600L
+        private const val SMART_DUCK_HOLD_MS = 900L
+        private const val SMART_DUCK_VOLUME_RATIO = 0.22
+        private const val NOISE_CALIBRATION_MS = 1_500L
+        private const val NOISE_FLOOR_INITIAL = 0.004
+        private const val NOISE_FLOOR_MIN = 0.001
+        private const val NOISE_FLOOR_MAX = 0.30
+        private const val NOISE_CALIBRATION_ALPHA = 0.30
+        private const val NOISE_TRACK_ALPHA = 0.12
+        private const val NOISE_SLOW_RISE_ALPHA = 0.012
+        private const val LOCAL_SPEECH_ABSOLUTE_MIN = 0.018
+        private const val REMOTE_SPEECH_ABSOLUTE_MIN = 0.012
+        private const val LOCAL_NOISE_MULTIPLIER = 3.0
+        private const val REMOTE_NOISE_MULTIPLIER = 2.5
+        private const val LOCAL_NOISE_MARGIN = 0.010
+        private const val REMOTE_NOISE_MARGIN = 0.007
+        private const val SPEECH_CONFIRM_HITS = 2
 
         private const val RECONNECT_BASE_DELAY_MS = 1_000L
         private const val RECONNECT_MAX_DELAY_MS = 8_000L
+        private const val RECONNECT_MAX_DELAY_WITH_VOICE_MS = 16_000L
         private const val RECONNECT_JITTER_MS = 500L
+
+        private const val CONNECTION_HEALTH_POLL_MS = 4_000L
+        private const val AUDIO_ROUTE_RECOVERY_MS = 550L
+        private val AUDIO_ROUTE_RECOVERY_TOKEN = Any()
+
+        private const val QUALITY_EXCELLENT_LOSS_PERCENT = 2.0
+        private const val QUALITY_EXCELLENT_RTT_MS = 180.0
+        private const val QUALITY_EXCELLENT_JITTER_MS = 25.0
+        private const val QUALITY_POOR_LOSS_PERCENT = 7.0
+        private const val QUALITY_POOR_RTT_MS = 450.0
+        private const val QUALITY_POOR_JITTER_MS = 60.0
+
+        private const val AUDIO_TIER_POOR = 1
+        private const val AUDIO_TIER_GOOD = 2
+        private const val AUDIO_TIER_EXCELLENT = 3
 
         private const val LOCAL_AUDIO_TRACK_ID = "ridemesh-audio"
         private const val MEDIA_STREAM_ID = "ridemesh-stream"
@@ -1383,6 +2480,11 @@ class InternetNode(
         private const val SIGNAL_FIXED_BYTES = 48
         private const val MAX_SIGNAL_BYTES = 128_000
         private const val MAX_MID_BYTES = 512
+
+        private const val LOCATION_MAGIC = 0x524D4C31 // RML1
+        private const val LOCATION_VERSION: Byte = 1
+        private const val LOCATION_FIXED_BYTES = 56
+        private const val MAX_PHONE_BYTES = 32
 
         private const val PRESENCE_BASE_BYTES = 24
         private const val MAX_RIDER_NAME_BYTES = 48

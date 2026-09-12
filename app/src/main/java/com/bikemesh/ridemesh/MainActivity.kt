@@ -2,6 +2,7 @@ package com.bikemesh.ridemesh
 
 import android.Manifest
 import android.app.AlertDialog
+import android.app.Dialog
 import android.bluetooth.BluetoothManager
 import android.content.ActivityNotFoundException
 import android.content.ClipData
@@ -9,35 +10,67 @@ import android.content.res.ColorStateList
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.location.Location
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
+import android.util.Patterns
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.core.graphics.ColorUtils
+import androidx.core.widget.doAfterTextChanged
 import com.bikemesh.ridemesh.audio.AudioEngine
 import com.bikemesh.ridemesh.beta.BetaWindow
+import com.bikemesh.ridemesh.billing.RideMeshBillingManager
 import com.bikemesh.ridemesh.audio.AudioRoute
 import com.bikemesh.ridemesh.databinding.ActivityMainBinding
 import com.bikemesh.ridemesh.mesh.LobbyNode
 import com.bikemesh.ridemesh.mesh.MeshNode
 import com.bikemesh.ridemesh.service.RideService
+import com.bikemesh.ridemesh.service.RideShutdownCoordinator
 import com.bikemesh.ridemesh.transport.InternetNode
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.model.MapStyleOptions
+import com.google.android.gms.maps.SupportMapFragment
+import com.google.android.gms.maps.model.BitmapDescriptorFactory
+import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.LatLngBounds
+import com.google.android.gms.maps.model.Marker
+import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.gms.mlkit.barcode.GmsBarcodeScannerOptions
 import com.google.android.gms.mlkit.barcode.GmsBarcodeScanning
 import com.google.android.material.button.MaterialButton
@@ -50,6 +83,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.roundToInt
 import kotlin.random.Random
 
 class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener, InternetNode.Listener {
@@ -58,11 +92,54 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private lateinit var lobbyNode: LobbyNode
     private lateinit var internetNode: InternetNode
     private lateinit var audioEngine: AudioEngine
+    private lateinit var billingManager: RideMeshBillingManager
+    private var billingProduct: RideMeshBillingManager.SubscriptionDisplay? = null
+    private var premiumEntryAction = PremiumEntryAction.NONE
 
     private val prefs by lazy { getSharedPreferences("ridemesh", MODE_PRIVATE) }
     private val nearbyButtons = linkedMapOf<String, MaterialButton>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val speakingUntilMs = ConcurrentHashMap<String, Long>()
+    private val locationShareHeartbeat = object : Runnable {
+        override fun run() {
+            if (!rideStarted) return
+            publishCachedLocalLocationIfDue(force = false)
+            mainHandler.postDelayed(this, LOCATION_SHARE_HEARTBEAT_CHECK_MS)
+        }
+    }
+
+    private val riderLocations = ConcurrentHashMap<String, InternetNode.RiderLocation>()
+    private val riderMapMarkers = mutableMapOf<String, Marker>()
+    private var myLiveLocation: InternetNode.RiderLocation? = null
+    private var fusedLocationClient: FusedLocationProviderClient? = null
+    private var liveLocationCallback: LocationCallback? = null
+    private var liveMap: GoogleMap? = null
+    private var liveMapScreen: LinearLayout? = null
+    private var ridersScreen: LinearLayout? = null
+    private var ridersList: LinearLayout? = null
+    private var currentRiders: List<RiderTile> = emptyList()
+    private var liveMapHost: FrameLayout? = null
+    private var liveMapStatus: TextView? = null
+    private var liveMapShareStatus: TextView? = null
+    private var liveMapVisible = false
+    private var appInForeground = true
+    private var lastLocationPublishMs = 0L
+    private var lastPublishedLocation: Location? = null
+    private var lastMapFitMs = 0L
+    private var lastMapRenderMs = 0L
+    private var selectedMapRiderId: String? = null
+    private val riderClusterMarkers = mutableMapOf<String, Marker>()
+    private var expandedClusterIds: Set<String> = emptySet()
+    private var activeRiderDetailDialog: Dialog? = null
+    private var activeRiderSheetExpanded = false
+    private val riderDetailAutoHideRunnable = Runnable { dismissLiveRiderDetail() }
+    private val clusterAutoCollapseRunnable = Runnable {
+        if (expandedClusterIds.isNotEmpty()) {
+            expandedClusterIds = emptySet()
+            if (liveMapVisible) renderLiveRiderMap(fitGroup = false)
+        }
+    }
+
 
     private var rideStarted = false
     private var pendingAction = PendingAction.NONE
@@ -71,14 +148,17 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private var meshRunning = false
     private var internetConnectedSinceMs = 0L
     private var lastMeshRefreshMs = 0L
-    private var micMuted = false
+    @Volatile private var micMuted = false
     private var betaExpiredDialogShown = false
     private var transportMode = TransportMode.AUTO
     private var meshLabRole = MeshNode.LabRole.NORMAL
+    private var setupMode = SetupMode.CREATE
 
     private enum class TransportMode { AUTO, LOCAL_ONLY, INTERNET_ONLY }
     private enum class PendingAction { NONE, START_RIDE, FIND_RIDERS }
-    private enum class Screen { HOME, SETUP, ACTIVE }
+    private enum class Screen { HOME, SETUP, ACTIVE, MAP, RIDERS, PREMIUM }
+    private enum class PremiumEntryAction { NONE, CREATE_RIDE, JOIN_RIDE, START_RIDE }
+    private enum class SetupMode { CREATE, JOIN }
 
     private data class RiderTile(
         val key: String,
@@ -169,6 +249,19 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
     }
 
+    private val locationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        if (hasLocationPermission()) {
+            if (rideStarted) startRideServiceSafely()
+            startLiveLocationSharing()
+            if (liveMapVisible) renderLiveRiderMap(fitGroup = true)
+        } else {
+            liveMapStatus?.text = "LOCATION OFF • VOICE UNAFFECTED"
+            Toast.makeText(this, "Location permission is optional. RideMesh voice continues normally.", Toast.LENGTH_LONG).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -176,11 +269,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         restoreSettings()
+        binding.riderPhone.setText(prefs.getString(RIDER_PHONE_KEY, "").orEmpty())
         ensureBetaFirstLaunch()
 
         meshNode = MeshNode(applicationContext, this)
         lobbyNode = LobbyNode(applicationContext, this)
         internetNode = InternetNode(this, applicationContext)
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+
         audioEngine = AudioEngine(
             context = applicationContext,
             onCapturedFrame = ::sendHybridAudio,
@@ -192,18 +288,70 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         clearNearbyRiders("Tap FIND to discover RideMesh riders nearby.")
         applyPowerUi()
 
+        billingManager = RideMeshBillingManager(
+            context = this,
+            onEntitlementChanged = { active ->
+                runOnUiThread {
+                    if (active) continueAfterPremiumUnlock()
+                }
+            },
+            onProductChanged = { product ->
+                runOnUiThread {
+                    billingProduct = product
+                    renderPremiumPage()
+                }
+            },
+            onBillingMessage = { message ->
+                runOnUiThread { android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show() }
+            },
+        )
+        billingManager.start()
+
+        installRideMainNavigation()
+
         binding.createRide.setOnClickListener {
             if (!ensureBetaUsable()) return@setOnClickListener
+            if (!ensurePremiumAccess()) return@setOnClickListener
+            setupMode = SetupMode.CREATE
             binding.setupTitle.text = "CREATE RIDE"
+            binding.startRide.text = "START RIDE"
             binding.rideCode.setText(generateRideCode())
             showScreen(Screen.SETUP)
         }
 
         binding.joinRide.setOnClickListener {
             if (!ensureBetaUsable()) return@setOnClickListener
+            if (!ensurePremiumAccess()) return@setOnClickListener
+            setupMode = SetupMode.JOIN
             binding.setupTitle.text = "JOIN RIDE"
+            binding.startRide.text = "JOIN RIDE"
             showScreen(Screen.SETUP)
             binding.rideCode.requestFocus()
+        }
+
+
+        binding.premiumBack.setOnClickListener {
+            premiumEntryAction = PremiumEntryAction.NONE
+            showScreen(Screen.HOME)
+        }
+        binding.premiumPrimary.setOnClickListener {
+            val product = billingProduct
+            if (product == null) {
+                billingManager.refresh()
+            } else {
+                billingManager.launchPurchase(this)
+            }
+        }
+        binding.premiumRestore.setOnClickListener { billingManager.restorePurchases() }
+        binding.premiumPrivacy.setOnClickListener {
+            runCatching {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://autopilotindia.com/ridemesh-privacy-policy/")))
+            }
+        }
+        binding.premiumTerms.setOnClickListener {
+            runCatching {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/about/play-terms/")))
+            }
         }
 
         binding.backHome.setOnClickListener {
@@ -212,6 +360,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
 
         binding.openSettings.setOnClickListener { showSettingsAndHelpDialog() }
+        binding.activeTopSettings.setOnClickListener { showSettingsAndHelpDialog() }
         binding.activeStop.setOnClickListener { confirmStopRide() }
         binding.activeMute.setOnClickListener { setMicMuted(!micMuted) }
         binding.activeRiders.setOnClickListener { showRidersDialog() }
@@ -240,17 +389,104 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         binding.scanQr.setOnClickListener { scanRideQr() }
 
         refreshBetaAccessUi(showWarning = true)
+        binding.activeVersion.text = appVersionLabel()
         updateMuteUi()
+        binding.logView.visibility = View.GONE
+
+        binding.emailSave.setOnClickListener { saveEmailProfile() }
+        binding.rideCode.doAfterTextChanged { text ->
+            val value = text?.toString().orEmpty().trim().uppercase().take(12)
+            if (value.isNotBlank()) prefs.edit().putString("code", value).apply()
+        }
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                // Rider requirement: Back never tears down an active voice session or exits the app.
+                // The task moves to background; reopening returns to the same activity/ride state.
+                moveTaskToBack(true)
+            }
+        })
+
+        mainHandler.post { ensureUserEmail() }
+    }
+
+    private fun savedUserEmail(): String =
+        prefs.getString(USER_EMAIL_KEY, "").orEmpty().trim()
+
+    private fun hasValidUserEmail(): Boolean =
+        Patterns.EMAIL_ADDRESS.matcher(savedUserEmail()).matches()
+
+    private fun ensureUserEmail(): Boolean {
+        if (hasValidUserEmail()) {
+            binding.screenEmail.visibility = View.GONE
+            return true
+        }
+        showEmailProfileScreen()
+        return false
+    }
+
+    private fun showEmailProfileScreen() {
+        binding.emailInput.setText(savedUserEmail())
+        binding.emailInput.error = null
+        binding.screenEmail.visibility = View.VISIBLE
+        binding.emailInput.requestFocus()
+    }
+
+    private fun riderNameFromEmail(email: String): String {
+        val local = email.substringBefore('@')
+            .replace('.', ' ')
+            .replace('_', ' ')
+            .replace('-', ' ')
+            .trim()
+        val words = local.split(' ').filter { it.isNotBlank() }
+        val display = words.joinToString(" ") { word ->
+            word.lowercase(Locale.ROOT).replaceFirstChar { ch ->
+                if (ch.isLowerCase()) ch.titlecase(Locale.ROOT) else ch.toString()
+            }
+        }.trim()
+        return display.ifBlank { "Rider" }.take(24)
+    }
+
+    private fun saveEmailProfile() {
+        val email = binding.emailInput.text?.toString().orEmpty().trim().lowercase()
+        if (!Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
+            binding.emailInput.error = "Enter a valid email address"
+            binding.emailInput.requestFocus()
+            return
+        }
+
+        val currentName = binding.riderName.text?.toString().orEmpty().trim()
+        val storedName = prefs.getString("rider", "").orEmpty().trim()
+        val shouldCreateName = currentName.isBlank() || currentName.equals("Rider", true) || storedName.isBlank() || storedName.equals("Rider", true)
+        val editor = prefs.edit().putString(USER_EMAIL_KEY, email)
+        if (shouldCreateName) {
+            val generatedName = riderNameFromEmail(email)
+            binding.riderName.setText(generatedName)
+            editor.putString("rider", generatedName)
+        }
+        editor.apply()
+        binding.screenEmail.visibility = View.GONE
     }
 
     private fun showScreen(screen: Screen) {
         binding.screenHome.visibility = if (screen == Screen.HOME) View.VISIBLE else View.GONE
         binding.screenSetup.visibility = if (screen == Screen.SETUP) View.VISIBLE else View.GONE
         binding.screenActive.visibility = if (screen == Screen.ACTIVE) View.VISIBLE else View.GONE
+        binding.screenPremium.visibility = if (screen == Screen.PREMIUM) View.VISIBLE else View.GONE
+        ridersScreen?.visibility = if (screen == Screen.RIDERS) View.VISIBLE else View.GONE
+        liveMapVisible = screen == Screen.MAP
+        liveMapScreen?.visibility = if (liveMapVisible) View.VISIBLE else View.GONE
+        if (liveMapVisible) {
+            ensureLocationSharingPermission()
+            ensureGoogleMapReady()
+            updateLiveMapHeader()
+            renderLiveRiderMap(fitGroup = true)
+        }
     }
 
     private fun ensurePermissionsAndRun(action: PendingAction) {
         if (action == PendingAction.START_RIDE && !ensureBetaUsable()) return
+        if (action == PendingAction.START_RIDE && !ensurePremiumAccess()) return
         val missing = requiredPermissions().filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
@@ -310,20 +546,22 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun showLiveInviteOptions() {
-        val options = arrayOf(
-            "Show QR code",
-            "Share QR code",
-        )
-        AlertDialog.Builder(this)
-            .setTitle("Invite riders")
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> showRideQr()
-                    1 -> shareRideQr()
-                }
+        val code = validatedRideCodeOrNull() ?: return
+        showRideMeshPanel(
+            "INVITE RIDERS",
+            "Share this Ride Code or QR. Riders use Join a Ride and the same code to enter your group.",
+        ) { body, dialog ->
+            addPanelSection(body, "Ride code")
+            addPanelInfo(body, "Current code", code, highlight = true)
+            addPanelButton(body, "SHOW QR CODE") {
+                dialog.dismiss()
+                showRideQr()
             }
-            .setNegativeButton("CLOSE", null)
-            .show()
+            addPanelButton(body, "SHARE QR CODE", primary = false) {
+                dialog.dismiss()
+                shareRideQr()
+            }
+        }
     }
 
     private fun buildRideQrBitmap(code: String): Bitmap {
@@ -340,33 +578,36 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun showRideQr() {
-        val code = normalizedRideCode()
+        val code = validatedRideCodeOrNull() ?: return
         binding.rideCode.setText(code)
         saveSettings()
 
         try {
             val bitmap = buildRideQrBitmap(code)
-            val image = ImageView(this).apply {
-                setImageBitmap(bitmap)
-                adjustViewBounds = true
-                setPadding(24, 24, 24, 24)
+            showRideMeshPanel("RIDE QR", "Scan to join RideMesh ride $code.") { body, dialog ->
+                addPanelInfo(body, "Ride code", code, highlight = true)
+                val image = ImageView(this).apply {
+                    setImageBitmap(bitmap)
+                    adjustViewBounds = true
+                    setPadding(dp(12), dp(12), dp(12), dp(12))
+                    background = panelCardBackground()
+                }
+                body.addView(image, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(6)
+                    bottomMargin = dp(8)
+                })
+                addPanelButton(body, "SHARE QR") {
+                    dialog.dismiss()
+                    shareRideQr()
+                }
             }
-
-            AlertDialog.Builder(this)
-                .setTitle("Invite to $code")
-                .setMessage("Scan this QR to join. Your current conversation stays active.")
-                .setView(image)
-                .setPositiveButton("SHARE") { _, _ -> shareRideQr() }
-                .setNegativeButton("CLOSE", null)
-                .show()
-            log("Showing QR invite for $code")
         } catch (t: Throwable) {
             log("Could not create QR: ${t.message ?: t.javaClass.simpleName}")
         }
     }
 
     private fun shareRideQr() {
-        val code = normalizedRideCode()
+        val code = validatedRideCodeOrNull() ?: return
         try {
             val bitmap = buildRideQrBitmap(code)
             val shareDir = File(cacheDir, "shared").apply { mkdirs() }
@@ -407,6 +648,9 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                     return@addOnSuccessListener
                 }
 
+                setupMode = SetupMode.JOIN
+                binding.setupTitle.text = "JOIN RIDE"
+                binding.startRide.text = "JOIN RIDE"
                 binding.rideCode.setText(code)
                 saveSettings()
                 AlertDialog.Builder(this)
@@ -430,25 +674,37 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         uri.getQueryParameter("ride")
             ?.trim()
             ?.uppercase()
-            ?.takeIf { it.isNotBlank() }
             ?.take(12)
+            ?.takeIf(::isValidRideCode)
     }.getOrNull()
 
     private fun startRideNow() {
         if (rideStarted || !ensureBetaUsable()) return
+        if (!ensureUserEmail()) return
 
+        val code = normalizedRideCode()
+        if (!isValidRideCode(code)) {
+            binding.rideCode.error = "Use 5–12 letters and numbers only"
+            binding.rideCode.requestFocus()
+            return
+        }
+
+        if (transportMode == TransportMode.LOCAL_ONLY && !radiosReady()) {
+            AlertDialog.Builder(this).setMessage("Turn on Wi-Fi and Bluetooth. Mobile data can stay off for offline mesh.")
+                .setPositiveButton("OK", null).show()
+            return
+        }
         setMicMuted(false)
         val rider = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
-        val code = normalizedRideCode()
         binding.riderName.setText(rider)
         binding.rideCode.setText(code)
-        transportMode = TransportMode.INTERNET_ONLY
-        meshLabRole = MeshNode.LabRole.NORMAL
+        val ridePhone = normalizeRiderPhone(binding.riderPhone.text?.toString().orEmpty())
+        binding.riderPhone.setText(ridePhone)
+        prefs.edit().putString(RIDER_PHONE_KEY, ridePhone).apply()
         saveSettings()
 
         try {
             stopLobbyDiscovery()
-            startRideServiceSafely()
 
             rideStarted = true
             directPeerCount = 0
@@ -457,11 +713,22 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             internetConnectedSinceMs = 0L
             lastMeshRefreshMs = 0L
 
-            // Beta4 voice is captured and rendered directly by WebRTC. The old PCM
-            // AudioEngine stays idle so it cannot create a second microphone/audio path.
-            internetNode.start(code, rider, deviceLabel())
-            internetNode.setMuted(micMuted)
+            // Initialize voice first. If a device rejects audio/WebRTC initialization, the
+            // existing recovery path keeps the Activity alive instead of leaving an FGS behind.
+            if (transportMode == TransportMode.LOCAL_ONLY) {
+                audioEngine.packetDecoder = meshNode::decodeForPlayout
+                ensureLocalMeshRunning("offline six-rider test")
+            } else {
+                audioEngine.packetDecoder = null
+                internetNode.start(code, rider, deviceLabel())
+                internetNode.setMuted(micMuted)
+            }
             applySelectedAudioRoute()
+            beginLiveMapSession()
+            RideShutdownCoordinator.register(::shutdownRideRuntimeFromTaskRemoval)
+
+            // Start the foreground ride service only after media initialization succeeds.
+            startRideServiceSafely()
 
             binding.activeRideCode.text = code
             showScreen(Screen.ACTIVE)
@@ -470,14 +737,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
             mainHandler.removeCallbacks(rideWatchdog)
             mainHandler.postDelayed(rideWatchdog, WATCHDOG_INTERVAL_MS)
-            log("Ride started • INTERNET WEBRTC + OPUS • call-safe audio focus enabled")
+            log("Ride started • ${transportModeLabel()} • build 32")
         } catch (t: Throwable) {
             recoverFromStartFailure(t)
         }
     }
 
     private fun sendHybridAudio(audio: ByteArray) {
-        // Beta4 does not send PCM frames from this legacy engine. WebRTC owns voice capture.
+        if (rideStarted && transportMode == TransportMode.LOCAL_ONLY && !micMuted) meshNode.sendLocalAudio(audio)
     }
 
     private fun ensureLocalMeshRunning(reason: String) {
@@ -558,11 +825,17 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private fun updateCapturePolicy() {
         if (!rideStarted) return
+        if (transportMode == TransportMode.LOCAL_ONLY) {
+            audioEngine.setUserMuted(micMuted)
+            audioEngine.startTransmit()
+            updateAudioUi(if (micMuted) "MIC MUTED • LISTENING ONLY" else "OFFLINE OPUS • $directPeerCount DIRECT LINKS")
+            return
+        }
         val status = when {
             micMuted -> "MIC MUTED • LISTENING ONLY"
-            internetNode.voicePeerCount() > 0 -> internetNode.currentAudioStatus()
-            internetNode.isConnected() -> "WEBRTC SIGNALING READY • WAITING FOR RIDERS"
-            else -> "WEBRTC CONNECTING • MIC READY"
+            internetNode.voicePeerCount() > 0 -> "VOICE CONNECTED • MIC LIVE"
+            internetNode.isConnected() -> "VOICE READY • WAITING FOR RIDERS"
+            else -> "CONNECTING • MIC READY"
         }
         updateAudioUi(status)
     }
@@ -578,8 +851,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private fun recoverFromStartFailure(t: Throwable) {
         mainHandler.removeCallbacks(rideWatchdog)
         runCatching { audioEngine.stopTransmit() }
+        runCatching { endLiveMapSession() }
         runCatching { internetNode.stop() }
         runCatching { meshNode.stop() }
+        RideShutdownCoordinator.clear()
         runCatching { stopService(Intent(this, RideService::class.java)) }
 
         rideStarted = false
@@ -593,7 +868,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         AlertDialog.Builder(this)
             .setTitle("Could not start ride")
             .setMessage("RideMesh stayed open. Check Internet access and microphone permission, then try again.")
-            .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
+            .setPositiveButton("REPORT BUG") { _, _ -> openEmailSupport() }
             .setNegativeButton("CLOSE", null)
             .show()
     }
@@ -632,16 +907,18 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         mainHandler.removeCallbacks(rideWatchdog)
         stopLobbyDiscovery()
         audioEngine.stopTransmit()
+        endLiveMapSession()
         internetNode.stop()
         meshRunning = false
         meshNode.stop()
         stopService(Intent(this, RideService::class.java))
+        RideShutdownCoordinator.clear()
 
         rideStarted = false
         directPeerCount = 0
         internetPeerCount = 0
         internetConnectedSinceMs = 0L
-        binding.riderCount.text = "RIDE ACTIVE"
+        binding.riderCount.text = android.text.SpannableString("RIDE ACTIVE").apply { setSpan(android.text.style.ForegroundColorSpan(ContextCompat.getColor(this@MainActivity, R.color.accent)), 5, 11, 0) }
         binding.meshStatus.text = "CONNECTING…"
         binding.networkTile.text = "CONNECTING"
         binding.homeNetworkStatus.text = "WebRTC Voice\nReady"
@@ -660,6 +937,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             R.id.routePhone -> "PHONE"
             R.id.routeHelmet -> "HELMET"
             else -> "AUTO"
+        }
+        if (transportMode == TransportMode.LOCAL_ONLY && ::audioEngine.isInitialized) {
+            audioEngine.setRoute(com.bikemesh.ridemesh.audio.AudioRoute.valueOf(route))
+            return
         }
         if (rideStarted) updateAudioUi(internetNode.setAudioRoute(route))
         else internetNode.setAudioRoute(route)
@@ -685,7 +966,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private fun setMicMuted(muted: Boolean) {
         micMuted = muted
         if (::internetNode.isInitialized) internetNode.setMuted(muted)
-        if (::binding.isInitialized) updateMuteUi()
+        if (::audioEngine.isInitialized) audioEngine.setUserMuted(muted)
+        if (::binding.isInitialized) {
+            updateMuteUi()
+            renderRiderGrid()
+        }
     }
 
     private fun updateMuteUi() {
@@ -704,8 +989,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         )
         binding.rideCode.setText(prefs.getString("code", "RIDE01"))
         binding.batterySaver.isChecked = prefs.getBoolean("battery_smart", true)
-        transportMode = TransportMode.INTERNET_ONLY
-        meshLabRole = MeshNode.LabRole.NORMAL
+        transportMode = if (prefs.getString("transport_mode", "LOCAL_ONLY") == "INTERNET_ONLY")
+            TransportMode.INTERNET_ONLY else TransportMode.LOCAL_ONLY
+        meshLabRole = runCatching {
+            MeshNode.LabRole.valueOf(prefs.getString("mesh_lab_role", "NORMAL") ?: "NORMAL")
+        }.getOrDefault(MeshNode.LabRole.NORMAL)
 
         when (prefs.getString("audio_route", "AUTO")) {
             "PHONE" -> binding.routePhone.isChecked = true
@@ -736,8 +1024,18 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         .orEmpty()
         .trim()
         .uppercase()
-        .ifBlank { "RIDE01" }
         .take(12)
+
+    private fun isValidRideCode(code: String): Boolean =
+        code.length in 5..12 && code.all { it in 'A'..'Z' || it in '0'..'9' }
+
+    private fun validatedRideCodeOrNull(): String? {
+        val code = normalizedRideCode()
+        if (isValidRideCode(code)) return code
+        binding.rideCode.error = "Use 5–12 letters and numbers only"
+        binding.rideCode.requestFocus()
+        return null
+    }
 
     private fun generateRideCode(): String = "RM" + Random.nextInt(1000, 9999)
 
@@ -759,6 +1057,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private fun requiredPermissions(): List<String> = buildList {
         add(Manifest.permission.RECORD_AUDIO)
+        if (transportMode != TransportMode.INTERNET_ONLY) {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                add(Manifest.permission.BLUETOOTH_SCAN)
+                add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             add(Manifest.permission.BLUETOOTH_CONNECT)
         }
@@ -785,6 +1091,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     override fun onInternetState(connected: Boolean, message: String) {
+        if (connected && rideStarted) publishCachedLocalLocationIfDue(force = true)
         runOnUiThread {
             log(message)
             internetConnectedSinceMs = if (connected) System.currentTimeMillis() else 0L
@@ -794,7 +1101,9 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     override fun onInternetPeerCount(count: Int) {
+        val previousCount = internetPeerCount
         internetPeerCount = count
+        if (rideStarted && count > previousCount) publishCachedLocalLocationIfDue(force = true)
         runOnUiThread { updateTransportStatus() }
     }
 
@@ -808,36 +1117,63 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
     }
 
+    override fun onInternetRiderLocation(location: InternetNode.RiderLocation) {
+        if (!rideStarted) return
+        val riderId = location.riderId.toString()
+        val firstLocationFromRider = riderLocations.put(riderId, location) == null
+        runOnUiThread {
+            updateLiveMapHeader()
+            if (liveMapVisible) {
+                if (firstLocationFromRider) lastMapFitMs = 0L
+                renderLiveRiderMap(fitGroup = firstLocationFromRider)
+            }
+        }
+    }
+
     private fun updateTransportStatus() {
         if (!rideStarted) return
+        if (transportMode == TransportMode.LOCAL_ONLY) {
+            val mesh = meshNode.diagnostics()
+            binding.networkTile.text = "OFFLINE"
+            binding.riderCount.text = "OFFLINE TEST"
+            binding.meshStatus.text = "●  ${mesh.reachableRiders} RIDERS • ${mesh.directPeers} DIRECT • MAX ${mesh.maxObservedHops} HOPS"
+            binding.homeNetworkStatus.text = "Offline\nMesh"
+            binding.activeRiders.text = "RIDERS"
+            renderRiderGrid()
+            return
+        }
         val diag = internetNode.diagnostics()
 
         binding.networkTile.text = when {
-            diag.voicePeersConnected > 0 -> "WEBRTC"
-            diag.signalingConnected -> "INTERNET"
-            else -> "NET SEARCH"
+            diag.voicePeersConnected > 0 -> "CONNECTED"
+            diag.signalingConnected -> "READY"
+            else -> "CONNECTING"
         }
-        binding.riderCount.text = "RIDE ACTIVE"
+        binding.riderCount.text = android.text.SpannableString("RIDE ACTIVE").apply { setSpan(android.text.style.ForegroundColorSpan(ContextCompat.getColor(this@MainActivity, R.color.accent)), 5, 11, 0) }
         binding.meshStatus.text = when {
             diag.voicePeersConnected > 0 ->
-                "OPUS VOICE • ${diag.voicePeersConnected} DIRECT PEER${if (diag.voicePeersConnected == 1) "" else "S"}"
-            diag.signalingConnected -> "SIGNALING READY • WAITING FOR RIDERS"
-            else -> "INTERNET RECONNECTING • WEBRTC AUTO RETRY"
+                "●  CONNECTED • LIVE • ${diag.voicePeersConnected + 1} RIDERS"
+            diag.signalingConnected -> "●  CONNECTED • READY"
+            else -> "●  RECONNECTING…"
         }
-        binding.homeNetworkStatus.text = if (internetNode.isConnected()) {
-            "WebRTC Voice\nActive"
-        } else {
-            "WebRTC Voice\nReady"
+        binding.homeNetworkStatus.text = when {
+            diag.voicePeersConnected > 0 -> "Voice\nConnected"
+            diag.signalingConnected -> "Internet\nReady"
+            else -> "Connection\nReady"
         }
 
         val visibleRiderTotal = if (internetNode.isConnected()) internetPeerCount + 1 else 1
-        binding.activeRiders.text = "RIDERS $visibleRiderTotal"
+        binding.activeRiders.text = "RIDERS"
         renderRiderGrid()
+        updateLiveMapHeader()
+        if (liveMapVisible) renderLiveRiderMap(fitGroup = false)
         applyPowerUi()
     }
 
     private fun markRiderSpeaking(key: String) {
-        val expires = System.currentTimeMillis() + SPEAKING_HOLD_MS
+        val now = System.currentTimeMillis()
+        if ((speakingUntilMs[key] ?: 0L) > now + SPEAKING_HOLD_MS - 200L) return
+        val expires = now + SPEAKING_HOLD_MS
         speakingUntilMs[key] = expires
         runOnUiThread {
             renderRiderGrid()
@@ -878,87 +1214,93 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                 )
             }
         } else if (meshRunning) {
-            meshNode.directPeers().forEach { peer ->
+            meshNode.reachablePeers().forEach { peer ->
                 riders += RiderTile(
                     key = peer.endpointId,
                     name = peer.displayName,
                     device = peer.deviceName,
                     qualityBars = peer.qualityBars,
-                    path = "Local",
+                    path = if (peer.hopCount == 1) "Direct offline" else "Relayed • ${peer.hopCount} hops",
                 )
             }
         }
 
-        val visible = riders.take(MAX_VISIBLE_RIDER_TILES)
+        currentRiders = riders.toList()
+        renderRidersScreen()
+        val visible = riders.take(3)
         val grid = binding.riderGrid
         grid.removeAllViews()
-        grid.columnCount = 3
-        grid.rowCount = if (visible.size <= 3) 1 else 2
+        grid.columnCount = 1
+        grid.rowCount = visible.size.coerceAtLeast(1)
 
-        val positions = riderPositions(visible.size)
         visible.forEachIndexed { index, rider ->
-            val (row, col) = positions[index]
             grid.addView(buildRiderTile(rider), GridLayout.LayoutParams().apply {
-                rowSpec = GridLayout.spec(row)
-                columnSpec = GridLayout.spec(col, 1f)
+                rowSpec = GridLayout.spec(index)
+                columnSpec = GridLayout.spec(0, 1f)
                 width = 0
-                height = dp(136)
-                setMargins(dp(3), dp(3), dp(3), dp(3))
+                height = dp(72)
+                setMargins(0, dp(4), 0, dp(4))
             })
         }
     }
 
     private fun buildRiderTile(rider: RiderTile): View {
         val speaking = (speakingUntilMs[rider.key] ?: 0L) > System.currentTimeMillis()
+        val accent = ContextCompat.getColor(this, R.color.accent)
         val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(dp(3), dp(3), dp(3), dp(2))
-        }
-
-        val avatar = TextView(this).apply {
-            text = rider.name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "R"
-            gravity = Gravity.CENTER
-            textSize = 30f
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.white))
-            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(8), dp(10), dp(8))
             background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#101918"))
-                setStroke(
-                    dp(if (speaking) 3 else 1),
-                    if (speaking) ContextCompat.getColor(this@MainActivity, R.color.accent)
-                    else ContextCompat.getColor(this@MainActivity, R.color.border)
-                )
+                cornerRadius = dp(14).toFloat()
+                setColor(Color.parseColor(if (speaking) "#0B1B19" else "#070C0C"))
+                setStroke(dp(if (speaking) 2 else 1), if (speaking) accent else ContextCompat.getColor(this@MainActivity, R.color.border))
             }
         }
-        card.addView(avatar, LinearLayout.LayoutParams(dp(72), dp(72)))
 
-        val name = TextView(this).apply {
+        val avatar = ImageView(this).apply {
+            setImageResource(R.drawable.rm_helmet_avatar)
+            contentDescription = "Rider helmet"
+            setPadding(dp(5), dp(5), dp(5), dp(5))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#031217"))
+                setStroke(dp(1), accent)
+            }
+        }
+        card.addView(avatar, LinearLayout.LayoutParams(dp(48), dp(48)))
+
+        val textBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        textBox.addView(TextView(this).apply {
             text = rider.name.ifBlank { "Rider" }
-            gravity = Gravity.CENTER
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
-            textSize = 14.5f
-            setTextColor(
-                ContextCompat.getColor(
-                    this@MainActivity,
-                    if (speaking) R.color.accent else R.color.white
-                )
-            )
+            textSize = 14f
+            setTextColor(ContextCompat.getColor(this@MainActivity, if (speaking) R.color.accent else R.color.white))
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-        }
-        card.addView(name, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(26)).apply {
-            topMargin = dp(5)
+        })
+        textBox.addView(TextView(this).apply {
+            text = when {
+                rider.path == "Searching" -> "CONNECTING"
+                rider.self -> if (micMuted) "MUTED • YOU" else "LIVE • YOU"
+                speaking -> "LIVE • SPEAKING"
+                else -> "LIVE • CONNECTED"
+            }
+            textSize = 10f
+            setTextColor(if (rider.self || speaking) accent else ContextCompat.getColor(this@MainActivity, R.color.muted))
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(3)
+        })
+        card.addView(textBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginStart = dp(14)
         })
 
-        val quality = TextView(this).apply {
-            text = if (rider.self) "YOU  ${qualityGlyphs(rider.qualityBars)}" else qualityGlyphs(rider.qualityBars)
-            gravity = Gravity.CENTER
-            textSize = 11.5f
-            setTextColor(qualityColor(rider.qualityBars))
-        }
-        card.addView(quality, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(20)))
+        card.addView(SignalBarsView(this, rider.qualityBars, qualityColor(rider.qualityBars)),
+            LinearLayout.LayoutParams(dp(40), dp(36)))
         return card
     }
 
@@ -981,6 +1323,975 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         1 -> Color.parseColor("#FF6B6B")
         2 -> ContextCompat.getColor(this, R.color.amber)
         else -> ContextCompat.getColor(this, R.color.accent)
+    }
+
+    private fun installRideMainNavigation() {
+        if (liveMapScreen != null) return
+
+        binding.screenActive.addView(
+            buildRideMainNav(Screen.ACTIVE),
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(74)).apply {
+                topMargin = dp(4)
+            }
+        )
+
+        val screen = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.BLACK)
+            setPadding(dp(14), dp(12), dp(14), dp(10))
+            visibility = View.GONE
+        }
+
+        val logo = ImageView(this).apply {
+            setImageResource(R.drawable.ridemesh_logo_exact)
+            scaleType = ImageView.ScaleType.FIT_START
+            contentDescription = "RideMesh by Autopilot India"
+        }
+        screen.addView(logo, LinearLayout.LayoutParams(dp(220), dp(58)))
+
+        liveMapStatus = TextView(this).apply {
+            text = "● LIVE • 1 RIDER"
+            textSize = 16f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.accent))
+        }
+        screen.addView(liveMapStatus, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(28)).apply {
+            topMargin = dp(2)
+        })
+
+        liveMapShareStatus = TextView(this).apply {
+            text = "Location shared only with this active RideMesh group"
+            textSize = 10.5f
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.muted))
+        }
+        screen.addView(liveMapShareStatus, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(24)))
+
+        val host = FrameLayout(this).apply {
+            id = View.generateViewId()
+            background = GradientDrawable().apply {
+                cornerRadius = dp(18).toFloat()
+                setColor(Color.parseColor("#07100F"))
+                setStroke(dp(1), ContextCompat.getColor(this@MainActivity, R.color.border))
+            }
+        }
+        liveMapHost = host
+        screen.addView(host, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+            topMargin = dp(6)
+            bottomMargin = dp(8)
+        })
+
+        screen.addView(buildRideMainNav(Screen.MAP), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(74)))
+        (binding.root as ViewGroup).addView(
+            screen,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+        liveMapScreen = screen
+    }
+
+    private fun buildRideMainNav(selected: Screen): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(24).toFloat()
+                setColor(Color.parseColor("#050A0A"))
+                setStroke(dp(1), ContextCompat.getColor(this@MainActivity, R.color.border))
+            }
+        }
+        fun add(label: String, iconRes: Int, selectedHere: Boolean, action: () -> Unit) {
+            val button = MaterialButton(this).apply {
+                text = label
+                textSize = 9.5f
+                setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+                cornerRadius = dp(18)
+                strokeWidth = 0
+                backgroundTintList = ColorStateList.valueOf(
+                    Color.parseColor(if (selectedHere) "#003138" else "#050A0A")
+                )
+                setTextColor(ContextCompat.getColor(this@MainActivity, if (selectedHere) R.color.accent else R.color.muted))
+                setIconResource(iconRes)
+                iconTint = ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, if (selectedHere) R.color.accent else R.color.muted))
+                iconGravity = MaterialButton.ICON_GRAVITY_TOP
+                iconSize = dp(22)
+                iconPadding = dp(2)
+                setOnClickListener { action() }
+            }
+            row.addView(button, LinearLayout.LayoutParams(0, dp(66), 1f).apply {
+                marginStart = dp(1)
+                marginEnd = dp(1)
+            })
+        }
+        add("RIDE", R.drawable.ic_rm_ride, selected == Screen.ACTIVE) {
+            if (rideStarted) showScreen(Screen.ACTIVE) else showScreen(Screen.HOME)
+        }
+        add("MAP", R.drawable.ic_rm_map, selected == Screen.MAP) {
+            if (!rideStarted) {
+                Toast.makeText(this, "Start a RideMesh ride to use the live group map.", Toast.LENGTH_SHORT).show()
+            } else {
+                showScreen(Screen.MAP)
+            }
+        }
+        add("RIDERS", R.drawable.ic_rm_riders, selected == Screen.RIDERS) { showRidersDialog() }
+        add("SETTINGS", R.drawable.ic_rm_settings, false) { showSettingsAndHelpDialog() }
+        return row
+    }
+
+    private fun beginLiveMapSession() {
+        riderLocations.clear()
+        myLiveLocation = null
+        selectedMapRiderId = null
+        lastLocationPublishMs = 0L
+        lastPublishedLocation = null
+        updateLiveMapHeader()
+        mainHandler.removeCallbacks(locationShareHeartbeat)
+        mainHandler.post(locationShareHeartbeat)
+        ensureLocationSharingPermission(promptIfMissing = true)
+    }
+
+    private fun endLiveMapSession() {
+        mainHandler.removeCallbacks(locationShareHeartbeat)
+        stopLiveLocationSharing()
+        riderLocations.clear()
+        myLiveLocation = null
+        selectedMapRiderId = null
+        riderMapMarkers.values.forEach { runCatching { it.remove() } }
+        riderMapMarkers.clear()
+        riderClusterMarkers.values.forEach { it.remove() }
+        riderClusterMarkers.clear()
+        expandedClusterIds = emptySet()
+        dismissLiveRiderDetail()
+        liveMap?.clear()
+        liveMapVisible = false
+        liveMapScreen?.visibility = View.GONE
+    }
+
+    private fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    private fun ensureLocationSharingPermission(promptIfMissing: Boolean = true) {
+        if (!rideStarted) return
+        if (hasLocationPermission()) {
+            startRideServiceSafely()
+            startLiveLocationSharing()
+            return
+        }
+        liveMapStatus?.text = "LOCATION PERMISSION NEEDED • VOICE ACTIVE"
+        if (promptIfMissing) {
+            locationPermissionLauncher.launch(
+                arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
+            )
+        }
+    }
+
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun startLiveLocationSharing() {
+        if (!rideStarted || !hasLocationPermission() || liveLocationCallback != null) return
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, LOCATION_GPS_INTERVAL_MS)
+            .setMinUpdateIntervalMillis(LOCATION_GPS_MIN_INTERVAL_MS)
+            .setMinUpdateDistanceMeters(2f)
+            .setMaxUpdateDelayMillis(LOCATION_GPS_MAX_DELAY_MS)
+            .build()
+        val callback = object : LocationCallback() {
+            override fun onLocationResult(result: LocationResult) {
+                val location = result.lastLocation ?: return
+                handleLocalRideLocation(location)
+            }
+        }
+        liveLocationCallback = callback
+        runCatching {
+            fusedLocationClient?.requestLocationUpdates(request, callback, Looper.getMainLooper())
+        }.onFailure {
+            liveLocationCallback = null
+            liveMapStatus?.text = "GPS UNAVAILABLE • VOICE ACTIVE"
+        }
+    }
+
+    private fun stopLiveLocationSharing() {
+        liveLocationCallback?.let { callback ->
+            runCatching { fusedLocationClient?.removeLocationUpdates(callback) }
+        }
+        liveLocationCallback = null
+        lastPublishedLocation = null
+        lastLocationPublishMs = 0L
+    }
+
+    private fun handleLocalRideLocation(location: Location) {
+        if (!rideStarted) return
+        val speedKmh = if (location.hasSpeed()) (location.speed * 3.6f).coerceAtLeast(0f) else 0f
+        val heading = if (location.hasBearing()) location.bearing else 0f
+        val rider = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
+        val phone = prefs.getString(RIDER_PHONE_KEY, "").orEmpty()
+        val snapshot = InternetNode.RiderLocation(
+            riderId = internetNode.localRiderId(),
+            displayName = rider,
+            latitude = location.latitude,
+            longitude = location.longitude,
+            speedKmh = speedKmh,
+            heading = heading,
+            timestampMs = System.currentTimeMillis(),
+            connectionQuality = internetNode.currentConnectionQualityLabel(),
+            phoneNumber = phone,
+        )
+        myLiveLocation = snapshot
+
+        val now = System.currentTimeMillis()
+        if (shouldPublishRideLocation(location, speedKmh, now) &&
+            internetNode.publishRiderLocation(location.latitude, location.longitude, speedKmh, heading, phone)
+        ) {
+            lastLocationPublishMs = now
+            lastPublishedLocation = Location(location)
+        }
+
+        if (liveMapVisible) renderLiveRiderMap(fitGroup = false)
+    }
+
+    private fun shouldPublishRideLocation(location: Location, speedKmh: Float, now: Long): Boolean {
+        if (!internetNode.isConnected()) return false
+        if (lastLocationPublishMs == 0L) return true
+        val quality = internetNode.currentConnectionQualityLabel()
+        val interval = when {
+            quality.equals("Reconnecting", true) -> 6_000L
+            quality.equals("Poor", true) -> 4_000L
+            speedKmh < 3f -> 5_000L
+            !appInForeground -> 3_000L
+            binding.batterySaver.isChecked -> 1_800L
+            else -> 1_000L
+        }
+        val elapsed = now - lastLocationPublishMs
+        if (elapsed >= interval) return true
+        val previous = lastPublishedLocation ?: return false
+        val moved = previous.distanceTo(location)
+        return moved >= 35f && elapsed >= 750L
+    }
+
+    private fun publishCachedLocalLocationIfDue(force: Boolean) {
+        if (!rideStarted || !hasLocationPermission()) return
+        val snapshot = myLiveLocation ?: return
+        val now = System.currentTimeMillis()
+        if (!force && now - lastLocationPublishMs < LOCATION_STATIONARY_HEARTBEAT_MS) return
+        val phone = prefs.getString(RIDER_PHONE_KEY, "").orEmpty()
+        if (internetNode.publishRiderLocation(
+                snapshot.latitude,
+                snapshot.longitude,
+                snapshot.speedKmh,
+                snapshot.heading,
+                phone,
+            )
+        ) {
+            lastLocationPublishMs = now
+        }
+    }
+
+    private fun shutdownRideRuntimeFromTaskRemoval() {
+        if (!rideStarted) {
+            RideShutdownCoordinator.clear()
+            return
+        }
+        mainHandler.removeCallbacks(stopLobbyScan)
+        mainHandler.removeCallbacks(rideWatchdog)
+        mainHandler.removeCallbacks(locationShareHeartbeat)
+        runCatching { stopLobbyDiscovery() }
+        runCatching { audioEngine.stopTransmit() }
+        runCatching { endLiveMapSession() }
+        runCatching { internetNode.stop() }
+        meshRunning = false
+        runCatching { meshNode.stop() }
+        rideStarted = false
+        directPeerCount = 0
+        internetPeerCount = 0
+        internetConnectedSinceMs = 0L
+        RideShutdownCoordinator.clear()
+        runCatching { audioEngine.release() }
+    }
+
+    private fun updateLiveMapHeader() {
+        if (!::internetNode.isInitialized) return
+        val total = if (rideStarted) internetNode.remotePeerCount() + 1 else 0
+        liveMapStatus?.text = if (rideStarted) "● LIVE • $total RIDER${if (total == 1) "" else "S"}" else "MAP OFFLINE"
+        liveMapShareStatus?.text = if (rideStarted && hasLocationPermission()) {
+            val positionsLive = riderLocations.size + if (myLiveLocation != null) 1 else 0
+            "Location shared with $total rider${if (total == 1) "" else "s"} • $positionsLive position${if (positionsLive == 1) "" else "s"} live"
+        } else if (rideStarted) {
+            "Location not shared • Enable permission to appear on the group map"
+        } else {
+            "Location sharing stops automatically when the ride ends"
+        }
+    }
+
+    private fun mapsApiKeyConfigured(): Boolean = runCatching {
+        val info = packageManager.getApplicationInfo(packageName, PackageManager.GET_META_DATA)
+        info.metaData?.getString("com.google.android.geo.API_KEY").orEmpty().isNotBlank()
+    }.getOrDefault(false)
+
+    private fun ensureGoogleMapReady() {
+        if (liveMap != null) return
+        val host = liveMapHost ?: return
+        if (!mapsApiKeyConfigured()) {
+            host.removeAllViews()
+            host.addView(TextView(this).apply {
+                gravity = Gravity.CENTER
+                text = "GOOGLE MAPS KEY REQUIRED\nVoice and rider location sharing remain available."
+                textSize = 14f
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.muted))
+            }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            return
+        }
+        val tag = LIVE_MAP_FRAGMENT_TAG
+        val fragment = supportFragmentManager.findFragmentByTag(tag) as? SupportMapFragment
+            ?: SupportMapFragment.newInstance()
+        if (!fragment.isAdded) {
+            supportFragmentManager.beginTransaction().replace(host.id, fragment, tag).commitNowAllowingStateLoss()
+        }
+        fragment.getMapAsync { map ->
+            liveMap = map
+            map.uiSettings.apply {
+                isCompassEnabled = true
+                isMapToolbarEnabled = false
+                isZoomControlsEnabled = false
+                isMyLocationButtonEnabled = false
+                isIndoorLevelPickerEnabled = false
+            }
+            runCatching { map.setMapStyle(MapStyleOptions(DARK_MAP_STYLE_JSON)) }
+
+            map.setOnMarkerClickListener { marker ->
+                val tagValue = marker.tag as? String ?: return@setOnMarkerClickListener false
+                if (tagValue.startsWith("cluster:")) {
+                    val ids = tagValue.removePrefix("cluster:")
+                        .split(',')
+                        .map { it.trim() }
+                        .filter { it.isNotBlank() }
+                        .toSet()
+                    if (ids.isNotEmpty()) {
+                        dismissLiveRiderDetail()
+                        selectedMapRiderId = null
+                        expandedClusterIds = ids
+                        mainHandler.removeCallbacks(clusterAutoCollapseRunnable)
+                        mainHandler.postDelayed(clusterAutoCollapseRunnable, MAP_CLUSTER_EXPAND_TIMEOUT_MS)
+                        renderLiveRiderMap(fitGroup = false)
+                    }
+                    return@setOnMarkerClickListener true
+                }
+
+                val riderId = tagValue
+                val mine = myLiveLocation?.riderId?.toString()
+                if (riderId == mine) {
+                    myLiveLocation?.let(::showLiveRiderCard)
+                } else {
+                    selectedMapRiderId = riderId
+                    riderLocations[riderId]?.let(::showLiveRiderCard)
+                }
+                renderLiveRiderMap(fitGroup = false)
+                true
+            }
+
+            map.setOnMapClickListener {
+                dismissLiveRiderDetail()
+                selectedMapRiderId = null
+                if (expandedClusterIds.isNotEmpty()) {
+                    expandedClusterIds = emptySet()
+                    mainHandler.removeCallbacks(clusterAutoCollapseRunnable)
+                }
+                renderLiveRiderMap(fitGroup = false)
+            }
+
+            map.setOnCameraIdleListener {
+                if (liveMapVisible) renderLiveRiderMap(fitGroup = false)
+            }
+            renderLiveRiderMap(fitGroup = true)
+        }
+    }
+
+    private fun renderLiveRiderMap(fitGroup: Boolean) {
+        val map = liveMap ?: return
+        val mine = myLiveLocation
+        val now = System.currentTimeMillis()
+        val all = buildList {
+            mine?.let { add(it) }
+            addAll(riderLocations.values.sortedBy { it.displayName.lowercase(Locale.ROOT) })
+        }
+        if (all.isEmpty()) return
+
+        val projection = map.projection
+        val mineId = mine?.riderId?.toString()
+        val peerQuality = internetNode.remotePeers().associateBy({ it.id.toString() }, { it.qualityLabel })
+        val shownRiderIds = mutableSetOf<String>()
+        val activeClusterKeys = mutableSetOf<String>()
+
+        fun showRider(location: InternetNode.RiderLocation, displayPosition: LatLng) {
+            val id = location.riderId.toString()
+            val self = id == mineId
+            val age = (now - location.timestampMs).coerceAtLeast(0L)
+            val quality = if (self) "You" else peerQuality[id] ?: location.connectionQuality
+            val offline = !self && age >= MAP_OFFLINE_AFTER_MS
+            val selected = selectedMapRiderId == id
+            val statusColor = markerStatusColor(self, selected, quality, offline, age)
+            val distance = if (self || mine == null) null else distanceMeters(mine, location)
+            val icon = BitmapDescriptorFactory.fromBitmap(
+                createRiderMarkerBitmap(
+                    name = if (self) "YOU" else location.displayName.ifBlank { "RIDER" },
+                    speedKmh = location.speedKmh,
+                    distanceMeters = distance,
+                    heading = location.heading,
+                    statusColor = statusColor,
+                    stale = offline,
+                )
+            )
+            val marker = riderMapMarkers[id]
+            if (marker == null) {
+                riderMapMarkers[id] = map.addMarker(
+                    MarkerOptions()
+                        .position(displayPosition)
+                        .icon(icon)
+                        .anchor(0.5f, 1f)
+                        .zIndex(if (self) 8f else if (selected) 7f else 4f)
+                )!!.apply { tag = id }
+            } else {
+                marker.position = displayPosition
+                marker.setIcon(icon)
+                marker.tag = id
+                marker.zIndex = if (self) 8f else if (selected) 7f else 4f
+                marker.isVisible = true
+            }
+            shownRiderIds += id
+        }
+
+        // YOU is never swallowed by a cluster.
+        mine?.let { showRider(it, LatLng(it.latitude, it.longitude)) }
+
+        val remote = all.filter { it.riderId.toString() != mineId }
+        val clusterRadiusPx = dp(MAP_CLUSTER_RADIUS_DP)
+        val clusterRadiusSq = clusterRadiusPx * clusterRadiusPx
+        val groups = mutableListOf<MutableList<InternetNode.RiderLocation>>()
+
+        remote.forEach { location ->
+            val point = projection.toScreenLocation(LatLng(location.latitude, location.longitude))
+            val group = groups.firstOrNull { existing ->
+                val first = existing.first()
+                val firstPoint = projection.toScreenLocation(LatLng(first.latitude, first.longitude))
+                val dx = point.x - firstPoint.x
+                val dy = point.y - firstPoint.y
+                dx * dx + dy * dy <= clusterRadiusSq
+            }
+            if (group == null) groups += mutableListOf(location) else group += location
+        }
+
+        val selfPoint = mine?.let { projection.toScreenLocation(LatLng(it.latitude, it.longitude)) }
+        var expandedClusterStillExists = false
+
+        groups.forEach { group ->
+            val nearSelf = selfPoint != null && group.any { location ->
+                val point = projection.toScreenLocation(LatLng(location.latitude, location.longitude))
+                val dx = point.x - selfPoint.x
+                val dy = point.y - selfPoint.y
+                dx * dx + dy * dy <= clusterRadiusSq
+            }
+            val shouldCluster = group.size >= 2 || nearSelf
+            if (!shouldCluster) {
+                group.forEach { showRider(it, LatLng(it.latitude, it.longitude)) }
+                return@forEach
+            }
+
+            val ids = group.map { it.riderId.toString() }.sorted()
+            val idSet = ids.toSet()
+            val clusterKey = ids.joinToString(",")
+            val expanded = expandedClusterIds == idSet
+            if (expanded) expandedClusterStillExists = true
+
+            if (expanded) {
+                val centerLat = group.map { it.latitude }.average()
+                val centerLon = group.map { it.longitude }.average()
+                val centerPoint = projection.toScreenLocation(LatLng(centerLat, centerLon))
+                val hostWidth = liveMapHost?.width?.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+                val hostHeight = liveMapHost?.height?.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+
+                group.sortedBy { it.displayName.lowercase(Locale.ROOT) }.forEachIndexed { index, location ->
+                    val column = (index % 3) - 1
+                    val row = (index / 3) + 1
+                    val desiredX = centerPoint.x + column * dp(118)
+                    val desiredY = centerPoint.y - row * dp(66)
+                    val x = desiredX.coerceIn(dp(70), (hostWidth - dp(70)).coerceAtLeast(dp(70)))
+                    val y = desiredY.coerceIn(dp(54), (hostHeight - dp(40)).coerceAtLeast(dp(54)))
+                    val displayPosition = projection.fromScreenLocation(android.graphics.Point(x, y))
+                    showRider(location, displayPosition)
+                }
+            } else {
+                // Hide the individual cards while collapsed.
+                ids.forEach { riderMapMarkers[it]?.isVisible = false }
+
+                val centerLat = group.map { it.latitude }.average()
+                val centerLon = group.map { it.longitude }.average()
+                var clusterPosition = LatLng(centerLat, centerLon)
+                if (nearSelf && selfPoint != null) {
+                    val shifted = android.graphics.Point(selfPoint.x, selfPoint.y - dp(62))
+                    clusterPosition = projection.fromScreenLocation(shifted)
+                }
+
+                val clusterIcon = BitmapDescriptorFactory.fromBitmap(
+                    createRiderClusterBitmap(group.size, nearSelf)
+                )
+                val existing = riderClusterMarkers[clusterKey]
+                if (existing == null) {
+                    riderClusterMarkers[clusterKey] = map.addMarker(
+                        MarkerOptions()
+                            .position(clusterPosition)
+                            .icon(clusterIcon)
+                            .anchor(0.5f, 1f)
+                            .zIndex(if (nearSelf) 9f else 6f)
+                    )!!.apply { tag = "cluster:$clusterKey" }
+                } else {
+                    existing.position = clusterPosition
+                    existing.setIcon(clusterIcon)
+                    existing.tag = "cluster:$clusterKey"
+                    existing.zIndex = if (nearSelf) 9f else 6f
+                    existing.isVisible = true
+                }
+                activeClusterKeys += clusterKey
+            }
+        }
+
+        if (expandedClusterIds.isNotEmpty() && !expandedClusterStillExists) {
+            expandedClusterIds = emptySet()
+            mainHandler.removeCallbacks(clusterAutoCollapseRunnable)
+        }
+
+        riderMapMarkers.forEach { (id, marker) ->
+            if (id !in shownRiderIds) marker.isVisible = false
+        }
+        riderClusterMarkers.keys.filter { it !in activeClusterKeys }.toList().forEach { key ->
+            riderClusterMarkers.remove(key)?.remove()
+        }
+
+        if (fitGroup && now - lastMapFitMs >= MAP_AUTO_FIT_COOLDOWN_MS) {
+            fitMapToRiders(all)
+            lastMapFitMs = now
+        }
+    }
+
+    private fun fitMapToRiders(locations: List<InternetNode.RiderLocation>) {
+        val map = liveMap ?: return
+        if (locations.isEmpty()) return
+        if (locations.size == 1) {
+            val one = locations.first()
+            map.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(one.latitude, one.longitude), 15.5f))
+            return
+        }
+        val bounds = LatLngBounds.Builder()
+        locations.forEach { bounds.include(LatLng(it.latitude, it.longitude)) }
+        runCatching {
+            map.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds.build(), dp(64)))
+        }
+    }
+
+    private fun markerStatusColor(self: Boolean, selected: Boolean, quality: String, offline: Boolean, ageMs: Long): Int {
+        if (self || selected) return Color.parseColor("#00E5FF")
+        if (offline) return Color.parseColor("#7E8588")
+        if (ageMs >= MAP_WEAK_AFTER_MS) return Color.parseColor("#FFB020")
+        return when (quality.lowercase(Locale.ROOT)) {
+            "excellent", "good" -> Color.parseColor("#37D67A")
+            "poor" -> Color.parseColor("#FF453A")
+            "reconnecting" -> Color.parseColor("#FF453A")
+            "fair", "weak" -> Color.parseColor("#FFB020")
+            else -> Color.parseColor("#FFB020")
+        }
+    }
+
+    private fun createRiderMarkerBitmap(
+        name: String,
+        speedKmh: Float,
+        distanceMeters: Float?,
+        heading: Float,
+        statusColor: Int,
+        stale: Boolean,
+    ): Bitmap {
+        val width = dp(132)
+        val height = dp(58)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#E6070C0C") }
+        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = statusColor
+            style = Paint.Style.STROKE
+            strokeWidth = dp(if (stale) 1 else 2).toFloat()
+        }
+        val rect = RectF(dp(1).toFloat(), dp(1).toFloat(), (width - dp(1)).toFloat(), (height - dp(7)).toFloat())
+        canvas.drawRoundRect(rect, dp(11).toFloat(), dp(11).toFloat(), bg)
+        canvas.drawRoundRect(rect, dp(11).toFloat(), dp(11).toFloat(), stroke)
+        canvas.drawCircle(dp(15).toFloat(), dp(17).toFloat(), dp(5).toFloat(),
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { color = statusColor })
+        val arrow = Path().apply {
+            moveTo(dp(15).toFloat(), dp(9).toFloat())
+            lineTo(dp(11).toFloat(), dp(21).toFloat())
+            lineTo(dp(15).toFloat(), dp(19).toFloat())
+            lineTo(dp(19).toFloat(), dp(21).toFloat())
+            close()
+        }
+        canvas.save()
+        canvas.rotate(heading, dp(15).toFloat(), dp(17).toFloat())
+        canvas.drawPath(arrow, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        canvas.restore()
+        val title = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; textSize = dp(11).toFloat()
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        }
+        val info = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = if (stale) statusColor else Color.parseColor("#D7E1E0")
+            textSize = dp(8).toFloat()
+        }
+        canvas.drawText(name.uppercase(Locale.ROOT).take(13), dp(27).toFloat(), dp(20).toFloat(), title)
+        val d = when {
+            distanceMeters == null -> "YOU"
+            distanceMeters < 1000f -> "${distanceMeters.roundToInt()} m"
+            distanceMeters < 10_000f -> String.format(Locale.US, "%.1f km", distanceMeters / 1000f)
+            else -> "${(distanceMeters / 1000f).roundToInt()} km"
+        }
+        val detail = "${speedKmh.roundToInt()} km/h • $d" + if (stale) " • LAST" else ""
+        canvas.drawText(detail.take(24), dp(11).toFloat(), dp(39).toFloat(), info)
+        return bitmap
+    }
+
+    private fun createRiderClusterBitmap(count: Int, nearSelf: Boolean): Bitmap {
+        val width = dp(72)
+        val height = dp(58)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val accent = Color.parseColor(if (nearSelf) "#00E5FF" else "#37D67A")
+        val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#F0060B0B") }
+        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = accent
+            style = Paint.Style.STROKE
+            strokeWidth = dp(2).toFloat()
+        }
+        canvas.drawCircle(dp(36).toFloat(), dp(25).toFloat(), dp(22).toFloat(), bg)
+        canvas.drawCircle(dp(36).toFloat(), dp(25).toFloat(), dp(22).toFloat(), stroke)
+        canvas.drawLine(dp(36).toFloat(), dp(47).toFloat(), dp(36).toFloat(), dp(56).toFloat(), stroke)
+
+        val number = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = dp(16).toFloat()
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        }
+        val label = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = accent
+            textSize = dp(7).toFloat()
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        }
+        canvas.drawText(count.toString(), dp(36).toFloat(), dp(27).toFloat(), number)
+        canvas.drawText(if (nearSelf) "NEARBY" else "RIDERS", dp(36).toFloat(), dp(39).toFloat(), label)
+        return bitmap
+    }
+
+    private fun distanceMeters(a: InternetNode.RiderLocation, b: InternetNode.RiderLocation): Float {
+        val out = FloatArray(1)
+        Location.distanceBetween(a.latitude, a.longitude, b.latitude, b.longitude, out)
+        return out[0].coerceAtLeast(0f)
+    }
+
+    private fun formatMapDistance(meters: Float): String = when {
+        meters < 1000f -> "${meters.roundToInt()} m from you"
+        meters < 10_000f -> String.format(Locale.US, "%.1f km from you", meters / 1000f)
+        else -> "${(meters / 1000f).roundToInt()} km from you"
+    }
+
+    private fun formatLastUpdate(timestampMs: Long): String {
+        val seconds = ((System.currentTimeMillis() - timestampMs).coerceAtLeast(0L) / 1000L)
+        return when {
+            seconds <= 2L -> "Now"
+            seconds < 60L -> "$seconds sec ago"
+            else -> "${seconds / 60L} min ago"
+        }
+    }
+
+    private fun dismissLiveRiderDetail() {
+        mainHandler.removeCallbacks(riderDetailAutoHideRunnable)
+        activeRiderDetailDialog?.dismiss()
+        activeRiderDetailDialog = null
+        activeRiderSheetExpanded = false
+    }
+
+    private fun scheduleRiderDetailAutoHide() {
+        mainHandler.removeCallbacks(riderDetailAutoHideRunnable)
+        mainHandler.postDelayed(riderDetailAutoHideRunnable, RIDER_DETAIL_AUTO_HIDE_MS)
+    }
+
+    private fun addRiderSheetStat(
+        parent: LinearLayout,
+        label: String,
+        value: String,
+        highlight: Boolean = false,
+    ) {
+        val cell = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(7), dp(8), dp(7))
+        }
+        cell.addView(TextView(this).apply {
+            text = label.uppercase(Locale.ROOT)
+            textSize = 8f
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.faint))
+        })
+        cell.addView(TextView(this).apply {
+            text = value
+            textSize = 13f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(ContextCompat.getColor(this@MainActivity, if (highlight) R.color.accent else R.color.white))
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(2)
+        })
+        parent.addView(cell, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+    }
+
+    private fun showLiveRiderCard(location: InternetNode.RiderLocation) {
+        dismissLiveRiderDetail()
+
+        val mine = myLiveLocation
+        val self = mine?.riderId == location.riderId
+        val distance = if (self) null else mine?.let { distanceMeters(it, location) }
+        val peer = internetNode.remotePeers().firstOrNull { it.id == location.riderId }
+        val age = System.currentTimeMillis() - location.timestampMs
+        val connection = if (self) {
+            internetNode.currentConnectionQualityLabel()
+        } else if (age >= MAP_OFFLINE_AFTER_MS) {
+            "Last known"
+        } else {
+            peer?.qualityLabel ?: location.connectionQuality
+        }
+
+        val dialog = Dialog(this)
+        activeRiderDetailDialog = dialog
+        activeRiderSheetExpanded = false
+
+        val shell = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(14))
+            background = GradientDrawable().apply {
+                cornerRadii = floatArrayOf(
+                    dp(24).toFloat(), dp(24).toFloat(),
+                    dp(24).toFloat(), dp(24).toFloat(),
+                    0f, 0f, 0f, 0f,
+                )
+                setColor(Color.parseColor("#FA050909"))
+                setStroke(dp(1), Color.parseColor("#30403E"))
+            }
+        }
+
+        shell.addView(View(this).apply {
+            background = GradientDrawable().apply {
+                cornerRadius = dp(3).toFloat()
+                setColor(Color.parseColor("#7C8A88"))
+            }
+        }, LinearLayout.LayoutParams(dp(48), dp(4)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            bottomMargin = dp(8)
+        })
+
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        titleRow.addView(TextView(this).apply {
+            text = if (self) "${location.displayName.ifBlank { "YOU" }.uppercase(Locale.ROOT)}  •  YOU" else location.displayName.ifBlank { "RIDER" }.uppercase(Locale.ROOT)
+            textSize = 19f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.white))
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        titleRow.addView(MaterialButton(this).apply {
+            text = "✕"
+            textSize = 16f
+            minWidth = 0
+            minimumWidth = 0
+            insetTop = 0
+            insetBottom = 0
+            cornerRadius = dp(20)
+            backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, R.color.panel2))
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.white))
+            setOnClickListener { dismissLiveRiderDetail() }
+        }, LinearLayout.LayoutParams(dp(42), dp(42)))
+        shell.addView(titleRow)
+
+        val previewStats = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = panelCardBackground(highlight = self)
+        }
+        addRiderSheetStat(previewStats, "Speed", "${location.speedKmh.roundToInt()} km/h", highlight = true)
+        addRiderSheetStat(previewStats, "Distance", if (self) "YOU" else distance?.let(::formatMapDistance)?.replace(" from you", "") ?: "GPS…")
+        shell.addView(previewStats, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(6)
+        })
+
+        val details = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+
+        val detailStats = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        addRiderSheetStat(detailStats, "Connection", connection)
+        addRiderSheetStat(detailStats, "Last update", if (self) "Now" else formatLastUpdate(location.timestampMs))
+        details.addView(detailStats, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(4)
+        })
+
+        val phone = normalizeRiderPhone(location.phoneNumber)
+        if (phone.isNotBlank()) {
+            val phoneCard = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(9), dp(12), dp(9))
+                background = panelCardBackground()
+            }
+            phoneCard.addView(TextView(this).apply {
+                text = "PHONE (OPTIONAL)"
+                textSize = 8f
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.faint))
+            })
+            phoneCard.addView(TextView(this).apply {
+                text = phone
+                textSize = 14f
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.white))
+            })
+            details.addView(phoneCard, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(6)
+            })
+        }
+
+        if (!self) {
+            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            actions.addView(mapActionButton("NAVIGATE") {
+                dismissLiveRiderDetail()
+                openExternalNavigation(location)
+            }, LinearLayout.LayoutParams(0, dp(50), 1f))
+            actions.addView(mapActionButton("CALL") {
+                dismissLiveRiderDetail()
+                openRiderDialer(location.phoneNumber)
+            }, LinearLayout.LayoutParams(0, dp(50), 1f).apply {
+                marginStart = dp(5); marginEnd = dp(5)
+            })
+            actions.addView(mapActionButton("MESSAGE") {
+                dismissLiveRiderDetail()
+                openRiderMessage(location.phoneNumber)
+            }, LinearLayout.LayoutParams(0, dp(50), 1f))
+            details.addView(actions, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)).apply {
+                topMargin = dp(7)
+            })
+        }
+
+        val expandButton = MaterialButton(this).apply {
+            text = "VIEW DETAILS  ▲"
+            textSize = 10f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            cornerRadius = dp(12)
+            strokeWidth = dp(1)
+            strokeColor = ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, R.color.border))
+            backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, R.color.panel2))
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.accent))
+        }
+
+        fun setExpanded(expanded: Boolean) {
+            activeRiderSheetExpanded = expanded
+            details.visibility = if (expanded) View.VISIBLE else View.GONE
+            expandButton.text = if (expanded) "HIDE DETAILS  ▼" else "VIEW DETAILS  ▲"
+            scheduleRiderDetailAutoHide()
+        }
+        expandButton.setOnClickListener { setExpanded(!activeRiderSheetExpanded) }
+
+        shell.addView(details)
+        shell.addView(expandButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)).apply {
+            topMargin = dp(7)
+        })
+        shell.addView(TextView(this).apply {
+            text = "Tap outside or swipe down to close • Auto hides after 10 seconds"
+            textSize = 8.5f
+            gravity = Gravity.CENTER
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.faint))
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(5)
+        })
+
+        var downY = 0f
+        shell.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    downY = event.rawY
+                    scheduleRiderDetailAutoHide()
+                }
+                android.view.MotionEvent.ACTION_UP -> {
+                    val delta = event.rawY - downY
+                    when {
+                        delta > dp(72) && activeRiderSheetExpanded -> setExpanded(false)
+                        delta > dp(72) -> dismissLiveRiderDetail()
+                        delta < -dp(60) && !activeRiderSheetExpanded -> setExpanded(true)
+                    }
+                }
+            }
+            false
+        }
+
+        dialog.setContentView(shell)
+        dialog.setCancelable(true)
+        dialog.setCanceledOnTouchOutside(true)
+        dialog.setOnDismissListener {
+            mainHandler.removeCallbacks(riderDetailAutoHideRunnable)
+            if (activeRiderDetailDialog === dialog) activeRiderDetailDialog = null
+            activeRiderSheetExpanded = false
+        }
+        dialog.show()
+        dialog.window?.apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            setGravity(Gravity.BOTTOM)
+            setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        scheduleRiderDetailAutoHide()
+    }
+
+    private fun mapActionButton(label: String, action: () -> Unit): MaterialButton = MaterialButton(this).apply {
+        text = label
+        textSize = 9.5f
+        setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+        cornerRadius = dp(12)
+        strokeWidth = dp(1)
+        strokeColor = ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, R.color.accent))
+        backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, R.color.panel2))
+        setTextColor(ContextCompat.getColor(this@MainActivity, R.color.accent))
+        setOnClickListener { action() }
+    }
+
+    private fun openExternalNavigation(location: InternetNode.RiderLocation) {
+        val coordinates = "${location.latitude},${location.longitude}"
+        val appIntent = Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=$coordinates")).apply {
+            setPackage("com.google.android.apps.maps")
+        }
+        try {
+            startActivity(appIntent)
+        } catch (_: ActivityNotFoundException) {
+            val browser = Intent(
+                Intent.ACTION_VIEW,
+                Uri.parse("https://www.google.com/maps/dir/?api=1&destination=${Uri.encode(coordinates)}")
+            )
+            startActivity(browser)
+        }
+    }
+
+    private fun openRiderDialer(phone: String) {
+        val safe = normalizeRiderPhone(phone)
+        if (safe.isBlank()) {
+            Toast.makeText(this, "This rider has not shared a phone number.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$safe")))
+    }
+
+    private fun openRiderMessage(phone: String) {
+        val safe = normalizeRiderPhone(phone)
+        if (safe.isBlank()) {
+            Toast.makeText(this, "This rider has not shared a phone number.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$safe")))
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
@@ -1054,6 +2365,9 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                 .setMessage("$inviterName invited you to $rideCode")
                 .setNegativeButton("DECLINE", null)
                 .setPositiveButton("JOIN") { _, _ ->
+                    setupMode = SetupMode.JOIN
+                    binding.setupTitle.text = "JOIN RIDE"
+                    binding.startRide.text = "JOIN RIDE"
                     binding.rideCode.setText(rideCode)
                     saveSettings()
                     stopLobbyDiscovery()
@@ -1063,164 +2377,439 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
     }
 
-    private fun showRidersDialog() {
-        val me = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
-        val meDevice = deviceLabel()
-        val internetPeers = if (internetNode.isConnected()) internetNode.remotePeers() else emptyList()
-        val localPeers = if (meshRunning) meshNode.directPeers() else emptyList()
-        val riderLines = linkedMapOf<String, String>()
-
-        internetPeers.forEach { peer ->
-            val device = peer.deviceName.ifBlank { "Android device" }
-            val key = "${peer.displayName}|$device".lowercase(Locale.ROOT)
-            riderLines[key] = "• ${peer.displayName}\n  $device • Internet"
-        }
-
-        localPeers.forEach { peer ->
-            val device = peer.deviceName.ifBlank { "Android device" }
-            val key = "${peer.displayName}|$device".lowercase(Locale.ROOT)
-            if (!riderLines.containsKey(key)) {
-                riderLines[key] = "• ${peer.displayName}\n  $device • Local mesh"
-            }
-        }
-
-        val message = buildString {
-            append("YOU\n")
-            append("• $me\n")
-            append("  $meDevice\n\n")
-
-            append("CONNECTED RIDERS")
-            if (riderLines.isEmpty()) {
-                append("\nWaiting for another rider…")
-            } else {
-                append(" (${riderLines.size})\n")
-                append(riderLines.values.joinToString("\n\n"))
-            }
-
-            append("\n\nPath: ")
-            append(
-                when {
-                    internetNode.isConnected() -> "Internet"
-                    directPeerCount > 0 -> "Local mesh"
-                    else -> "Reconnecting"
-                }
+    private fun panelCardBackground(highlight: Boolean = false): GradientDrawable =
+        GradientDrawable().apply {
+            cornerRadius = dp(16).toFloat()
+            setColor(Color.parseColor(if (highlight) "#0B1716" else "#0A0F0F"))
+            setStroke(
+                dp(1),
+                ContextCompat.getColor(this@MainActivity, if (highlight) R.color.accent else R.color.border)
             )
-            append(" • Auto reconnect ON")
         }
 
-        AlertDialog.Builder(this)
-            .setTitle("Riders • ${riderLines.size + 1} total")
-            .setMessage(message)
-            .setPositiveButton("INVITE") { _, _ -> showLiveInviteOptions() }
-            .setNegativeButton("CLOSE", null)
-            .show()
+    private fun showRideMeshPanel(
+        title: String,
+        subtitle: String? = null,
+        buildContent: (LinearLayout, Dialog) -> Unit,
+    ) {
+        val dialog = Dialog(this)
+        val accent = ContextCompat.getColor(this, R.color.accent)
+        val white = ContextCompat.getColor(this, R.color.white)
+        val muted = ContextCompat.getColor(this, R.color.muted)
+
+        val shell = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(20), dp(20), dp(18))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(26).toFloat()
+                setColor(Color.parseColor("#050808"))
+                setStroke(dp(1), Color.parseColor("#19302E"))
+            }
+        }
+
+        shell.addView(TextView(this).apply {
+            text = "RIDE MESH"
+            textSize = 10f
+            letterSpacing = 0.16f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(accent)
+        })
+
+        shell.addView(TextView(this).apply {
+            text = title
+            textSize = 27f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(white)
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(8)
+        })
+
+        if (!subtitle.isNullOrBlank()) {
+            shell.addView(TextView(this).apply {
+                text = subtitle
+                textSize = 13f
+                setTextColor(muted)
+                setLineSpacing(0f, 1.16f)
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(5)
+                bottomMargin = dp(14)
+            })
+        } else {
+            shell.addView(View(this), LinearLayout.LayoutParams(1, dp(12)))
+        }
+
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val scroll = ScrollView(this).apply {
+            isFillViewport = false
+            addView(body, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        shell.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        buildContent(body, dialog)
+
+        addPanelButton(body, "CLOSE", primary = false) { dialog.dismiss() }
+
+        dialog.setContentView(shell)
+        dialog.setCancelable(true)
+        dialog.window?.apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            attributes = attributes.apply { dimAmount = 0.82f }
+        }
+        dialog.show()
+        dialog.window?.setLayout(
+            (resources.displayMetrics.widthPixels * 0.94f).toInt(),
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        )
+    }
+
+    private fun addPanelSection(parent: LinearLayout, label: String) {
+        parent.addView(TextView(this).apply {
+            text = label.uppercase(Locale.ROOT)
+            textSize = 10f
+            letterSpacing = 0.12f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.faint))
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(10)
+            bottomMargin = dp(7)
+        })
+    }
+
+    private fun addPanelInfo(parent: LinearLayout, label: String, value: String, highlight: Boolean = false) {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = panelCardBackground(highlight)
+        }
+        card.addView(TextView(this).apply {
+            text = label.uppercase(Locale.ROOT)
+            textSize = 9.5f
+            letterSpacing = 0.08f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.faint))
+        })
+        card.addView(TextView(this).apply {
+            text = value
+            textSize = 15f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(ContextCompat.getColor(this@MainActivity, if (highlight) R.color.accent else R.color.white))
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(4)
+        })
+        parent.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = dp(8)
+        })
+    }
+
+    private fun addPanelButton(parent: LinearLayout, label: String, primary: Boolean = true, onClick: () -> Unit) {
+        val accent = ContextCompat.getColor(this, R.color.accent)
+        val panel = ContextCompat.getColor(this, R.color.panel2)
+        val button = MaterialButton(this).apply {
+            text = label
+            textSize = 11.5f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            cornerRadius = dp(14)
+            strokeWidth = dp(1)
+            strokeColor = ColorStateList.valueOf(if (primary) accent else ContextCompat.getColor(this@MainActivity, R.color.border))
+            backgroundTintList = ColorStateList.valueOf(if (primary) accent else panel)
+            setTextColor(if (primary) Color.BLACK else ContextCompat.getColor(this@MainActivity, R.color.white))
+            setOnClickListener { onClick() }
+        }
+        parent.addView(button, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)).apply {
+            topMargin = dp(6)
+        })
+    }
+
+    private fun showRiderNameEditor() {
+        showRideMeshPanel("RIDER NAME", "This is the name other riders see. Your email is never shown to the group.") { body, dialog ->
+            val input = EditText(this).apply {
+                setText(binding.riderName.text?.toString().orEmpty())
+                hint = "Rider name"
+                setSingleLine(true)
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.white))
+                setHintTextColor(ContextCompat.getColor(this@MainActivity, R.color.faint))
+                backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, R.color.accent))
+            }
+            body.addView(input, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)).apply {
+                bottomMargin = dp(8)
+            })
+            addPanelButton(body, "SAVE RIDER NAME") {
+                val name = input.text?.toString().orEmpty().trim().take(24)
+                if (name.isBlank()) {
+                    input.error = "Enter a rider name"
+                } else {
+                    binding.riderName.setText(name)
+                    prefs.edit().putString("rider", name).apply()
+                    dialog.dismiss()
+                }
+            }
+        }
+    }
+
+    private fun showRiderPhoneEditor() {
+        showRideMeshPanel(
+            "RIDER PHONE",
+            "Optional. Shared only with riders in your active RideMesh group so they can open the dialer or messaging app."
+        ) { body, dialog ->
+            val input = EditText(this).apply {
+                setText(prefs.getString(RIDER_PHONE_KEY, "").orEmpty())
+                hint = "+91 98765 43210"
+                inputType = InputType.TYPE_CLASS_PHONE
+                setSingleLine(true)
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.white))
+                setHintTextColor(ContextCompat.getColor(this@MainActivity, R.color.faint))
+                backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, R.color.accent))
+            }
+            body.addView(input, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)))
+            addPanelButton(body, "SAVE PHONE") {
+                val phone = normalizeRiderPhone(input.text?.toString().orEmpty())
+                prefs.edit().putString(RIDER_PHONE_KEY, phone).apply()
+                dialog.dismiss()
+            }
+            addPanelButton(body, "REMOVE PHONE", primary = false) {
+                prefs.edit().remove(RIDER_PHONE_KEY).apply()
+                dialog.dismiss()
+            }
+        }
+    }
+
+    private fun normalizeRiderPhone(value: String): String = value
+        .trim()
+        .filter { it.isDigit() || it == '+' || it == ' ' || it == '-' || it == '(' || it == ')' }
+        .take(32)
+
+    private fun showRidersDialog() {
+        if (ridersScreen == null) {
+            val screen = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.parseColor("#020809"))
+                setPadding(dp(16), dp(12), dp(16), dp(4))
+            }
+            val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+            header.addView(MaterialButton(this).apply {
+                text = "‹"; textSize = 28f; contentDescription = "Back to ride"
+                setTextColor(Color.WHITE); backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
+                minWidth = 0; setPadding(0, 0, 0, 0)
+                setOnClickListener { showScreen(Screen.ACTIVE) }
+            }, LinearLayout.LayoutParams(dp(48), dp(56)))
+            header.addView(TextView(this).apply {
+                text = "RIDERS\n8 RIDERS MAX"; textSize = 18f
+                setTextColor(Color.WHITE); setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            }, LinearLayout.LayoutParams(0, dp(56), 1f))
+            header.addView(MaterialButton(this).apply {
+                text = "+"; textSize = 26f; contentDescription = "Invite riders"
+                minWidth = 0; setPadding(0, 0, 0, 0); cornerRadius = dp(24)
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.accent))
+                backgroundTintList = ColorStateList.valueOf(Color.parseColor("#05242A"))
+                setOnClickListener { showLiveInviteOptions() }
+            }, LinearLayout.LayoutParams(dp(48), dp(56)))
+            screen.addView(header)
+            ridersList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val scroll = android.widget.ScrollView(this).apply { addView(ridersList) }
+            screen.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(16) })
+            screen.addView(MaterialButton(this).apply {
+                text = "+  INVITE RIDERS"; textSize = 12f; cornerRadius = dp(14)
+                strokeWidth = dp(1); strokeColor = ColorStateList.valueOf(ContextCompat.getColor(this@MainActivity, R.color.accent))
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.accent))
+                backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
+                setOnClickListener { showLiveInviteOptions() }
+            }, LinearLayout.LayoutParams(-1, dp(60)))
+            screen.addView(TextView(this).apply {
+                text = "8 RIDERS MAX PER GROUP"; textSize = 9f; gravity = Gravity.CENTER
+                letterSpacing = 0.1f; setTextColor(ContextCompat.getColor(this@MainActivity, R.color.muted))
+            }, LinearLayout.LayoutParams(-1, dp(32)))
+            screen.addView(buildRideMainNav(Screen.RIDERS), LinearLayout.LayoutParams(-1, dp(74)))
+            (binding.root as ViewGroup).addView(screen, FrameLayout.LayoutParams(-1, -1))
+            ridersScreen = screen
+        }
+        renderRiderGrid()
+        showScreen(Screen.RIDERS)
+    }
+
+    private fun renderRidersScreen() {
+        val list = ridersList ?: return
+        list.removeAllViews()
+        currentRiders.forEach { rider ->
+            val row = buildRiderTile(rider) as LinearLayout
+            row.background = null
+            val menu = MaterialButton(this).apply {
+                text = "⋮"; textSize = 22f; minWidth = 0; setPadding(0, 0, 0, 0)
+                contentDescription = "Details for ${rider.name}"
+                setTextColor(Color.WHITE); backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
+                setOnClickListener {
+                    showRideMeshPanel(rider.name, if (rider.self) "YOUR RIDER PROFILE" else "RIDER DETAILS") { body, _ ->
+                        addPanelInfo(body, "Device", rider.device.ifBlank { "Unknown device" })
+                        addPanelInfo(body, "Connection", rider.path)
+                        addPanelInfo(body, "Signal", "${rider.qualityBars} of 4")
+                    }
+                }
+            }
+            row.addView(menu, LinearLayout.LayoutParams(dp(48), dp(48)))
+            list.addView(row, LinearLayout.LayoutParams(-1, dp(76)))
+            list.addView(View(this).apply { setBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.border)) }, LinearLayout.LayoutParams(-1, dp(1)))
+        }
+        if (currentRiders.size <= 1) list.addView(TextView(this).apply {
+            text = "Invite your group. Riders appear here when they connect."
+            textSize = 13f; setPadding(dp(12), dp(28), dp(12), dp(28))
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.muted))
+        })
     }
 
     private fun showAudioRouteDialog() {
-        val choices = arrayOf(
-            "Auto — helmet if connected, otherwise phone",
-            "Phone speaker + microphone",
-            "Bluetooth helmet / headset",
-        )
-        val checked = when (binding.audioRoute.checkedRadioButtonId) {
-            R.id.routePhone -> 1
-            R.id.routeHelmet -> 2
-            else -> 0
+        val current = when (binding.audioRoute.checkedRadioButtonId) {
+            R.id.routePhone -> "Phone"
+            R.id.routeHelmet -> "Helmet / headset"
+            else -> "Automatic"
         }
+        showRideMeshPanel("AUDIO", "Choose where RideMesh voice should play. Automatic is recommended while riding.") { body, dialog ->
+            addPanelInfo(body, "Current route", current, highlight = true)
+            addPanelInfo(body, "Voice", if (micMuted) "Microphone muted • listening only" else "Microphone active")
 
-        AlertDialog.Builder(this)
-            .setTitle("Audio route • noise reduction ON")
-            .setSingleChoiceItems(choices, checked) { dialog, which ->
-                when (which) {
-                    1 -> binding.routePhone.isChecked = true
-                    2 -> binding.routeHelmet.isChecked = true
-                    else -> binding.routeAuto.isChecked = true
-                }
+            addPanelSection(body, "Audio route")
+            addPanelButton(body, if (current == "Automatic") "✓  AUTOMATIC" else "AUTOMATIC") {
+                binding.routeAuto.isChecked = true
                 applySelectedAudioRoute()
                 saveSettings()
                 dialog.dismiss()
             }
-            .setNegativeButton("CANCEL", null)
-            .show()
+            addPanelButton(body, if (current == "Phone") "✓  PHONE" else "PHONE", primary = false) {
+                binding.routePhone.isChecked = true
+                applySelectedAudioRoute()
+                saveSettings()
+                dialog.dismiss()
+            }
+            addPanelButton(body, if (current == "Helmet / headset") "✓  HELMET / HEADSET" else "HELMET / HEADSET", primary = false) {
+                binding.routeHelmet.isChecked = true
+                applySelectedAudioRoute()
+                saveSettings()
+                dialog.dismiss()
+            }
+        }
     }
 
-    private fun transportModeLabel(): String = "INTERNET • WEBRTC OPUS"
+    private fun transportModeLabel(): String =
+        if (transportMode == TransportMode.LOCAL_ONLY) "OFFLINE MESH • OPUS" else "INTERNET VOICE"
 
     private fun showTransportModeDialog() {
-        transportMode = TransportMode.INTERNET_ONLY
-        meshLabRole = MeshNode.LabRole.NORMAL
-        saveSettings()
-        AlertDialog.Builder(this)
-            .setTitle("Internet voice engine")
-            .setMessage("Beta4 uses Internet-only WebRTC + Opus. Offline / multi-hop modes are not active in this package so voice stability can be tested independently.")
-            .setPositiveButton("OK", null)
-            .show()
+        if (rideStarted) {
+            AlertDialog.Builder(this).setMessage("End the ride before changing connection mode.")
+                .setPositiveButton("OK", null).show()
+            return
+        }
+        AlertDialog.Builder(this).setTitle("Voice connection")
+            .setSingleChoiceItems(arrayOf("Offline mesh — six-rider test", "Internet voice"),
+                if (transportMode == TransportMode.LOCAL_ONLY) 0 else 1) { dialog, which ->
+                transportMode = if (which == 0) TransportMode.LOCAL_ONLY else TransportMode.INTERNET_ONLY
+                saveSettings()
+                applySelectedAudioRoute()
+                dialog.dismiss()
+            }.setNegativeButton("CANCEL", null).show()
     }
 
     private fun showMeshLabRoleDialog() {
-        val choices = arrayOf(
-            "NORMAL — normal riding group",
-            "A — connects only to B",
-            "B — relay between A and C",
-            "C — connects only to B",
-        )
-        val checked = when (meshLabRole) {
-            MeshNode.LabRole.NORMAL -> 0
-            MeshNode.LabRole.A -> 1
-            MeshNode.LabRole.B -> 2
-            MeshNode.LabRole.C -> 3
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Offline multi-hop lab role")
-            .setSingleChoiceItems(choices, checked) { dialog, which ->
-                meshLabRole = when (which) {
-                    1 -> MeshNode.LabRole.A
-                    2 -> MeshNode.LabRole.B
-                    3 -> MeshNode.LabRole.C
-                    else -> MeshNode.LabRole.NORMAL
-                }
+        val roles = MeshNode.LabRole.values()
+        val choices = arrayOf("NORMAL — automatic nearby links", "A — B only", "B — A and C",
+            "C — B and D", "D — C and E", "E — D and F", "F — E only")
+        AlertDialog.Builder(this).setTitle("Six-phone relay test role")
+            .setSingleChoiceItems(choices, roles.indexOf(meshLabRole)) { dialog, which ->
+                meshLabRole = roles[which]
                 saveSettings()
-                if (rideStarted && transportMode != TransportMode.INTERNET_ONLY) {
-                    restartLocalMeshForRoleOrMode("lab role changed to ${meshLabRole.name}")
-                    updateTransportStatus()
-                    updateCapturePolicy()
+                if (rideStarted && transportMode == TransportMode.LOCAL_ONLY) {
+                    restartLocalMeshForRoleOrMode("test role ${meshLabRole.name}")
                 }
                 dialog.dismiss()
-            }
-            .setNegativeButton("CANCEL", null)
-            .show()
+            }.setNegativeButton("CANCEL", null).show()
     }
 
-    private fun applyTransportModeChange() {
-        transportMode = TransportMode.INTERNET_ONLY
-        meshLabRole = MeshNode.LabRole.NORMAL
-        saveSettings()
-        if (!rideStarted) return
+    private fun ensurePremiumAccess(): Boolean {
+        premiumEntryAction = PremiumEntryAction.NONE
+        return true // Billing-free testing package requested by owner.
+    }
 
-        val rider = binding.riderName.text?.toString().orEmpty().ifBlank { "Rider" }
-        internetNode.stop()
-        internetPeerCount = 0
-        internetNode.start(normalizedRideCode(), rider, deviceLabel())
-        internetNode.setMuted(micMuted)
-        applySelectedAudioRoute()
-        updateTransportStatus()
-        updateCapturePolicy()
+    private fun showPremiumPaywall() {
+        Toast.makeText(this, "Testing build — no subscription required", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun renderPremiumPage() {
+        binding.screenPremium.visibility = View.GONE
+    }
+
+    private fun continueAfterPremiumUnlock() {
+        val action = premiumEntryAction
+        if (action == PremiumEntryAction.NONE) return
+        premiumEntryAction = PremiumEntryAction.NONE
+        when (action) {
+            PremiumEntryAction.CREATE_RIDE -> {
+                binding.setupTitle.text = "CREATE RIDE"
+                binding.rideCode.setText(generateRideCode())
+                showScreen(Screen.SETUP)
+            }
+            PremiumEntryAction.JOIN_RIDE -> {
+                binding.setupTitle.text = "JOIN RIDE"
+                showScreen(Screen.SETUP)
+                binding.rideCode.requestFocus()
+            }
+            PremiumEntryAction.START_RIDE -> {
+                showScreen(Screen.SETUP)
+                ensurePermissionsAndRun(PendingAction.START_RIDE)
+            }
+            PremiumEntryAction.NONE -> Unit
+        }
     }
 
     private fun showSettingsAndHelpDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("RideMesh Beta4 settings & help")
-            .setMessage(
-                "Voice engine: WebRTC + Opus over Internet\n\n" +
-                    "RideMesh automatically yields microphone and playback when a normal phone call, WhatsApp call or another VoIP app takes Android audio focus, then resumes after the call.\n\n" +
-                    "Offline / multi-hop is intentionally disabled in this Beta4 package while we prioritize clear, stable group voice.\n\n" +
-                    betaStatusSentence() + "\n\n" +
-                    "Bug reports: WhatsApp group or direct support +91 9188664823."
-            )
-            .setPositiveButton("VOICE STATUS") { _, _ -> showRideStatusDialog() }
-            .setNeutralButton("ENGINE INFO") { _, _ -> showTransportModeDialog() }
-            .setNegativeButton("CLOSE", null)
-            .show()
+        val email = savedUserEmail().ifBlank { "Not set" }
+        val rider = binding.riderName.text?.toString().orEmpty().ifBlank { riderNameFromEmail(email) }
+        showRideMeshPanel("SETTINGS", "RideMesh profile, support and ride preferences.") { body, dialog ->
+            addPanelSection(body, "Rider profile")
+            addPanelInfo(body, "Rider name", rider, highlight = true)
+            addPanelInfo(body, "Email", email)
+            val phone = prefs.getString(RIDER_PHONE_KEY, "").orEmpty().ifBlank { "Not set" }
+            addPanelInfo(body, "Phone", phone)
+            addPanelSection(body, "App")
+            addPanelInfo(body, "Version", appVersionLabel(), highlight = true)
+            addPanelInfo(body, "Connection", transportModeLabel())
+            addPanelButton(body, "VOICE CONNECTION", primary = false) {
+                dialog.dismiss()
+                showTransportModeDialog()
+            }
+            addPanelButton(body, "OFFLINE TEST ROLE: ${meshLabRole.name}", primary = false) {
+                dialog.dismiss()
+                showMeshLabRoleDialog()
+            }
+            addPanelButton(body, "OFFLINE DIAGNOSTICS", primary = false) {
+                dialog.dismiss()
+                showOfflineDiagnosticsDialog()
+            }
+            addPanelButton(body, "EDIT RIDER NAME") {
+                dialog.dismiss()
+                showRiderNameEditor()
+            }
+            addPanelButton(body, "EDIT PHONE NUMBER", primary = false) {
+                dialog.dismiss()
+                showRiderPhoneEditor()
+            }
+            addPanelButton(body, "CHANGE EMAIL", primary = false) {
+                dialog.dismiss()
+                showEmailProfileScreen()
+            }
+
+            addPanelSection(body, "Support")
+            addPanelButton(body, "EMAIL SUPPORT") {
+                dialog.dismiss()
+                openEmailSupport()
+            }
+            if (rideStarted) {
+                addPanelButton(body, "RIDE STATUS", primary = false) {
+                    dialog.dismiss()
+                    showRideStatusDialog()
+                }
+            }
+        }
     }
 
     private fun ensureBetaFirstLaunch(): Long {
@@ -1239,145 +2828,116 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private fun isBetaExpired(nowMs: Long = System.currentTimeMillis()): Boolean =
         BetaWindow.isExpired(betaFirstLaunchMs(), nowMs)
 
-    private fun betaStatusSentence(): String {
-        val days = betaRemainingDays()
-        return if (days <= 0L) {
-            "Beta access: expired"
+    private fun betaStatusSentence(): String = "Access: active"
+
+    private fun appVersionLabel(): String {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
         } else {
-            "Beta access: $days day${if (days == 1L) "" else "s"} remaining"
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
         }
+        return "RideMesh ${info.versionName ?: "1.0.1"} • Build $versionCode"
     }
 
     private fun refreshBetaAccessUi(showWarning: Boolean) {
-        val days = betaRemainingDays()
-        val expired = days <= 0L
-        binding.betaExpiryStatus.text = if (expired) {
-            "BETA PERIOD ENDED • UPDATE REQUIRED"
-        } else {
-            "BETA ACCESS • $days DAY${if (days == 1L) "" else "S"} REMAINING"
-        }
-        binding.betaExpiryStatus.setTextColor(
-            ContextCompat.getColor(this, if (expired || days <= 3L) R.color.danger else if (days <= 14L) R.color.amber else R.color.accent)
-        )
-        binding.createRide.isEnabled = !expired
-        binding.joinRide.isEnabled = !expired
-        binding.startRide.isEnabled = !expired
-        binding.findNearby.isEnabled = !expired
-
-        if (expired) {
-            showBetaExpiredDialog()
-        } else if (showWarning) {
-            maybeShowBetaWarning(days)
-        }
+        binding.betaExpiryStatus.visibility = View.VISIBLE
+        binding.betaExpiryStatus.text = appVersionLabel()
     }
 
-    private fun ensureBetaUsable(): Boolean {
-        if (!isBetaExpired()) return true
-        refreshBetaAccessUi(showWarning = false)
-        return false
-    }
+    private fun ensureBetaUsable(): Boolean = true
 
-    private fun maybeShowBetaWarning(days: Long) {
-        val bucket = BetaWindow.warningBucket(days) ?: return
-        val lastBucket = prefs.getInt(BETA_WARNING_BUCKET_KEY, 0)
-        if (lastBucket == bucket) return
-        prefs.edit().putInt(BETA_WARNING_BUCKET_KEY, bucket).apply()
-        AlertDialog.Builder(this)
-            .setTitle("RideMesh Beta • $days day${if (days == 1L) "" else "s"} left")
-            .setMessage("This tester build expires 60 days after its first launch. Install the latest RideMesh build before the timer reaches zero.")
-            .setPositiveButton("OK", null)
-            .show()
-    }
+    private fun maybeShowBetaWarning(days: Long) = Unit
 
-    private fun showBetaExpiredDialog() {
-        if (betaExpiredDialogShown || isFinishing || isDestroyed) return
-        betaExpiredDialogShown = true
-        AlertDialog.Builder(this)
-            .setTitle("BETA PERIOD ENDED")
-            .setMessage("This RideMesh Beta build has reached its 60-day test limit. Ride creation and joining are disabled. Please install the latest RideMesh version.")
-            .setPositiveButton("OK", null)
-            .setOnDismissListener { betaExpiredDialogShown = false }
-            .show()
-    }
+    private fun showBetaExpiredDialog() = Unit
 
-    private fun expireActiveRide() {
-        if (!rideStarted) {
-            refreshBetaAccessUi(showWarning = false)
-            return
-        }
-        stopRide()
-        showBetaExpiredDialog()
-    }
+    private fun expireActiveRide() = Unit
 
     private fun showOfflineDiagnosticsDialog() {
-        showRideStatusDialog()
+        val d = meshNode.diagnostics()
+        AlertDialog.Builder(this).setTitle("Offline mesh • build 32")
+            .setMessage("Role: ${meshLabRole}\nDirect links: ${d.directPeers}\nReceived: ${d.receivedPackets}\nRelayed: ${d.relayedPackets}\nMaximum hops: ${d.maxObservedHops}\nAdvertising: ${d.advertisingActive}\nDiscovery: ${d.discoveryActive}\nSend failures: ${d.sendFailures}\nLast error: ${d.lastError}\n\nOpus 16 kHz / 20 ms / 32 kbps target.\nReachable riders: ${d.reachableRiders}\nAudio drops: ${d.droppedAudio}")
+            .setPositiveButton("OK", null).show()
     }
 
     private fun showRideStatusDialog() {
+        if (transportMode == TransportMode.LOCAL_ONLY) { showOfflineDiagnosticsDialog(); return }
         val diag = internetNode.diagnostics()
-        AlertDialog.Builder(this)
-            .setTitle("Ride status • WebRTC + Opus")
-            .setMessage(
-                "Path: Internet WebRTC\n" +
-                    "Codec: ${diag.codec}\n" +
-                    "Signaling: ${if (diag.signalingConnected) "CONNECTED" else "RECONNECTING"}\n" +
-                    "Known riders: ${diag.knownRiders + 1}\n" +
-                    "Voice peers connected: ${diag.voicePeersConnected}\n" +
-                    "SDP offers sent: ${diag.offersSent} • answers: ${diag.answersSent}\n" +
-                    "ICE candidates sent: ${diag.candidatesSent}\n" +
-                    "ICE reconnects: ${diag.reconnects}\n" +
-                    "TURN relay: ${if (diag.turnConfigured) "CONFIGURED" else "NOT CONFIGURED IN THIS BETA"}\n" +
-                    "Last network error: ${diag.lastError.ifBlank { "none" }}\n\n" +
-                    "PEER STATES\n${diag.peerStates}\n\n" +
-                    "Audio: ${binding.audioTile.text}\n" +
-                    "Microphone: ${if (micMuted) "MUTED" else "LIVE"}\n" +
-                    "Call-safe audio focus: ON\n" +
-                    betaStatusSentence()
-            )
-            .setPositiveButton("REPORT BUG") { _, _ -> openWhatsAppBugReport() }
-            .setNegativeButton("CLOSE", null)
-            .show()
-    }
-
-    private fun openWhatsAppBugReport() {
-        val options = arrayOf(
-            "Join RideMesh bug report group",
-            "Send direct WhatsApp report to +91 9188664823",
-        )
-        AlertDialog.Builder(this)
-            .setTitle("Report a RideMesh bug")
-            .setItems(options) { _, which ->
-                if (which == 0) {
-                    openExternalUri(BUG_REPORT_GROUP_URL, "Could not open the RideMesh bug report group")
-                } else {
-                    openDirectWhatsAppBugReport()
-                }
-            }
-            .setNegativeButton("CLOSE", null)
-            .show()
-    }
-
-    private fun openDirectWhatsAppBugReport() {
-        val message = buildString {
-            append("RideMesh bug report\n")
-            append("Ride code: ${normalizedRideCode()}\n")
-            append("Phone: ${Build.MANUFACTURER} ${Build.MODEL}\n")
-            append("Android: ${Build.VERSION.RELEASE}\n")
-            append("Current path: ${if (rideStarted) binding.networkTile.text else "Not riding"}\n")
-            append("Voice engine: WebRTC + Opus\n")
-            if (::internetNode.isInitialized) {
-                val d = internetNode.diagnostics()
-                append("WebRTC: signaling=${d.signalingConnected}, voicePeers=${d.voicePeersConnected}, riders=${d.knownRiders}, offers=${d.offersSent}, answers=${d.answersSent}, iceCandidates=${d.candidatesSent}, reconnects=${d.reconnects}, TURN=${d.turnConfigured}, error=${d.lastError.ifBlank { "none" }}\n")
-                append("Peer states: ${d.peerStates.replace('\n', ';')}\n")
-            }
-            append("Problem: ")
+        val connection = when {
+            diag.voicePeersConnected > 0 -> "Connected"
+            diag.signalingConnected -> "Ready"
+            else -> "Reconnecting…"
         }
-        val url = "https://wa.me/$SUPPORT_WHATSAPP?text=${Uri.encode(message)}"
-        openExternalUri(url, "Could not open WhatsApp bug report")
+        val voice = when {
+            micMuted -> "Muted"
+            diag.voicePeersConnected > 0 -> "Connected"
+            else -> "Ready"
+        }
+        val quality = when {
+            diag.voicePeersConnected > 0 -> "Good"
+            diag.signalingConnected -> "Ready"
+            else -> "Checking"
+        }
+        val riders = (diag.knownRiders + 1).coerceAtLeast(1)
+
+        showRideMeshPanel("RIDE STATUS", "Live rider-facing connection information.") { body, dialog ->
+            addPanelInfo(body, "Connection", connection, highlight = connection == "Connected")
+            addPanelInfo(body, "Voice", voice)
+            addPanelInfo(body, "Riders", "$riders connected")
+            addPanelInfo(body, "Microphone", if (micMuted) "Muted • listening only" else "Active")
+            addPanelInfo(body, "Voice quality", quality)
+            addPanelButton(body, "EMAIL SUPPORT") {
+                dialog.dismiss()
+                openEmailSupport()
+            }
+        }
+    }
+
+    private fun openEmailSupport() {
+        val diag = internetNode.diagnostics()
+        val rideCode = normalizedRideCode().ifBlank { "Not active" }
+        val connection = when {
+            diag.voicePeersConnected > 0 -> "Connected"
+            diag.signalingConnected -> "Ready"
+            else -> "Reconnecting"
+        }
+        val voice = when {
+            micMuted -> "Muted"
+            diag.voicePeersConnected > 0 -> "Connected"
+            else -> "Ready"
+        }
+        val appVersion = runCatching {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "Unknown"
+        }.getOrDefault("Unknown")
+        val subject = "RideMesh Support"
+        val body = buildString {
+            appendLine("Please describe your issue below:")
+            appendLine()
+            appendLine("--------------------------------")
+            appendLine("RideMesh diagnostic information")
+            appendLine("App version: $appVersion")
+            appendLine("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+            appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
+            appendLine("Ride code: $rideCode")
+            appendLine("Connection: $connection")
+            appendLine("Voice: $voice")
+            appendLine("Visible riders: ${(diag.knownRiders + 1).coerceAtLeast(1)}")
+            appendLine("--------------------------------")
+        }
+        val mailUri = Uri.parse(
+            "mailto:$SUPPORT_EMAIL?subject=${Uri.encode(subject)}&body=${Uri.encode(body)}"
+        )
+        val intent = Intent(Intent.ACTION_SENDTO, mailUri)
+        runCatching {
+            startActivity(Intent.createChooser(intent, "Email RideMesh Support"))
+        }.onFailure {
+            Toast.makeText(this, "No email app found", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun openRideMeshCommunity() {
-        openExternalUri(COMMUNITY_URL, "Could not open RideMesh community link")
+        openEmailSupport()
     }
 
     private fun openExternalUri(url: String, failureMessage: String) {
@@ -1411,12 +2971,21 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun log(message: String) {
-        val stamp = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
-        val old = binding.logView.text?.toString().orEmpty()
-        binding.logView.text = "$stamp  $message\n$old".take(7000)
+        // Public build intentionally suppresses verbose transport / infrastructure diagnostics.
+    }
+
+    override fun onResume() {
+        super.onResume()
+        appInForeground = true
+    }
+
+    override fun onPause() {
+        appInForeground = false
+        super.onPause()
     }
 
     override fun onDestroy() {
+        if (::billingManager.isInitialized) billingManager.endConnection()
         saveSettings()
         mainHandler.removeCallbacks(stopLobbyScan)
         mainHandler.removeCallbacks(rideWatchdog)
@@ -1427,8 +2996,36 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     companion object {
+        private const val RIDER_PHONE_KEY = "rider_phone"
+        private const val LIVE_MAP_FRAGMENT_TAG = "ridemesh_live_rider_map"
+        private const val LOCATION_GPS_INTERVAL_MS = 1_000L
+        private const val LOCATION_GPS_MIN_INTERVAL_MS = 750L
+        private const val LOCATION_GPS_MAX_DELAY_MS = 1_500L
+        private const val MAP_WEAK_AFTER_MS = 6_000L
+        private const val MAP_OFFLINE_AFTER_MS = 15_000L
+        private const val MAP_AUTO_FIT_COOLDOWN_MS = 5_000L
+        private const val MAP_CLUSTER_RADIUS_DP = 88
+        private const val MAP_CLUSTER_EXPAND_TIMEOUT_MS = 10_000L
+        private const val RIDER_DETAIL_AUTO_HIDE_MS = 10_000L
+        private const val MAP_RENDER_MIN_INTERVAL_MS = 500L
+        private const val LOCATION_STATIONARY_HEARTBEAT_MS = 5_000L
+        private const val LOCATION_SHARE_HEARTBEAT_CHECK_MS = 1_000L
+        private val DARK_MAP_STYLE_JSON = """
+            [
+              {"elementType":"geometry","stylers":[{"color":"#08100f"}]},
+              {"elementType":"labels.text.fill","stylers":[{"color":"#8fa3a1"}]},
+              {"elementType":"labels.text.stroke","stylers":[{"color":"#08100f"}]},
+              {"featureType":"administrative","elementType":"geometry","stylers":[{"color":"#20302e"}]},
+              {"featureType":"poi","stylers":[{"visibility":"off"}]},
+              {"featureType":"road","elementType":"geometry","stylers":[{"color":"#172321"}]},
+              {"featureType":"road","elementType":"geometry.stroke","stylers":[{"color":"#101817"}]},
+              {"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#203633"}]},
+              {"featureType":"transit","stylers":[{"visibility":"off"}]},
+              {"featureType":"water","elementType":"geometry","stylers":[{"color":"#061b22"}]}
+            ]
+        """.trimIndent()
         private const val SELF_TILE_KEY = "self"
-        private const val MAX_VISIBLE_RIDER_TILES = 6
+        private const val MAX_VISIBLE_RIDER_TILES = 8
         private const val SPEAKING_HOLD_MS = 560L
         private const val LOBBY_SCAN_WINDOW_MS = 20_000L
         private const val WATCHDOG_INTERVAL_MS = 5_000L
@@ -1437,8 +3034,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         private const val LOCAL_MESH_RESTART_SETTLE_MS = 700L
         private const val BETA_FIRST_LAUNCH_KEY = "beta_first_launch_ms_v2"
         private const val BETA_WARNING_BUCKET_KEY = "beta_warning_bucket_v2"
-        private const val SUPPORT_WHATSAPP = "919188664823"
-        private const val BUG_REPORT_GROUP_URL = "https://chat.whatsapp.com/CGToJCBDG6XFGUpeTp7uKW"
-        private const val COMMUNITY_URL = "https://chat.whatsapp.com/GTH7FA1uTUFGRXElnfDfdE"
+        private const val USER_EMAIL_KEY = "user_email_v1"
+        private const val SUPPORT_EMAIL = "salesautopilotindia@gmail.com"
     }
 }

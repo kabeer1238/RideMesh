@@ -67,6 +67,7 @@ class AudioEngine(
      * Beta3 keeps an ordered adaptive jitter buffer for each rider. Good links stay at
      * about 40 ms of prebuffer; unstable links can expand toward 120 ms temporarily.
      */
+    @Volatile var packetDecoder: ((String, ByteArray?) -> ByteArray?)? = null
     private val sourceStates = ConcurrentHashMap<String, SourceState>()
 
     @Volatile private var audioRecord: AudioRecord? = null
@@ -422,7 +423,7 @@ class AudioEngine(
     fun playIncoming(sourceId: String, sequence: Int, timestampMs: Long, audio: ByteArray) {
         if (audio.isEmpty() || !playbackRunning.get() || focusPaused.get()) return
         val key = sourceId.ifBlank { "unknown" }
-        val normalized = when {
+        val normalized = if (packetDecoder != null) audio.copyOf() else when {
             audio.size == FRAME_BYTES -> audio.copyOf()
             audio.size > FRAME_BYTES -> audio.copyOf(FRAME_BYTES)
             else -> audio.copyOf(FRAME_BYTES)
@@ -494,7 +495,7 @@ class AudioEngine(
                 var activeSource = false
 
                 for ((sourceId, state) in sourceStates) {
-                    val frame = synchronized(state) { pullPlayoutFrame(state, nowMs) }
+                    val frame = synchronized(state) { pullPlayoutFrame(sourceId, state, nowMs) }
                     if (frame != null) frames.add(frame)
                     if (nowMs - state.lastSeenMs <= SOURCE_SILENCE_HOLD_MS) activeSource = true
 
@@ -523,7 +524,12 @@ class AudioEngine(
         }
     }
 
-    private fun pullPlayoutFrame(state: SourceState, nowMs: Long): ByteArray? {
+    private fun pullPlayoutFrame(sourceId: String, state: SourceState, nowMs: Long): ByteArray? {
+        while (state.frames.isNotEmpty() && nowMs - state.frames.firstEntry().value.arrivalMs > 140L) {
+            state.frames.pollFirstEntry()
+            state.primed = false
+            state.expectedSequence = null
+        }
         while (state.frames.isNotEmpty()) {
             val expected = state.expectedSequence ?: break
             if (state.frames.firstKey() < expected) state.frames.pollFirstEntry() else break
@@ -539,9 +545,10 @@ class AudioEngine(
         val exact = state.frames.remove(expected)
         if (exact != null) {
             state.expectedSequence = expected + 1
-            state.lastGoodFrame = exact.audio
+            val pcm = decodeFrame(sourceId, exact.audio) ?: return null
+            state.lastGoodFrame = pcm
             state.consecutivePlc = 0
-            return exact.audio
+            return pcm
         }
 
         if (state.frames.isNotEmpty()) {
@@ -550,7 +557,7 @@ class AudioEngine(
             if (gap > 0 && gap <= MAX_PLC_GAP_FRAMES && state.consecutivePlc < MAX_PLC_GAP_FRAMES) {
                 state.expectedSequence = expected + 1
                 state.consecutivePlc++
-                return concealFrame(state.lastGoodFrame, state.consecutivePlc)
+                return if (packetDecoder != null) decodeFrame(sourceId, null) else concealFrame(state.lastGoodFrame, state.consecutivePlc)
             }
 
             // Large gap or sequence reset: resync immediately to the freshest available packet.
@@ -561,8 +568,9 @@ class AudioEngine(
                 val fresh = state.frames.remove(expected)
                 if (fresh != null) {
                     state.expectedSequence = expected + 1
-                    state.lastGoodFrame = fresh.audio
-                    return fresh.audio
+                    val pcm = decodeFrame(sourceId, fresh.audio) ?: return null
+                    state.lastGoodFrame = pcm
+                    return pcm
                 }
             }
         }
@@ -571,9 +579,14 @@ class AudioEngine(
         if (nowMs - state.lastSeenMs <= LATE_PACKET_GRACE_MS && state.consecutivePlc < 1) {
             state.expectedSequence = expected + 1
             state.consecutivePlc++
-            return concealFrame(state.lastGoodFrame, state.consecutivePlc)
+            return if (packetDecoder != null) decodeFrame(sourceId, null) else concealFrame(state.lastGoodFrame, state.consecutivePlc)
         }
         return null
+    }
+
+    private fun decodeFrame(sourceId: String, bytes: ByteArray?): ByteArray? {
+        val decoder = packetDecoder ?: return bytes
+        return runCatching { decoder(sourceId, bytes) }.getOrNull()
     }
 
     private fun concealFrame(previous: ByteArray?, lossIndex: Int): ByteArray? {
@@ -800,7 +813,7 @@ class AudioEngine(
         internal const val FRAME_BYTES = SAMPLES_PER_FRAME * 2
 
         private const val MIN_PRIME_FRAMES = 2          // 40 ms on a clean link
-        private const val MAX_SOURCE_QUEUE_FRAMES = 8   // hard cap: 160 ms
+        private const val MAX_SOURCE_QUEUE_FRAMES = 6   // hard cap: 120 ms
         private const val LATENCY_CATCHUP_MARGIN = 2
         private const val MAX_PLC_GAP_FRAMES = 2        // conceal at most 40 ms
         private const val OLD_PACKET_TOLERANCE = 32

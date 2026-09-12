@@ -18,8 +18,19 @@ class MeshRelayRouter(
     private val onDeliver: (RideMeshEnvelope) -> Unit,
     private val onStatus: (String) -> Unit,
 ) {
-    private val sequence = AtomicInteger(0)
+    // Playout ordering applies only to media. Control traffic must not create
+    // artificial gaps that the receiver mistakes for lost audio frames.
+    private val audioSequence = AtomicInteger(0)
+    private val controlSequence = AtomicInteger(0)
     private val lock = Any()
+    private val relays = java.util.concurrent.atomic.AtomicLong()
+    fun relayCount() = relays.get()
+
+    fun originatePresence(payload: ByteArray): Boolean {
+        val envelope = newEnvelope(RideMeshEnvelope.Type.PRESENCE, payload, DEFAULT_TTL)
+        remember(envelope.messageId)
+        return sendToNeighborsExcept(null, envelope.encode())
+    }
     private val seen = object : LinkedHashMap<UUID, Unit>(SEEN_LIMIT + 1, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<UUID, Unit>?): Boolean = size > SEEN_LIMIT
     }
@@ -58,6 +69,9 @@ class MeshRelayRouter(
             return
         }
 
+        if (envelope.originNodeId == localNodeId) return
+        if (envelope.ttl + envelope.hopCount != DEFAULT_TTL) return
+        if (envelope.previousHopNodeId.toString() != fromNodeId) return
         if (!remember(envelope.messageId)) {
             // Audio duplicates are expected during a dense flood and should be
             // dropped quietly so UI/status is not spammed at 50 frames/second.
@@ -78,6 +92,7 @@ class MeshRelayRouter(
         }
 
         val sent = sendToNeighborsExcept(fromNodeId, forwarded.encode())
+        if (sent) relays.incrementAndGet()
         if (sent && envelope.type != RideMeshEnvelope.Type.AUDIO) {
             onStatus("ROUTER RELAY • ${shortId(envelope.messageId)} • hop ${forwarded.hopCount} • ttl ${forwarded.ttl}")
         }
@@ -88,7 +103,11 @@ class MeshRelayRouter(
             messageId = UUID.randomUUID(),
             originNodeId = localNodeId,
             previousHopNodeId = localNodeId,
-            sequence = sequence.incrementAndGet(),
+            sequence = if (type == RideMeshEnvelope.Type.AUDIO) {
+                audioSequence.incrementAndGet()
+            } else {
+                controlSequence.incrementAndGet()
+            },
             createdAtMs = System.currentTimeMillis(),
             ttl = ttl.coerceIn(0, 255),
             hopCount = 0,
@@ -106,6 +125,6 @@ class MeshRelayRouter(
 
     companion object {
         private const val DEFAULT_TTL = 4
-        private const val SEEN_LIMIT = 2048
+        private const val SEEN_LIMIT = 8192
     }
 }

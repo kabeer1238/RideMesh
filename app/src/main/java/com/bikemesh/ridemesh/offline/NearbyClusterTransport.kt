@@ -26,8 +26,9 @@ class NearbyClusterTransport(
     private val nodeId: String,
     private val riderName: String,
     private val rideToken: String,
-    private val deviceName: String = "Android device",
+    deviceName: String = "Android device",
     private val listener: Listener,
+    private val labRole: Int = 0,
 ) {
     interface Listener {
         fun onStatus(message: String)
@@ -44,7 +45,7 @@ class NearbyClusterTransport(
     )
 
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context.applicationContext)
-    private val scheduler = Executors.newSingleThreadScheduledExecutor()
+    private var scheduler = Executors.newSingleThreadScheduledExecutor()
     private val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()
     private val pendingEndpoints = ConcurrentHashMap.newKeySet<String>()
     private val endpointToNode = ConcurrentHashMap<String, String>()
@@ -58,37 +59,51 @@ class NearbyClusterTransport(
     // retain only the newest frame; older pending frames are discarded. For an
     // intercom, a missing 20 ms frame is far better than hearing speech seconds late.
     private val audioInFlightPayload = ConcurrentHashMap<String, Long>()
-    private val audioLatestPending = ConcurrentHashMap<String, ByteArray>()
+    private val audioLatestPending = ConcurrentHashMap<String, FreshAudioQueue>()
+    private val audioSentAt = ConcurrentHashMap<String, Long>()
+    private val foundEndpoints = ConcurrentHashMap<String, DiscoveredEndpointInfo>()
+    private val pendingSince = ConcurrentHashMap<String, Long>()
+    data class Stats(val advertising: Boolean, val discovering: Boolean, val found: Int,
+        val attempts: Int, val connected: Int, val failed: Int, val pending: Int, val sendFailed: Int)
+    @Volatile private var advertising = false
+    @Volatile private var discovering = false
+    private val attempts = java.util.concurrent.atomic.AtomicInteger()
+    private val successful = java.util.concurrent.atomic.AtomicInteger()
+    private val failures = java.util.concurrent.atomic.AtomicInteger()
+    private val sendFailures = java.util.concurrent.atomic.AtomicInteger()
+    fun stats() = Stats(advertising, discovering, foundEndpoints.size, attempts.get(), successful.get(), failures.get(), pendingEndpoints.size, sendFailures.get())
+    fun refreshDiscovery(reason: String) { if (started) restartDiscovery() }
+    private fun allowed(name: String): Boolean {
+        val parts = name.split('|', limit = 3)
+        if (parts.size != 3 || parts[0] != "RM32") return false
+        val remote = parts[1].toIntOrNull() ?: return false
+        return com.bikemesh.ridemesh.mesh.MeshRelayPolicy.allows(labRole, remote)
+    }
     private val audioDropped = AtomicLong(0)
 
     @Volatile private var started = false
 
-    private val serviceId = "in.autopilotindia.ridemesh.offline.$rideToken"
-    private val localEndpointName = riderName.ifBlank { "Rider" }.take(24)
+    private val serviceId = "in.autopilotindia.ridemesh.offline32.$rideToken"
+    private val localEndpointName = "RM32|$labRole|${sanitize(riderName.ifBlank { "Rider" }).take(24)}"
     private val localDeviceName = sanitize(deviceName.ifBlank { "Android device" }).take(48)
 
     private fun status(message: String) = listener.onStatus("NEARBY DIAG • $message")
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
+            if (!started || endpointId !in connectedEndpoints) return
             val bytes = payload.asBytes() ?: return
             handleMessage(endpointId, bytes)
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
-            val current = audioInFlightPayload[endpointId] ?: return
-            if (current != update.payloadId) return
-
-            when (update.status) {
-                PayloadTransferUpdate.Status.SUCCESS,
-                PayloadTransferUpdate.Status.FAILURE,
-                PayloadTransferUpdate.Status.CANCELED -> {
-                    audioInFlightPayload.remove(endpointId, current)
-                    val newest = audioLatestPending.remove(endpointId)
-                    if (started && connectedEndpoints.contains(endpointId) && newest != null) {
-                        sendRealtimeAudio(endpointId, newest)
-                    }
-                }
+            if (!started || update.status == PayloadTransferUpdate.Status.IN_PROGRESS) return
+            synchronized(audioInFlightPayload) {
+                if (audioInFlightPayload[endpointId] != update.payloadId) return
+                audioInFlightPayload.remove(endpointId)
+                audioSentAt.remove(endpointId)
+                if (update.status != PayloadTransferUpdate.Status.SUCCESS) sendFailures.incrementAndGet()
+                drainAudio(endpointId)
             }
         }
     }
@@ -96,6 +111,10 @@ class NearbyClusterTransport(
     private val lifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
             if (!started) return
+            if (!allowed(info.endpointName) || connectedEndpoints.size >= 5) {
+                client.rejectConnection(endpointId)
+                return
+            }
             val name = info.endpointName.ifBlank { "Android rider" }
             endpointToName[endpointId] = name
             status("CONNECTION INITIATED • $name • ${endpointId.take(6)}")
@@ -106,33 +125,46 @@ class NearbyClusterTransport(
 
         override fun onConnectionResult(endpointId: String, resolution: ConnectionResolution) {
             pendingEndpoints.remove(endpointId)
+            pendingSince.remove(endpointId)
             if (!started) return
             if (resolution.status.isSuccess) {
+                successful.incrementAndGet()
                 retryAfterMs.remove(endpointId)
                 connectedEndpoints.add(endpointId)
                 helloAttempts[endpointId] = 0
                 status("CONNECTED • ${endpointToName[endpointId] ?: endpointId.take(6)} • exchanging identity")
                 sendHello(endpointId)
             } else {
+                failures.incrementAndGet()
                 val code = resolution.status.statusCode
                 retryAfterMs[endpointId] = SystemClock.elapsedRealtime() + RETRY_BACKOFF_MS
                 status("CONNECTION FAILED • code=$code • retry in ${RETRY_BACKOFF_MS / 1000}s")
-                scheduler.schedule({ restartDiscovery() }, RETRY_BACKOFF_MS, TimeUnit.MILLISECONDS)
+                if (connectedEndpoints.isEmpty()) {
+                    scheduler.schedule({ restartDiscovery() }, RETRY_BACKOFF_MS, TimeUnit.MILLISECONDS)
+                }
             }
         }
 
         override fun onDisconnected(endpointId: String) {
+            if (!started) return
+            audioSentAt.remove(endpointId)
+            pendingSince.remove(endpointId)
             connectedEndpoints.remove(endpointId)
             pendingEndpoints.remove(endpointId)
             helloAttempts.remove(endpointId)
             audioInFlightPayload.remove(endpointId)
-            audioLatestPending.remove(endpointId)
+            audioLatestPending.remove(endpointId)?.let { audioDropped.addAndGet(it.droppedCount()) }
             val remoteNode = endpointToNode.remove(endpointId)
             val name = endpointToName.remove(endpointId)
             endpointToDevice.remove(endpointId)
             retryAfterMs[endpointId] = SystemClock.elapsedRealtime() + RETRY_BACKOFF_MS
-            if (remoteNode != null) listener.onPeerDisconnected(remoteNode)
-            if (started) {
+
+            val isNodeStillConnected = remoteNode != null && endpointToNode.values.contains(remoteNode)
+            if (remoteNode != null && !isNodeStillConnected) {
+                listener.onPeerDisconnected(remoteNode)
+            }
+
+            if (started && connectedEndpoints.isEmpty()) {
                 status("DISCONNECTED • ${name ?: endpointId.take(6)} • rediscovering")
                 scheduler.schedule({ restartDiscovery() }, RETRY_BACKOFF_MS, TimeUnit.MILLISECONDS)
             }
@@ -141,10 +173,13 @@ class NearbyClusterTransport(
 
     private val discoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            if (!started || connectedEndpoints.contains(endpointId)) return
+            if (!started || connectedEndpoints.contains(endpointId) || !allowed(info.endpointName)) return
+            foundEndpoints[endpointId] = info
             val name = info.endpointName.ifBlank { "Android rider" }
             endpointToName[endpointId] = name
             status("ENDPOINT FOUND • $name • ${endpointId.take(6)}")
+
+            if (connectedEndpoints.size >= 5) return
 
             val now = SystemClock.elapsedRealtime()
             val waitUntil = retryAfterMs[endpointId] ?: 0L
@@ -157,25 +192,34 @@ class NearbyClusterTransport(
             // Nearby resolves simultaneous requests; the passive/passive variant
             // previously deadlocked the Xiaomi test pair.
             if (!pendingEndpoints.add(endpointId)) return
+            pendingSince[endpointId] = now
+            attempts.incrementAndGet()
             status("REQUESTING CONNECTION • $name")
             client.requestConnection(localEndpointName, endpointId, lifecycleCallback)
                 .addOnSuccessListener { status("REQUEST SENT • $name") }
                 .addOnFailureListener {
+                    if (!started) return@addOnFailureListener
                     pendingEndpoints.remove(endpointId)
+                    pendingSince.remove(endpointId)
+                    failures.incrementAndGet()
                     retryAfterMs[endpointId] = SystemClock.elapsedRealtime() + RETRY_BACKOFF_MS
                     status("REQUEST FAILED • ${shortError(it)} • retrying")
-                    scheduler.schedule({ restartDiscovery() }, RETRY_BACKOFF_MS, TimeUnit.MILLISECONDS)
+                    if (connectedEndpoints.isEmpty()) {
+                        scheduler.schedule({ restartDiscovery() }, RETRY_BACKOFF_MS, TimeUnit.MILLISECONDS)
+                    }
                 }
         }
 
         override fun onEndpointLost(endpointId: String) {
-            pendingEndpoints.remove(endpointId)
+            if (!started) return
+            foundEndpoints.remove(endpointId)
             status("ENDPOINT LOST • ${endpointToName[endpointId] ?: endpointId.take(6)}")
         }
     }
 
     fun start() {
         stop()
+        scheduler = Executors.newSingleThreadScheduledExecutor()
         started = true
         status("STARTING P2P_CLUSTER • service=${rideToken.take(8)} • no hotspot")
         val strategy = Strategy.P2P_CLUSTER
@@ -186,6 +230,8 @@ class NearbyClusterTransport(
             lifecycleCallback,
             AdvertisingOptions.Builder().setStrategy(strategy).build(),
         ).addOnSuccessListener {
+            if (!started) return@addOnSuccessListener
+            advertising = true
             status("ADVERTISING ON • $localEndpointName")
         }.addOnFailureListener {
             status("ADVERTISING FAILED • ${shortError(it)}")
@@ -196,23 +242,43 @@ class NearbyClusterTransport(
             discoveryCallback,
             DiscoveryOptions.Builder().setStrategy(strategy).build(),
         ).addOnSuccessListener {
+            if (!started) return@addOnSuccessListener
+            discovering = true
             status("DISCOVERY ON • searching same-code riders")
         }.addOnFailureListener {
             status("DISCOVERY FAILED • ${shortError(it)}")
         }
 
-        scheduler.scheduleAtFixedRate({
-            if (!started) return@scheduleAtFixedRate
+        scheduler.scheduleWithFixedDelay({
+            if (!started) return@scheduleWithFixedDelay
             val now = SystemClock.elapsedRealtime()
+            pendingSince.entries.filter { now - it.value > 12_000 }.forEach {
+                pendingSince.remove(it.key); pendingEndpoints.remove(it.key)
+                client.disconnectFromEndpoint(it.key)
+                retryAfterMs[it.key] = now + RETRY_BACKOFF_MS
+            }
+            audioSentAt.entries.filter { now - it.value > 1500 }.forEach {
+                audioSentAt.remove(it.key)
+                audioInFlightPayload.remove(it.key)?.let(client::cancelPayload)
+                client.disconnectFromEndpoint(it.key)
+                sendFailures.incrementAndGet()
+            }
+            foundEndpoints.forEach { (endpoint, info) -> discoveryCallback.onEndpointFound(endpoint, info) }
             connectedEndpoints.forEach { endpointId ->
-                if (!endpointToNode.containsKey(endpointId)) sendHello(endpointId)
-                else sendRaw(endpointId, "PING|$now".toByteArray())
+                synchronized(audioInFlightPayload) { drainAudio(endpointId) }
+                if (!endpointToNode.containsKey(endpointId)) {
+                    if ((helloAttempts[endpointId] ?: 0) >= 10) client.disconnectFromEndpoint(endpointId)
+                    else sendHello(endpointId)
+                } else sendRaw(endpointId, "PING|$now".toByteArray())
             }
         }, 1, 1, TimeUnit.SECONDS)
     }
 
     fun stop() {
         started = false
+        scheduler.shutdownNow()
+        advertising = false; discovering = false
+        foundEndpoints.clear(); pendingSince.clear(); audioSentAt.clear()
         runCatching { client.stopAdvertising() }
         runCatching { client.stopDiscovery() }
         runCatching { client.stopAllEndpoints() }
@@ -230,7 +296,7 @@ class NearbyClusterTransport(
 
     fun connectedPeerCount(): Int = endpointToNode.size
     fun firstPeerName(): String? = endpointToNode.entries.firstOrNull()?.key?.let(endpointToName::get)
-    fun realtimeAudioDropped(): Long = audioDropped.get()
+    fun realtimeAudioDropped(): Long = audioDropped.get() + audioLatestPending.values.sumOf { it.droppedCount() }
 
     fun peerSnapshots(): List<PeerSnapshot> = endpointToNode.entries.map { (endpointId, remoteNodeId) ->
         PeerSnapshot(
@@ -240,12 +306,14 @@ class NearbyClusterTransport(
         )
     }.sortedBy { it.riderName.lowercase() }
 
+    @Suppress("unused")
     fun send(payload: ByteArray): Boolean = sendExceptNode(null, payload)
 
     fun sendExceptNode(excludedNodeId: String?, payload: ByteArray): Boolean {
+        if (!started) return false
         val endpoints = connectedEndpoints.filter { endpointId ->
             val peerNodeId = endpointToNode[endpointId]
-            excludedNodeId == null || peerNodeId == null || peerNodeId != excludedNodeId
+            peerNodeId != null && peerNodeId != excludedNodeId
         }
         if (endpoints.isEmpty()) return false
 
@@ -253,53 +321,55 @@ class NearbyClusterTransport(
         DATA_PREFIX.copyInto(encoded)
         payload.copyInto(encoded, DATA_PREFIX.size)
 
-        val isRealtimeAudio = RideMeshEnvelope.decode(payload)?.type == RideMeshEnvelope.Type.AUDIO
-        if (isRealtimeAudio) {
-            endpoints.forEach { endpointId ->
-                if (audioInFlightPayload.containsKey(endpointId)) {
-                    if (audioLatestPending.put(endpointId, encoded) != null) {
-                        val dropped = audioDropped.incrementAndGet()
-                        if (dropped % 250L == 0L) status("VOICE REALTIME • dropped $dropped stale frames • staying live")
-                    }
-                } else {
-                    sendRealtimeAudio(endpointId, encoded)
+        val envelope = RideMeshEnvelope.decode(payload) ?: return false
+        if (envelope.type == RideMeshEnvelope.Type.AUDIO) {
+            synchronized(audioInFlightPayload) {
+                for (endpoint in endpoints) {
+                    audioLatestPending.computeIfAbsent(endpoint) { FreshAudioQueue() }
+                        .offer(envelope.originNodeId.toString(), encoded, SystemClock.elapsedRealtime())
+                    drainAudio(endpoint)
                 }
             }
         } else {
             client.sendPayload(endpoints, Payload.fromBytes(encoded))
-                .addOnFailureListener { status("PAYLOAD BROADCAST FAILED • ${shortError(it)}") }
+                .addOnFailureListener { sendFailures.incrementAndGet() }
         }
         return true
     }
 
-    private fun sendRealtimeAudio(endpointId: String, encoded: ByteArray) {
-        if (!started || !connectedEndpoints.contains(endpointId)) return
-        val payload = Payload.fromBytes(encoded)
-        val previous = audioInFlightPayload.putIfAbsent(endpointId, payload.id)
-        if (previous != null) {
-            if (audioLatestPending.put(endpointId, encoded) != null) audioDropped.incrementAndGet()
-            return
-        }
-
-        client.sendPayload(endpointId, payload)
-            .addOnFailureListener {
-                audioInFlightPayload.remove(endpointId, payload.id)
-                val newest = audioLatestPending.remove(endpointId)
-                if (newest != null && started && connectedEndpoints.contains(endpointId)) {
-                    sendRealtimeAudio(endpointId, newest)
+    private fun drainAudio(endpoint: String) {
+        if (!started || endpoint !in connectedEndpoints || audioInFlightPayload.containsKey(endpoint)) return
+        val bytes = audioLatestPending[endpoint]?.poll(SystemClock.elapsedRealtime()) ?: return
+        val payload = Payload.fromBytes(bytes)
+        audioInFlightPayload[endpoint] = payload.id
+        audioSentAt[endpoint] = SystemClock.elapsedRealtime()
+        client.sendPayload(endpoint, payload).addOnFailureListener {
+            synchronized(audioInFlightPayload) {
+                if (audioInFlightPayload[endpoint] == payload.id) {
+                    audioInFlightPayload.remove(endpoint); audioSentAt.remove(endpoint)
+                    sendFailures.incrementAndGet()
+                    // The periodic tick or next capture retries; do not recurse on immediate failures.
                 }
             }
+        }
     }
 
     private fun restartDiscovery() {
-        if (!started || connectedEndpoints.isNotEmpty()) return
+        if (!started) return
         runCatching { client.stopDiscovery() }
-        pendingEndpoints.clear()
+        discovering = false
+        if (!advertising) {
+            client.startAdvertising(localEndpointName, serviceId, lifecycleCallback,
+                AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build())
+                .addOnSuccessListener { if (started) advertising = true }
+                .addOnFailureListener { if (started) status("ADVERTISING RETRY FAILED • ${shortError(it)}") }
+        }
         client.startDiscovery(
             serviceId,
             discoveryCallback,
             DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build(),
         ).addOnSuccessListener {
+            discovering = true
             status("DISCOVERY RESTARTED • searching same-code riders")
         }.addOnFailureListener {
             status("DISCOVERY RESTART FAILED • ${shortError(it)}")
@@ -307,6 +377,11 @@ class NearbyClusterTransport(
     }
 
     private fun handleMessage(endpointId: String, bytes: ByteArray) {
+        if (!started || endpointId !in connectedEndpoints || bytes.size > RideMeshEnvelope.MAX_PAYLOAD + 100) return
+        if (startsWith(bytes, DATA_PREFIX)) {
+            endpointToNode[endpointId]?.let { listener.onData(it, bytes.copyOfRange(DATA_PREFIX.size, bytes.size)) }
+            return
+        }
         val text = bytes.toString(Charsets.UTF_8)
         when {
             text.startsWith("HELLO|") -> {
@@ -334,8 +409,20 @@ class NearbyClusterTransport(
             return false
         }
         val remoteNode = parts[2]
+        if (runCatching { java.util.UUID.fromString(remoteNode) }.isFailure) {
+            client.disconnectFromEndpoint(endpointId)
+            return false
+        }
         val remoteName = parts[3].ifBlank { endpointToName[endpointId] ?: "Android rider" }
         val remoteDevice = parts.getOrNull(4).orEmpty().ifBlank { "Android device" }
+
+        val existingEndpoint = endpointToNode.entries.firstOrNull { it.value == remoteNode && it.key != endpointId }?.key
+        if (existingEndpoint != null && connectedEndpoints.contains(existingEndpoint)) {
+            status("DUPLICATE ENDPOINT • keeping $existingEndpoint • closing $endpointId")
+            client.disconnectFromEndpoint(endpointId)
+            return false
+        }
+
         val wasNew = endpointToNode.put(endpointId, remoteNode) == null
         endpointToName[endpointId] = remoteName
         endpointToDevice[endpointId] = remoteDevice
@@ -366,6 +453,7 @@ class NearbyClusterTransport(
     private fun hello() = "HELLO|$rideToken|$nodeId|${sanitize(riderName.ifBlank { "Rider" })}|$localDeviceName".toByteArray()
     private fun helloAck() = "HELLO_ACK|$rideToken|$nodeId|${sanitize(riderName.ifBlank { "Rider" })}|$localDeviceName".toByteArray()
     private fun sanitize(value: String): String = value.replace('|', '/').replace('\n', ' ').replace('\r', ' ')
+    @Suppress("SameParameterValue")
     private fun startsWith(bytes: ByteArray, prefix: ByteArray): Boolean = bytes.size >= prefix.size && prefix.indices.all { bytes[it] == prefix[it] }
     private fun shortError(t: Throwable): String = "${t.javaClass.simpleName}: ${t.message.orEmpty().take(90)}"
 

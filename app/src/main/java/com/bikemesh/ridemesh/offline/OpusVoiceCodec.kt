@@ -62,6 +62,15 @@ class OpusVoiceCodec {
         }.getOrNull()
     }
 
+    fun conceal20ms(sourceId: String): ByteArray? = runCatching {
+        val decoder = decoders[sourceId] ?: return null
+        val pcm = ByteArray(PCM_FRAME_BYTES)
+        synchronized(decoder) {
+            decoder.decode(null, 0, 0, pcm, 0, SAMPLES_PER_FRAME, false)
+        }
+        pcm
+    }.getOrNull()
+
     fun forgetPeer(sourceId: String) {
         decoders.remove(sourceId)
     }
@@ -77,9 +86,9 @@ class OpusVoiceCodec {
         const val FRAME_MS = 20
         const val SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_MS / 1000
         const val PCM_FRAME_BYTES = SAMPLES_PER_FRAME * 2
-        const val TARGET_BITRATE_BPS = 20_000
+        const val TARGET_BITRATE_BPS = 32_000
         private const val EXPECTED_PACKET_LOSS_PERCENT = 10
-        private const val ENCODER_COMPLEXITY = 7
+        private const val ENCODER_COMPLEXITY = 5
         private const val MAX_OPUS_BYTES = 256
         private const val MAGIC = 0x4f505631 // OPV1
         private const val VERSION: Byte = 1

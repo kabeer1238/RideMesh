@@ -76,4 +76,32 @@ class InternetNodeTest {
         assertEquals(packet.timestampMs, decoded.timestampMs)
         assertArrayEquals(audio, decoded.audio)
     }
+    @Test
+    fun locationPacketRoundTripsForAndroidIosProtocol() {
+        val node = InternetNode(listener)
+        val id = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        val packet = InternetNode.RiderLocation(
+            riderId = id,
+            displayName = "Faizal",
+            latitude = 10.5276,
+            longitude = 76.2144,
+            speedKmh = 72.5f,
+            heading = 91.0f,
+            timestampMs = 1_725_000_123_456L,
+            connectionQuality = "Excellent",
+            phoneNumber = "+91 98765 43210",
+        )
+        val encoded = node.encodeLocation(packet)
+        val decoded = node.decodeLocation(encoded)
+        assertNotNull(decoded)
+        assertEquals(id, decoded!!.riderId)
+        assertEquals("Faizal", decoded.displayName)
+        assertEquals(packet.latitude, decoded.latitude, 0.000001)
+        assertEquals(packet.longitude, decoded.longitude, 0.000001)
+        assertEquals(packet.speedKmh.toDouble(), decoded.speedKmh.toDouble(), 0.01)
+        assertEquals(packet.heading.toDouble(), decoded.heading.toDouble(), 0.01)
+        assertEquals("Excellent", decoded.connectionQuality)
+        assertEquals("+91 98765 43210", decoded.phoneNumber)
+    }
+
 }
