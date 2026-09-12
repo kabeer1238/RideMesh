@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Helmet shell -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M11,58 C12,37 25,20 45,17 C55,15 64,18 69,22 C61,22 54,25 49,31 C43,38 40,47 38,58 L34,71 L15,71 C12,68 10,64 11,58 Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="3.2" />
+
+    <!-- Helmet crown detail -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M19,37 C29,30 39,28 51,29"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeWidth="2.6" />
+
+    <!-- Visor / face opening -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M15,49 L40,45 L36,59 L22,63 L13,61"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2.8" />
+
+    <!-- Chin line -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M16,71 L13,82 L31,82 L39,72"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="3" />
+
+    <!-- Mesh network links -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M48,36 L62,25 L78,31 L88,47 L84,66 L68,78 L51,68 L44,52 Z M62,25 L63,48 L78,31 M63,48 L88,47 M63,48 L84,66 M63,48 L51,68 M44,52 L63,48 M51,68 L68,78 L84,66"
+        android:strokeColor="#FF00E6E6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2.4" />
+
+    <!-- Mesh nodes -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M62,21 A4,4 0,1 0,62,29 A4,4 0,1 0,62,21 M78,27 A4,4 0,1 0,78,35 A4,4 0,1 0,78,27 M88,43 A4,4 0,1 0,88,51 A4,4 0,1 0,88,43 M84,62 A4,4 0,1 0,84,70 A4,4 0,1 0,84,62 M68,74 A4,4 0,1 0,68,82 A4,4 0,1 0,68,74 M51,64 A4,4 0,1 0,51,72 A4,4 0,1 0,51,64 M44,48 A4,4 0,1 0,44,56 A4,4 0,1 0,44,48 M63,44 A4,4 0,1 0,63,52 A4,4 0,1 0,63,44"
+        android:strokeColor="#FF00E6E6"
+        android:strokeWidth="2.4" />
+</vector>
