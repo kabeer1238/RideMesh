@@ -504,10 +504,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             return
         }
 
-        if (rideStarted && !internetNode.isConnected()) {
+        if (rideStarted && (transportMode != TransportMode.INTERNET_ONLY || !internetNode.isConnected())) {
             AlertDialog.Builder(this)
                 .setTitle("Keep local voice uninterrupted")
-                .setMessage("Nearby rider scanning during a local-only mesh call can compete with the same radio. Share the QR now, or use FIND NEARBY when Internet voice is available.")
+                .setMessage("Hybrid and offline rides need Nearby continuously for voice relaying. Share the QR or ride code to add riders without interrupting the bridge.")
                 .setPositiveButton("SHARE QR") { _, _ -> shareRideQr() }
                 .setNegativeButton("CLOSE", null)
                 .show()
