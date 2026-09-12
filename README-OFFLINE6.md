@@ -1,6 +1,6 @@
 # RideMesh Cyan UI â€” six-rider offline test source (vc32)
 
-STATUS: source implementation prepared; Android build NOT compiled here. No APK is included.
+STATUS: GitHub Actions has passed the Android unit tests and built a signed debug APK. Download the latest successful offline-mesh-v1 workflow artifact. Physical six-phone testing is still required.
 
 ## What this package contains
 The vc31 Cyan UI resources are unchanged. The September 11 source supplies the Opus codec, RME1 packet envelope, relay router, Nearby transport and hotspot reference classes. The active Android path is Nearby P2P_CLUSTER; hotspot and iPhone connectivity are not enabled.
@@ -69,9 +69,9 @@ No radio range, simultaneous-six-speaker quality, riding performance or Androidâ
 - Java routing-policy and real audio-queue checks compiled/executed successfully: six-source chain/ring, partition, alternate route, TTL, lab isolation, per-speaker fairness, stale-frame rejection and queue bound.
 - All XML parsed successfully; all 43 Cyan UI resource files match the supplied vc31 source byte-for-byte.
 - Source checks confirm offline decode callback wiring and absence of Billing SDK imports/dependency or a premium-screen navigation call.
-- Added JVM tests for the actual Kotlin relay router and Opus round trip; these have NOT run here.
-- Gradle testDebugUnitTest + assembleDebug attempted but failed before compilation: services.gradle.org was unreachable. See validation/android-build.log.
+- GitHub Actions passed testDebugUnitTest, including the actual Kotlin relay router and Opus tests, and assembleDebug. Initial successful run: https://github.com/kabeer1238/RideMesh/actions/runs/34662729042.
+- Local Gradle dependency downloads were unavailable; the successful compilation and tests ran on GitHub Actions.
 - No physical phone tests performed.
 
 ## Restoring billing later
-reference/ProductionBillingManager.kt.txt preserves the supplied production billing source outside the compiled app. Restoring it also requires restoring the billing dependency, entitlement checks and subscription UI navigation. Do not enable billing by changing only one boolean.
+The production-vc25-billing8 branch retains the production billing implementation. Restoring it also requires restoring the billing dependency, entitlement checks and subscription UI navigation. Do not enable billing by changing only one boolean.
