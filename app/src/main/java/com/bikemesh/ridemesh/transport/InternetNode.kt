@@ -150,7 +150,7 @@ class InternetNode(
 
     @Volatile private var hybridIdentity: UUID? = null
     private val nodeId: UUID get() = hybridIdentity ?: persistentNodeId
-    private val hybridChannels = ConcurrentHashMap<UUID, DataChannel>()
+    private val hybridChannels = ConcurrentHashMap<UUID, com.bikemesh.ridemesh.offline.ChannelLease<DataChannel>>()
     private val hybridDrops = java.util.concurrent.atomic.AtomicLong()
     private val hybridMode: Boolean get() = hybridIdentity != null
     private val running = AtomicBoolean(false)
@@ -315,7 +315,7 @@ class InternetNode(
     fun sendLocalAudio(audio: ByteArray): Boolean = false
 
     fun hybridPeerIds(): Set<String> = hybridChannels.entries.filter { (_, channel) ->
-        synchronized(channel) { runCatching { channel.state() == DataChannel.State.OPEN }.getOrDefault(false) }
+        channel.use { runCatching { it.state() == DataChannel.State.OPEN }.getOrDefault(false) } == true
     }.map { it.key.toString() }.toSet()
 
     fun hybridDropCount(): Long = hybridDrops.get()
@@ -323,8 +323,9 @@ class InternetNode(
     fun sendHybridPacket(peerId: String, bytes: ByteArray): Boolean {
         if (!running.get() || !hybridMode || bytes.size !in 73..2048) return false
         val id = runCatching { UUID.fromString(peerId) }.getOrNull() ?: return false
-        val channel = hybridChannels[id] ?: return false
-        return synchronized(channel) {
+        val lease = hybridChannels[id] ?: return false
+        return lease.use { channel ->
+            // Never hold Java locks across WebRTC calls: native callbacks can re-enter.
             // No application backlog and no retransmission of old voice frames.
             val sent = runCatching {
                 channel.state() == DataChannel.State.OPEN && channel.bufferedAmount() + bytes.size <= 4096 &&
@@ -332,14 +333,17 @@ class InternetNode(
             }.getOrDefault(false)
             if (!sent) hybridDrops.incrementAndGet()
             sent
-        }
+        } ?: false
     }
 
     private fun registerHybridChannel(peer: UUID, channel: DataChannel) {
-        if (channel.label() != "ridemesh-hybrid33") { channel.close(); return }
-        val existing = hybridChannels.putIfAbsent(peer, channel)
-        if (existing != null && existing !== channel) { channel.close(); return }
-        channel.registerObserver(object : DataChannel.Observer {
+        if (channel.label() != "ridemesh-hybrid33") { channel.close(); channel.dispose(); return }
+        val lease = com.bikemesh.ridemesh.offline.ChannelLease(channel) {
+            runCatching { it.unregisterObserver(); it.close(); it.dispose() }
+            Unit
+        }
+        if (hybridChannels.putIfAbsent(peer, lease) != null) { lease.close(); return }
+        lease.use { it.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
             override fun onStateChange() { notifyPeerCount(force = true) }
             override fun onMessage(buffer: DataChannel.Buffer) {
@@ -348,7 +352,7 @@ class InternetNode(
                 buffer.data.get(bytes)
                 listener.onHybridPacket(peer.toString(), bytes)
             }
-        })
+        }) }
     }
 
     fun setMuted(muted: Boolean) {
@@ -814,11 +818,7 @@ class InternetNode(
         if (sendBye && signalingConnected.get()) {
             publishSignal(SignalPacket(nodeId, peerId, SignalType.BYE))
         }
-        hybridChannels.remove(peerId)?.let { channel ->
-            synchronized(channel) {
-                runCatching { channel.unregisterObserver(); channel.close(); channel.dispose() }
-            }
-        }
+        hybridChannels.remove(peerId)?.close()
         runCatching { session.pc.close() }
         runCatching { session.pc.dispose() }
         notifyPeerCount(force = true)

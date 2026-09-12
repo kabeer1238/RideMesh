@@ -95,6 +95,24 @@ class HybridMeshTest {
         val invalid = frame.encode(); invalid[6] = 2
         assertNull(RideMeshEnvelope.decode(invalid))
     }
+    @Test fun channelCloseDefersDisposalUntilInFlightCallReturns() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val finish = java.util.concurrent.CountDownLatch(1)
+        val disposed = java.util.concurrent.atomic.AtomicInteger()
+        val lease = ChannelLease("native") { disposed.incrementAndGet() }
+        val worker = Thread {
+            lease.use { entered.countDown(); finish.await(2, java.util.concurrent.TimeUnit.SECONDS) }
+        }
+        worker.start()
+        assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        lease.close() // Must not block behind a call waiting on a native callback.
+        assertEquals(0, disposed.get())
+        assertNull(lease.use { it })
+        finish.countDown(); worker.join(2000)
+        assertFalse(worker.isAlive)
+        lease.close()
+        assertEquals(1, disposed.get())
+    }
     @Test fun eightRiderPureLocalChainReachesSevenLinks() {
         val group = Group(); group.online.clear(); group.local.clear()
         for (i in 0..6) group.local.add(i to i+1)
