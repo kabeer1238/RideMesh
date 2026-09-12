@@ -68,6 +68,7 @@ struct ActiveRideView: View {
     }
 
     private var activeMeshStatus: String {
+        if model.hybridEnabled { return model.connectedVoicePeers > 0 ? "\(model.connectedVoicePeers+1) RIDERS • HYBRID" : "FINDING RIDERS • HYBRID" }
         if !model.network.isOnline { return "WAITING FOR INTERNET" }
         if model.connectedVoicePeers > 0 { return "\(model.connectedVoicePeers + 1) RIDERS CONNECTED" }
         return model.voice.diagnostics.signalingConnected ? "READY • WAITING FOR RIDERS" : "RECONNECTING…"

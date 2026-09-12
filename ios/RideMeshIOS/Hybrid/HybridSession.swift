@@ -27,7 +27,7 @@ final class HybridSession: ObservableObject {
         voice.onHybridPacket = { [weak router] in router?.receive(from:$0,data:$1,internet:true) }
         audio.encoded = { [weak router] in router?.originate(kind:2,payload:$0) }
         audio.onError = { [weak self] in self?.summary = "Audio: \($0)" }
-        nearby.start(); audio.start(); heartbeat()
+        nearby.start(); audio.setMuted(false); audio.start(); heartbeat()
         timer = Timer.scheduledTimer(withTimeInterval:2,repeats:true) { [weak self] _ in
             Task { @MainActor in self?.heartbeat() }
         }

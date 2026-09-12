@@ -6,7 +6,7 @@ options:
 packages:
   WebRTC:
     url: https://github.com/stasel/WebRTC.git
-    exactVersion: 151.0.0
+    exactVersion: 152.0.0
   Nearby:
     url: https://github.com/google/nearby.git
     revision: 1b43697f9035ef0c583bb7631a7a281f8fdb4a4b

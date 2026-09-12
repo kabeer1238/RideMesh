@@ -174,6 +174,7 @@ final class RideMeshViewModel: ObservableObject {
     }
 
     var connectionLabel: String {
+        if hybridEnabled && isRideActive { return connectedVoicePeers > 0 ? "HYBRID CONNECTED" : "FINDING RIDERS" }
         if !network.isOnline { return "WAITING FOR INTERNET" }
         if voice.diagnostics.signalingConnected { return "CONNECTED" }
         return isRideActive ? "RECONNECTING…" : "READY"

@@ -54,6 +54,7 @@ struct DiagnosticsSheet: View {
     }
 
     private var connectionText: String {
+        if model.hybridEnabled { return model.connectedVoicePeers > 0 ? "Hybrid connected" : "Finding riders" }
         if !model.network.isOnline { return "Waiting for internet" }
         if model.peers.contains(where: { $0.connectionQuality == .reconnecting }) { return "Reconnecting…" }
         if model.peers.contains(where: { $0.connectionQuality == .poor }) { return "Poor" }
@@ -71,6 +72,7 @@ struct DiagnosticsSheet: View {
     }
 
     private var audioQualityText: String {
+        if model.hybridEnabled { return "Device test required" }
         if !model.network.isOnline { return "Waiting" }
         if model.peers.contains(where: { $0.connectionQuality == .poor }) { return "Poor" }
         if !model.peers.isEmpty && model.peers.allSatisfy({ $0.connectionQuality == .excellent }) { return "Excellent" }

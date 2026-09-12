@@ -4,7 +4,7 @@ import NearbyConnections
 /// Main-queue Nearby transport. RM34 discovery is isolated by ride token before connection.
 final class HybridNearby: NSObject, ConnectionManagerDelegate, AdvertiserDelegate, DiscovererDelegate {
     static let serviceID = "in.autopilotindia.ridemesh.hybrid34"
-    private let manager = ConnectionManager(serviceID: serviceID, strategy: .cluster)
+    private let manager = ConnectionManager(serviceID: HybridNearby.serviceID, strategy: .cluster)
     private lazy var advertiser = Advertiser(connectionManager: manager)
     private lazy var discoverer = Discoverer(connectionManager: manager)
     private let node: UUID
@@ -101,7 +101,7 @@ final class HybridNearby: NSObject, ConnectionManagerDelegate, AdvertiserDelegat
     }
     func advertiser(_ advertiser: Advertiser, didReceiveConnectionRequestFrom endpointID: EndpointID,
                     with context: Data, connectionRequestHandler: @escaping (Bool) -> Void) {
-        let accept = active && allowed(context) && endpoints.count+pending.count < 7
+        let accept = active && allowed(context) && (pending[endpointID] != nil || endpoints.count+pending.count < 7)
         if accept { pending[endpointID] = ProcessInfo.processInfo.systemUptime }
         connectionRequestHandler(accept)
     }

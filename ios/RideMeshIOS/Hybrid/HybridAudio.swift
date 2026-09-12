@@ -118,7 +118,7 @@ final class HybridAudio {
         var mixed = [Float](repeating:0,count:320); var speakers = 0
         for source in Array(pending.keys) {
             if now-lastSeen[source,default:0] > 8 {
-                pending.removeValue(forKey:source); expected.removeValue(forKey:source); losses.removeValue(forKey:source)
+                pending.removeValue(forKey:source); expected.removeValue(forKey:source); losses.removeValue(forKey:source); lastSeen.removeValue(forKey:source)
                 if let d = decoders.removeValue(forKey:source) { opus_decoder_destroy(d) }; continue
             }
             pending[source] = pending[source]!.filter { now-$0.value.1 < 0.14 }

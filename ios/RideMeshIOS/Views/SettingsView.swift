@@ -36,6 +36,7 @@ struct SettingsView: View {
                         RMSettingRow(title: "OFFLINE DISCOVERY", detail: "Direct nearby RideMesh pairing test", symbol: "antenna.radiowaves.left.and.right")
                             .contentShape(Rectangle())
                             .onTapGesture { dismiss(); model.showOfflineDiscovery = true }
+                            .disabled(model.isRideActive && model.hybridEnabled)
 
                         Rectangle().fill(RideMeshTheme.border).frame(height: 1)
 

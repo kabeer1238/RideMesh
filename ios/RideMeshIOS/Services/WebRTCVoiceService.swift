@@ -602,6 +602,7 @@ final class WebRTCVoiceService: NSObject, ObservableObject {
     }
 
     private func replacePeerForIncomingOffer(_ id: UUID) {
+        if let channel = hybridChannels.removeValue(forKey:id) { channel.delegate = nil; channel.close() }
         if let old = sessions.removeValue(forKey: id) {
             old.disconnectTask?.cancel()
             old.pc.close()
@@ -1132,7 +1133,7 @@ final class WebRTCVoiceService: NSObject, ObservableObject {
     private func refreshDiagnostics() {
         diagnostics.signalingConnected = signaling.connected
         diagnostics.knownRiders = signaling.peers.count
-        diagnostics.voicePeersConnected = sessions.values.filter(\.connected).count
+        diagnostics.voicePeersConnected = hybridMode ? hybridPeerIDs.count : sessions.values.filter(\.connected).count
         diagnostics.reconnects = signaling.reconnects
         diagnostics.remoteSpeechActive = remoteSpeechActive
         diagnostics.localSpeechActive = localSpeechActive
