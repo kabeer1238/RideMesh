@@ -226,6 +226,10 @@ final class RideMeshViewModel: ObservableObject {
     func startRide() {
         guard !isRideActive else { return }
         let code = normalizedRideCode
+        guard !hybridEnabled || code.range(of:"^[A-Z0-9]{5,12}$",options:.regularExpression) != nil else {
+            errorMessage = "For hybrid rides use 5–12 letters and numbers, matching Android."
+            return
+        }
         guard code.count >= 5 else {
             errorMessage = "Ride code must be at least 5 characters."
             return

@@ -27,6 +27,12 @@ final class HybridAudio {
     var onError: (String) -> Void = { _ in }
     func setMuted(_ value: Bool) { work.async { self.muted = value; self.pcm.removeAll() } }
     func start() { work.async { self.startOnQueue() } }
+    func recoverStoppedRoute() {
+        work.async {
+            // An explicit stop/interruption sets engine to nil and must not restart.
+            if let engine = self.engine, !engine.isRunning { self.startOnQueue() }
+        }
+    }
     func stop() { work.sync { stopOnQueue() } }
     private func stopOnQueue() {
         generation = UUID(); timer?.cancel(); timer = nil
