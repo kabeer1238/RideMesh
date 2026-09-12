@@ -15,6 +15,11 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: ios/build
+          key: ios-native-v1-${{ runner.arch }}-${{ hashFiles('ios/project.yml') }}-${{ github.run_id }}
+          restore-keys: ios-native-v1-${{ runner.arch }}-${{ hashFiles('ios/project.yml') }}-
       - name: Test hybrid routing
         working-directory: ios
         run: |
@@ -30,6 +35,11 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild -project RideMeshIOS.xcodeproj -scheme RideMeshIOS -configuration Debug -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build.log
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ios/build
+          key: ios-native-v1-${{ runner.arch }}-${{ hashFiles('ios/project.yml') }}-${{ github.run_id }}
       - name: Package unsigned build and source
         working-directory: ios
         run: |

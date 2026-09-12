@@ -79,7 +79,7 @@ final class HybridAudio {
                     self.pcm.append(contentsOf:UnsafeBufferPointer(start:samples,count:Int(converted.frameLength)))
                     while self.pcm.count >= 320 {
                         var packet = [UInt8](repeating:0,count:256)
-                        let count = self.pcm.withUnsafeBufferPointer { opus_encode_float(encoder,$0.baseAddress,320,&packet,256) }
+                        let count = self.pcm.withUnsafeBufferPointer { opus_encode_float(encoder,$0.baseAddress!,320,&packet,256) }
                         self.pcm.removeFirst(320)
                         if count > 0 {
                             var data = Data([0x4f,0x50,0x56,0x31,1,UInt8(count >> 8),UInt8(truncatingIfNeeded:count)])
