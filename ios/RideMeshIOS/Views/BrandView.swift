@@ -8,6 +8,7 @@ struct RideMeshBrandView: View {
         Image("RideMeshLogoExact")
             .resizable()
             .scaledToFit()
+                .blendMode(.screen)
             .frame(width: width, height: height, alignment: .leading)
             .accessibilityLabel("RideMesh by Autopilot India")
     }
@@ -20,6 +21,7 @@ struct RideMeshIconView: View {
         Image("RideMeshIconExact")
             .resizable()
             .scaledToFit()
+                .blendMode(.screen)
             .frame(width: size, height: size)
             .accessibilityLabel("RideMesh")
     }

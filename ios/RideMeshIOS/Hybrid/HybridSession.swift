@@ -13,7 +13,7 @@ final class HybridSession: ObservableObject {
     private var lastSeen: [UUID:TimeInterval] = [:]
     private var name = "Rider"
     private var active = false
-    private var failure = ""
+    private var audioFailure = ""
     private var configurationObserver: NSObjectProtocol?
     init(voice: WebRTCVoiceService) {
         self.voice = voice
@@ -26,7 +26,7 @@ final class HybridSession: ObservableObject {
     }
     deinit { if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) } }
     func start(name: String, code: String) {
-        stop(); active = true; failure = ""; self.name = name
+        stop(); active = true; audioFailure = ""; self.name = name
         let router = HybridRouter(node:voice.localRiderID); self.router = router
         let nearby = HybridNearby(node:voice.localRiderID,rideCode:code,name:name); self.nearby = nearby
         router.localSend = { [weak nearby] in nearby?.send(excluding:$0,data:$1) }
@@ -35,10 +35,17 @@ final class HybridSession: ObservableObject {
         router.deliver = { [weak self] in self?.receive($0) }
         nearby.receive = { [weak router] in router?.receive(from:$0,data:$1) }
         nearby.onChange = { [weak self] in self?.heartbeat() }
-        nearby.onError = { [weak self] in self?.failure = "Nearby: \($0)"; self?.heartbeat() }
+        nearby.onError = { [weak self] _ in self?.heartbeat() }
         voice.onHybridPacket = { [weak router] in router?.receive(from:$0,data:$1,internet:true) }
         audio.encoded = { [weak router] in router?.originate(kind:2,payload:$0) }
-        audio.onError = { [weak self] in self?.failure = "Audio: \($0)"; self?.heartbeat() }
+        audio.onError = { [weak self] message in
+            guard let self, self.active else { return }
+            self.audioFailure = "Audio: \(message)"; self.heartbeat()
+        }
+        audio.onReady = { [weak self] in
+            guard let self, self.active else { return }
+            self.audioFailure = ""; self.heartbeat()
+        }
         nearby.start(); audio.setMuted(false); audio.start(); heartbeat()
         timer = Timer.scheduledTimer(withTimeInterval:2,repeats:true) { [weak self] _ in
             Task { @MainActor in self?.heartbeat() }
@@ -66,6 +73,8 @@ final class HybridSession: ObservableObject {
         for (id,time) in lastSeen where now-time > 8 { riders.removeValue(forKey:id); lastSeen.removeValue(forKey:id) }
         let presence: [String:Any] = ["name":name,"device":"iPhone","gateways":voice.hybridPeerIDs.map { $0.uuidString.lowercased() }]
         if let data = try? JSONSerialization.data(withJSONObject:presence) { router?.originate(kind:3,payload:data) }
-        summary = (failure.isEmpty ? "" : failure + " • ") + "\(riders.count+1) RIDERS • \(nearby?.peers.count ?? 0) LOCAL • \(voice.hybridPeerIDs.count) INTERNET • \(router?.relayed ?? 0) RELAYS"
+        summary = "\(riders.count+1) RIDERS • \(nearby?.peers.count ?? 0) LOCAL • \(voice.hybridPeerIDs.count) INTERNET • \(router?.relayed ?? 0) RELAYS"
+            + "\n" + (nearby?.diagnostics ?? "Nearby stopped")
+            + (audioFailure.isEmpty ? "" : "\n" + audioFailure)
     }
 }

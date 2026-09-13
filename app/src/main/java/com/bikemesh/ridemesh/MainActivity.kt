@@ -731,7 +731,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
             mainHandler.removeCallbacks(rideWatchdog)
             mainHandler.postDelayed(rideWatchdog, WATCHDOG_INTERVAL_MS)
-            log("Ride started • ${transportModeLabel()} • build 33")
+            log("Ride started • ${transportModeLabel()} • ${appVersionLabel()}")
         } catch (t: Throwable) {
             recoverFromStartFailure(t)
         }
@@ -1336,7 +1336,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             visibility = View.GONE
         }
 
-        val logo = ImageView(this).apply {
+        val logo = BrandImageView(this).apply {
             setImageResource(R.drawable.ridemesh_logo_exact)
             scaleType = ImageView.ScaleType.FIT_START
             contentDescription = "RideMesh by Autopilot India"
@@ -2858,7 +2858,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private fun showOfflineDiagnosticsDialog() {
         val d = meshNode.diagnostics()
-        AlertDialog.Builder(this).setTitle("Mesh diagnostics • build 33")
+        AlertDialog.Builder(this).setTitle("Mesh diagnostics • ${appVersionLabel()} • ${normalizedRideCode()}")
             .setMessage("Role: ${meshLabRole}\nDirect links: ${d.directPeers}\nReceived: ${d.receivedPackets}\nRelayed: ${d.relayedPackets}\nMaximum hops: ${d.maxObservedHops}\nAdvertising: ${d.advertisingActive}\nDiscovery: ${d.discoveryActive}\nSend failures: ${d.sendFailures}\nLast error: ${d.lastError}\n\nOpus 16 kHz / 20 ms / 32 kbps target.\nReachable riders: ${d.reachableRiders}\nAudio drops: ${d.droppedAudio}\n${meshNode.bridgeSummary()}\nInternet queue drops: ${internetNode.hybridDropCount()}")
             .setPositiveButton("OK", null).show()
     }

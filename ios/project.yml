@@ -28,7 +28,7 @@ targets:
         SWIFT_VERSION: 5.0
         SWIFT_STRICT_CONCURRENCY: targeted
         MARKETING_VERSION: "1.4"
-        CURRENT_PROJECT_VERSION: "32"
+        CURRENT_PROJECT_VERSION: "33"
         CODE_SIGN_ENTITLEMENTS: RideMeshIOS/RideMeshIOS.entitlements
         INFOPLIST_FILE: RideMeshIOS/Info.plist
         TARGETED_DEVICE_FAMILY: "1"

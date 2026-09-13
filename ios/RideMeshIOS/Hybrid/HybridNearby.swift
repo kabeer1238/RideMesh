@@ -20,6 +20,23 @@ final class HybridNearby: NSObject, ConnectionManagerDelegate, AdvertiserDelegat
     private var inFlight: [EndpointID:(PayloadID,TimeInterval,CancellationToken)] = [:]
     private var timer: Timer?
     private var active = false
+    private var run = UUID()
+    private var advertising = "stopped"
+    private var discovery = "stopped"
+    private var advertisingError = ""
+    private var discoveryError = ""
+    private var lastStart: TimeInterval = 0
+    private var seen = Set<EndpointID>()
+    private var filtered = Set<EndpointID>()
+    private var attempts = 0
+    private var lastEvent = "Ready"
+    var diagnostics: String {
+        "Nearby RM34 • advertising: \(advertising) • discovery: \(discovery)"
+        + "\nSeen: \(seen.count) • filtered: \(filtered.count) • matching: \(found.count) • pending: \(pending.count) • attempts: \(attempts) • transport links: \(endpoints.count)"
+        + "\n\(lastEvent)"
+        + (advertisingError.isEmpty ? "" : "\nAdvertising: " + advertisingError)
+        + (discoveryError.isEmpty ? "" : "\nDiscovery: " + discoveryError)
+    }
     var receive: (UUID,Data) -> Void = { _,_ in }
     var onChange: () -> Void = {}
     var onError: (String) -> Void = { _ in }
@@ -30,17 +47,41 @@ final class HybridNearby: NSObject, ConnectionManagerDelegate, AdvertiserDelegat
         super.init(); manager.delegate = self; advertiser.delegate = self; discoverer.delegate = self
     }
     func start() {
-        active = true
-        advertiser.startAdvertising(using:info) { [weak self] error in
-            if let error { DispatchQueue.main.async { self?.onError(error.localizedDescription) } }
-        }
-        discoverer.startDiscovery() { [weak self] error in
-            if let error { DispatchQueue.main.async { self?.onError(error.localizedDescription) } }
-        }
+        guard !active else { return }
+        active = true; run = UUID(); startDiscoveryIfNeeded()
         timer = Timer.scheduledTimer(withTimeInterval:1,repeats:true) { [weak self] _ in self?.tick() }
     }
+    private func startDiscoveryIfNeeded() {
+        lastStart = ProcessInfo.processInfo.systemUptime
+        let currentRun = run
+        if advertising == "stopped" || advertising == "failed" {
+            advertising = "starting"
+            advertiser.startAdvertising(using:info) { [weak self] error in
+                DispatchQueue.main.async {
+                    guard let self, self.active, self.run == currentRun else { return }
+                    self.advertising = error == nil ? "on" : "failed"
+                    self.advertisingError = error.map { "\(($0 as NSError).domain) / \(($0 as NSError).code): \($0.localizedDescription)" } ?? ""
+                    self.onChange()
+                }
+            }
+        }
+        if discovery == "stopped" || discovery == "failed" {
+            discovery = "starting"
+            discoverer.startDiscovery() { [weak self] error in
+                DispatchQueue.main.async {
+                    guard let self, self.active, self.run == currentRun else { return }
+                    self.discovery = error == nil ? "on" : "failed"
+                    self.discoveryError = error.map { "\(($0 as NSError).domain) / \(($0 as NSError).code): \($0.localizedDescription)" } ?? ""
+                    self.onChange()
+                }
+            }
+        }
+    }
     func stop() {
-        active = false; timer?.invalidate(); timer = nil
+        active = false; run = UUID(); timer?.invalidate(); timer = nil
+        advertising = "stopped"; discovery = "stopped"
+        advertisingError = ""; discoveryError = ""
+        seen.removeAll(); filtered.removeAll(); attempts = 0; helloAttempts.removeAll()
         advertiser.stopAdvertising(); discoverer.stopDiscovery()
         for endpoint in endpoints { manager.disconnect(from:endpoint) }
         for (_,_,token) in inFlight.values { token.cancel() }
@@ -58,6 +99,7 @@ final class HybridNearby: NSObject, ConnectionManagerDelegate, AdvertiserDelegat
     private func tick() {
         guard active else { return }
         let now = ProcessInfo.processInfo.systemUptime
+        if now-lastStart >= 5 { startDiscoveryIfNeeded() }
         for endpoint in endpoints where identities[endpoint] == nil {
             let attempts = helloAttempts[endpoint,default:0]
             if attempts >= 10 { manager.disconnect(from:endpoint) }
@@ -65,7 +107,8 @@ final class HybridNearby: NSObject, ConnectionManagerDelegate, AdvertiserDelegat
         }
         for (endpoint,time) in pending where now-time > 12 { pending.removeValue(forKey:endpoint); manager.disconnect(from:endpoint) }
         for endpoint in found where !endpoints.contains(endpoint) && pending[endpoint] == nil && endpoints.count+pending.count < 7 {
-            pending[endpoint] = now; discoverer.requestConnection(to:endpoint,using:info)
+            pending[endpoint] = now; attempts += 1; lastEvent = "Requesting connection"
+            discoverer.requestConnection(to:endpoint,using:info)
         }
         for (endpoint,flight) in inFlight where now-flight.1 > 1.5 {
             flight.2.cancel(); inFlight.removeValue(forKey:endpoint); queue.removeValue(forKey:endpoint); manager.disconnect(from:endpoint)
@@ -102,11 +145,16 @@ final class HybridNearby: NSObject, ConnectionManagerDelegate, AdvertiserDelegat
     func advertiser(_ advertiser: Advertiser, didReceiveConnectionRequestFrom endpointID: EndpointID,
                     with context: Data, connectionRequestHandler: @escaping (Bool) -> Void) {
         let accept = active && allowed(context) && (pending[endpointID] != nil || endpoints.count+pending.count < 7)
+        lastEvent = accept ? "Incoming connection accepted" : "Incoming connection filtered (ride, role or capacity)"
         if accept { pending[endpointID] = ProcessInfo.processInfo.systemUptime }
         connectionRequestHandler(accept)
     }
     func discoverer(_ discoverer: Discoverer, didFind endpointID: EndpointID, with context: Data) {
-        guard active, allowed(context) else { return }; found.insert(endpointID); tick()
+        guard active else { return }; seen.insert(endpointID)
+        guard allowed(context) else {
+            filtered.insert(endpointID); lastEvent = "Peer detected but ride or role differs"; onChange(); return
+        }
+        found.insert(endpointID); lastEvent = "Matching rider discovered"; tick(); onChange()
     }
     func discoverer(_ discoverer: Discoverer, didLose endpointID: EndpointID) { found.remove(endpointID) }
     func connectionManager(_ connectionManager: ConnectionManager, didReceive verificationCode: String,
@@ -117,8 +165,10 @@ final class HybridNearby: NSObject, ConnectionManagerDelegate, AdvertiserDelegat
         guard active else { manager.disconnect(from:endpointID); return }
         switch state {
         case .connected:
+            lastEvent = "Transport connected; exchanging rider identity"
             pending.removeValue(forKey:endpointID); endpoints.insert(endpointID); hello(endpointID)
         case .disconnected, .rejected:
+            lastEvent = "Transport disconnected or rejected"
             pending.removeValue(forKey:endpointID); endpoints.remove(endpointID); identities.removeValue(forKey:endpointID)
             inFlight.removeValue(forKey:endpointID); queue.removeValue(forKey:endpointID); helloAttempts.removeValue(forKey:endpointID)
         case .connecting: break

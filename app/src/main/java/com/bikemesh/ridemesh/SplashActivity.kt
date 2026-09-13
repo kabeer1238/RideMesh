@@ -44,7 +44,7 @@ class SplashActivity : AppCompatActivity() {
             setPadding(dp(28), 0, dp(28), dp(28))
         }
         content.addView(View(this), LinearLayout.LayoutParams(1, 0, 0.28f))
-        content.addView(ImageView(this).apply {
+        content.addView(BrandImageView(this).apply {
             setImageResource(R.drawable.ridemesh_logo_exact)
             scaleType = ImageView.ScaleType.FIT_CENTER
             contentDescription = "RideMesh by Autopilot India"

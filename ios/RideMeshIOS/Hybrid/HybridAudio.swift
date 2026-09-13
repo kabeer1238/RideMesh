@@ -12,6 +12,10 @@ final class HybridAudio {
     private var writeIndex = 0
     private var buffered = 0
     private var engine: AVAudioEngine?
+    private var wantsAudio = false
+    private var tapInstalled = false
+    private var retry: DispatchWorkItem?
+    private var startAttempts = 0
     private var encoder: OpaquePointer?
     private var decoders: [UUID:OpaquePointer] = [:]
     private var pending: [UUID:[UInt32:(Data,TimeInterval)]] = [:]
@@ -25,26 +29,38 @@ final class HybridAudio {
     private let format = AVAudioFormat(commonFormat:.pcmFormatFloat32,sampleRate:16000,channels:1,interleaved:false)!
     var encoded: (Data) -> Void = { _ in }
     var onError: (String) -> Void = { _ in }
+    var onReady: () -> Void = {}
     func setMuted(_ value: Bool) { work.async { self.muted = value; self.pcm.removeAll() } }
-    func start() { work.async { self.startOnQueue() } }
+    func start() { work.async {
+        self.wantsAudio = true; self.startAttempts = 0; self.startOnQueue()
+    } }
     func recoverStoppedRoute() {
         work.async {
-            // An explicit stop/interruption sets engine to nil and must not restart.
-            if let engine = self.engine, !engine.isRunning { self.startOnQueue() }
+            // Failed startup also leaves engine nil. Explicit stop must still win.
+            if self.wantsAudio && self.engine?.isRunning != true && self.retry == nil && self.startAttempts < 4 {
+                self.startOnQueue()
+            }
         }
     }
-    func stop() { work.sync { stopOnQueue() } }
+    func stop() { work.sync { wantsAudio = false; stopOnQueue() } }
     private func stopOnQueue() {
         generation = UUID(); timer?.cancel(); timer = nil
-        engine?.inputNode.removeTap(onBus:0); engine?.stop(); engine = nil
+        retry?.cancel(); retry = nil
+        if tapInstalled { engine?.inputNode.removeTap(onBus:0) }; tapInstalled = false
+        engine?.stop(); engine = nil
         if let encoder { opus_encoder_destroy(encoder) }; encoder = nil
         decoders.values.forEach { opus_decoder_destroy($0) }; decoders.removeAll()
         pending.removeAll(); expected.removeAll(); losses.removeAll(); lastSeen.removeAll(); pcm.removeAll()
         ringLock.lock(); buffered = 0; readIndex = 0; writeIndex = 0; ringLock.unlock()
     }
     private func startOnQueue() {
+        guard wantsAudio else { return }
         stopOnQueue()
+        startAttempts += 1
         do {
+            // Re-activate after WebRTC teardown or a transient headset route change.
+            // AudioSessionManager retains ownership of category and route selection.
+            try AVAudioSession.sharedInstance().setActive(true)
             var error: Int32 = 0
             guard let encoder = opus_encoder_create(16000,1,2048,&error), error == 0 else { throw NSError(domain:"Opus",code:Int(error)) }
             self.encoder = encoder
@@ -52,7 +68,11 @@ final class HybridAudio {
             let engine = AVAudioEngine(); self.engine = engine
             try engine.inputNode.setVoiceProcessingEnabled(true)
             let input = engine.inputNode.outputFormat(forBus:0)
-            guard input.sampleRate > 0, let converter = AVAudioConverter(from:input,to:format) else { throw NSError(domain:"Audio route",code:1) }
+            guard input.sampleRate > 0, input.channelCount > 0,
+                  let converter = AVAudioConverter(from:input,to:format) else {
+                throw NSError(domain:"Audio route",code:1,userInfo:[NSLocalizedDescriptionKey:
+                    "Microphone route unavailable (\(input.sampleRate) Hz, \(input.channelCount) channels), attempt \(startAttempts)/4"])
+            }
             let run = generation
             let source = AVAudioSourceNode(format:format) { [weak self] _,_,frames,list in
                 guard let self else { return noErr }
@@ -97,11 +117,23 @@ final class HybridAudio {
                     }
                 }
             }
+            tapInstalled = true
             try engine.start()
+            startAttempts = 0
+            DispatchQueue.main.async { [weak self] in self?.onReady() }
             let timer = DispatchSource.makeTimerSource(queue:work)
             timer.schedule(deadline:.now()+0.04,repeating:0.02,leeway:.milliseconds(2))
             timer.setEventHandler { [weak self] in self?.playTick() }; self.timer = timer; timer.resume()
-        } catch { stopOnQueue(); DispatchQueue.main.async { self.onError(error.localizedDescription) } }
+        } catch {
+            stopOnQueue()
+            let message = error.localizedDescription
+            DispatchQueue.main.async { [weak self] in self?.onError(message) }
+            if wantsAudio && startAttempts < 4 {
+                let retry = DispatchWorkItem { [weak self] in self?.startOnQueue() }
+                self.retry = retry
+                work.asyncAfter(deadline:.now()+0.75,execute:retry)
+            }
+        }
     }
     func receive(_ p: HybridPacket) {
         let arrival = ProcessInfo.processInfo.systemUptime

@@ -15,6 +15,7 @@ struct RiderProfileView: View {
                     Image("RideMeshLogoExact")
                         .resizable()
                         .scaledToFit()
+                .blendMode(.screen)
                         .frame(maxWidth: compactHeight ? 226 : 252)
                         .frame(height: compactHeight ? 72 : 84)
                         .padding(.top, compactHeight ? 8 : 16)

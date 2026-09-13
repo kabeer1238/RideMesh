@@ -100,6 +100,7 @@ struct RMActiveHeader: View {
             Image("RideMeshIconExact")
                 .resizable()
                 .scaledToFit()
+                .blendMode(.screen)
                 .frame(width: 36, height: 36)
         }
         .padding(.horizontal, 18)

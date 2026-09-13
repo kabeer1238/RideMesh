@@ -43,11 +43,11 @@ jobs:
       - name: Package unsigned build and source
         working-directory: ios
         run: |
-          ditto -c -k --keepParent build/Build/Products/Debug-iphoneos/RideMesh.app RideMesh-iOS-Hybrid8-UNSIGNED.zip
-          zip -r RideMesh-iOS-Hybrid8-source.zip RideMeshIOS project.yml Tests README-HYBRID.md
+          ditto -c -k --keepParent build/Build/Products/Debug-iphoneos/RideMesh.app RideMesh-iOS-vc33-Hybrid8-UNSIGNED.zip
+          zip -r RideMesh-iOS-vc33-Hybrid8-source.zip RideMeshIOS project.yml Tests README-HYBRID.md
       - uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-iOS-Hybrid8-${{ github.run_number }}
+          name: RideMesh-iOS-vc33-Hybrid8-${{ github.run_number }}
           path: ios/RideMesh-*.zip
       - uses: actions/upload-artifact@v4
         if: always()
