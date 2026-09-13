@@ -8,6 +8,7 @@ struct RideMeshBrandView: View {
         Image("RideMeshLogoExact")
             .resizable()
             .scaledToFit()
+                .mask(alignment: .top) { Rectangle().scaleEffect(x: 1, y: 0.88, anchor: .top) }
                 .blendMode(.screen)
             .frame(width: width, height: height, alignment: .leading)
             .accessibilityLabel("RideMesh by Autopilot India")

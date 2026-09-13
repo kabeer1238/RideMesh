@@ -8,6 +8,7 @@ struct ActiveRideView: View {
             Image("RideMeshLogoExact")
                 .resizable()
                 .scaledToFit()
+                .mask(alignment: .top) { Rectangle().scaleEffect(x: 1, y: 0.88, anchor: .top) }
                 .blendMode(.screen)
                 .frame(width: 244, height: 72, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)

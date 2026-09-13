@@ -14,6 +14,7 @@ final class HybridSession: ObservableObject {
     private var name = "Rider"
     private var active = false
     private var audioFailure = ""
+    private var audioDiagnostics = "Audio starting"
     private var configurationObserver: NSObjectProtocol?
     init(voice: WebRTCVoiceService) {
         self.voice = voice
@@ -46,6 +47,10 @@ final class HybridSession: ObservableObject {
             guard let self, self.active else { return }
             self.audioFailure = ""; self.heartbeat()
         }
+        audio.onDiagnostics = { [weak self] text in
+            guard let self, self.active else { return }
+            self.audioDiagnostics = text
+        }
         nearby.start(); audio.setMuted(false); audio.start(); heartbeat()
         timer = Timer.scheduledTimer(withTimeInterval:2,repeats:true) { [weak self] _ in
             Task { @MainActor in self?.heartbeat() }
@@ -56,6 +61,7 @@ final class HybridSession: ObservableObject {
         voice.onHybridPacket = nil; router = nil; riders.removeAll(); lastSeen.removeAll(); summary = "HYBRID STOPPED"
     }
     func mute(_ value: Bool) { audio.setMuted(value) }
+    func sendTestTone() { guard active else { return }; audio.sendTestTone() }
     func interrupted(_ value: Bool) {
         guard active else { return }; if value { audio.stop() } else { audio.start() }
     }
@@ -69,12 +75,14 @@ final class HybridSession: ObservableObject {
     }
     private func heartbeat() {
         guard active else { return }
+        audio.refreshDiagnostics()
         let now = ProcessInfo.processInfo.systemUptime
         for (id,time) in lastSeen where now-time > 8 { riders.removeValue(forKey:id); lastSeen.removeValue(forKey:id) }
         let presence: [String:Any] = ["name":name,"device":"iPhone","gateways":voice.hybridPeerIDs.map { $0.uuidString.lowercased() }]
         if let data = try? JSONSerialization.data(withJSONObject:presence) { router?.originate(kind:3,payload:data) }
         summary = "\(riders.count+1) RIDERS • \(nearby?.peers.count ?? 0) LOCAL • \(voice.hybridPeerIDs.count) INTERNET • \(router?.relayed ?? 0) RELAYS"
             + "\n" + (nearby?.diagnostics ?? "Nearby stopped")
+            + "\n" + audioDiagnostics
             + (audioFailure.isEmpty ? "" : "\n" + audioFailure)
     }
 }

@@ -36,6 +36,8 @@ class MeshNode(private val context: Context, private val listener: Listener) {
     }
     fun stop() { controller?.stop(); controller = null; listener.onDirectPeerCount(0) }
     fun sendLocalAudio(pcm: ByteArray) { controller?.sendAudioFrame(pcm) }
+    fun sendTestTone(allowed: () -> Boolean) { controller?.sendTestTone(allowed) }
+    fun audioPipelineSummary() = controller?.audioPipelineSummary() ?: "Offline audio stopped"
     fun decodeForPlayout(source: String, packet: ByteArray?): ByteArray? = controller?.decodeForPlayout(source, packet)
     fun refreshDiscovery(reason: String) { controller?.refreshDiscovery(reason) }
     fun endpointIdForSource(sourceId: String): String? = sourceId

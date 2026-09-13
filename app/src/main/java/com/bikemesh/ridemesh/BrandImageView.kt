@@ -17,6 +17,12 @@ class BrandImageView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         val saved = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), brandPaint)
+        drawable?.let {
+            val artwork = android.graphics.RectF(0f, 0f, it.intrinsicWidth.toFloat(), it.intrinsicHeight * 0.88f)
+            imageMatrix.mapRect(artwork)
+            artwork.offset(paddingLeft.toFloat(), paddingTop.toFloat())
+            canvas.clipRect(artwork)
+        }
         super.onDraw(canvas)
         canvas.restoreToCount(saved)
     }

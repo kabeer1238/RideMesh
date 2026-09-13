@@ -126,6 +126,7 @@ class OfflineMeshController(
         onLog("OFFLINE OPUS • 16 kHz • 20 ms • 32 kbps target • eight-rider hybrid test")
     }
     fun stop() {
+        toneTask?.let(handler::removeCallbacks); toneTask = null; decodedFrames.set(0)
         handler.removeCallbacks(heartbeat)
         cluster?.stop(); cluster = null; router = null; localNodeId = null
         roster.clear(); rtt.clear(); tx.set(0); rx.set(0); dropped.set(0); maxHops.set(0)
@@ -141,6 +142,23 @@ class OfflineMeshController(
     fun currentRttMs(): Int? = rtt.values.firstOrNull()
     fun diagnosticSummary() = status
     fun audioTxCount() = tx.get()
+    private var toneTask: Runnable? = null
+    private val decodedFrames = java.util.concurrent.atomic.AtomicLong()
+    fun audioPipelineSummary() = "Encoded/sent: ${tx.get()} • audio received: ${rx.get()} • decoded: ${decodedFrames.get()}"
+    fun sendTestTone(allowed: () -> Boolean) {
+        toneTask?.let(handler::removeCallbacks)
+        var frame = 0
+        val task = object : Runnable {
+            override fun run() {
+                if (!isActive() || !allowed() || frame >= 100) { toneTask = null; return }
+                val pcm = java.nio.ByteBuffer.allocate(640).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                for (i in 0 until 320) pcm.putShort((2600 * kotlin.math.sin(2 * Math.PI * 440 * (frame * 320 + i) / 16000)).toInt().toShort())
+                sendAudioFrame(pcm.array()); frame += 1
+                handler.postDelayed(this, 20)
+            }
+        }
+        toneTask = task; handler.post(task)
+    }
     fun audioRxCount() = rx.get()
     fun audioDropCount() = dropped.get() + (cluster?.realtimeAudioDropped() ?: 0)
     fun relayCount() = router?.relayCount() ?: 0L
@@ -160,6 +178,7 @@ class OfflineMeshController(
     fun decodeForPlayout(source: String, packet: ByteArray?): ByteArray? {
         val pcm = if (packet == null) opus.conceal20ms(source) else opus.decode20ms(source, packet)
         if (pcm == null) dropped.incrementAndGet()
+        else if (packet != null) decodedFrames.incrementAndGet()
         return pcm
     }
     override fun onStatus(message: String) { status = message; onLog(message) }

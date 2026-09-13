@@ -16,6 +16,31 @@ final class HybridAudio {
     private var tapInstalled = false
     private var retry: DispatchWorkItem?
     private var startAttempts = 0
+    private var captureCount = 0
+    private var encodedCount = 0
+    private var receivedCount = 0
+    private var decodedCount = 0
+    private var codecErrors = 0
+    private var conversionErrors = 0
+    private var microphoneLevel: Float = 0
+    private var lastCapture: TimeInterval = 0
+    private var silentRestarts = 0
+    private var toneFrames = 0
+    private var tonePhase = 0
+    var onDiagnostics: (String) -> Void = { _ in }
+    func refreshDiagnostics() {
+        work.async {
+            let session = AVAudioSession.sharedInstance()
+            let text = "Audio engine: \(self.engine?.isRunning == true ? "on" : "off") • mic buffers: \(self.captureCount) • level: \(Int(self.microphoneLevel * 1000))"
+                + "\nEncoded: \(self.encodedCount) • received: \(self.receivedCount) • decoded: \(self.decodedCount) • codec errors: \(self.codecErrors) • conversion errors: \(self.conversionErrors)"
+                + "\nOutput: \(session.currentRoute.outputs.map { $0.portName }.joined(separator:", "))"
+            DispatchQueue.main.async { [weak self] in self?.onDiagnostics(text) }
+            if self.wantsAudio && self.engine?.isRunning == true && self.toneFrames == 0 && ProcessInfo.processInfo.systemUptime-self.lastCapture > 3 && self.silentRestarts < 2 {
+                self.silentRestarts += 1; self.startOnQueue()
+            }
+        }
+    }
+    func sendTestTone() { work.async { if self.wantsAudio && !self.muted { self.toneFrames = 100; self.tonePhase = 0 } } }
     private var encoder: OpaquePointer?
     private var decoders: [UUID:OpaquePointer] = [:]
     private var pending: [UUID:[UInt32:(Data,TimeInterval)]] = [:]
@@ -30,9 +55,11 @@ final class HybridAudio {
     var encoded: (Data) -> Void = { _ in }
     var onError: (String) -> Void = { _ in }
     var onReady: () -> Void = {}
-    func setMuted(_ value: Bool) { work.async { self.muted = value; self.pcm.removeAll() } }
+    func setMuted(_ value: Bool) { work.async { self.muted = value; self.pcm.removeAll(); if value { self.toneFrames = 0 } } }
     func start() { work.async {
-        self.wantsAudio = true; self.startAttempts = 0; self.startOnQueue()
+        self.wantsAudio = true; self.startAttempts = 0; self.silentRestarts = 0
+        self.captureCount = 0; self.encodedCount = 0; self.receivedCount = 0; self.decodedCount = 0
+        self.codecErrors = 0; self.conversionErrors = 0; self.startOnQueue()
     } }
     func recoverStoppedRoute() {
         work.async {
@@ -46,6 +73,7 @@ final class HybridAudio {
     private func stopOnQueue() {
         generation = UUID(); timer?.cancel(); timer = nil
         retry?.cancel(); retry = nil
+        toneFrames = 0
         if tapInstalled { engine?.inputNode.removeTap(onBus:0) }; tapInstalled = false
         engine?.stop(); engine = nil
         if let encoder { opus_encoder_destroy(encoder) }; encoder = nil
@@ -87,6 +115,7 @@ final class HybridAudio {
                 return noErr
             }
             engine.attach(source); engine.connect(source,to:engine.mainMixerNode,format:format)
+            engine.connect(engine.mainMixerNode,to:engine.outputNode,format:nil)
             engine.inputNode.installTap(onBus:0,bufferSize:960,format:input) { [weak self] buffer,_ in
                 guard let self, self.captureSlots.wait(timeout:.now()) == .success else { return }
                 let capacity = AVAudioFrameCount(Double(buffer.frameLength)*16000/input.sampleRate+32)
@@ -99,27 +128,33 @@ final class HybridAudio {
                 let capturedAt = ProcessInfo.processInfo.systemUptime
                 self.work.async {
                     defer { self.captureSlots.signal() }
-                    guard self.generation == run, conversionError == nil, !self.muted,
+                    guard self.generation == run else { return }
+                    self.captureCount += 1; self.lastCapture = capturedAt
+                    if conversionError != nil || converted.frameLength == 0 { self.conversionErrors += 1; return }
+                    guard !self.muted, self.toneFrames == 0,
                           ProcessInfo.processInfo.systemUptime-capturedAt < 0.14,
                           let samples = converted.floatChannelData?[0] else { return }
                     self.pcm.append(contentsOf:UnsafeBufferPointer(start:samples,count:Int(converted.frameLength)))
+                    self.microphoneLevel = (0..<Int(converted.frameLength)).reduce(Float(0)) { max($0,abs(samples[$1])) }
                     while self.pcm.count >= 320 {
                         var packet = [UInt8](repeating:0,count:256)
                         let count = self.pcm.withUnsafeBufferPointer { opus_encode_float(encoder,$0.baseAddress!,320,&packet,256) }
                         self.pcm.removeFirst(320)
                         if count > 0 {
+                            self.encodedCount += 1
                             var data = Data([0x4f,0x50,0x56,0x31,1,UInt8(count >> 8),UInt8(truncatingIfNeeded:count)])
                             data.append(contentsOf:packet.prefix(Int(count)))
                             DispatchQueue.main.async { [weak self] in
                                 if ProcessInfo.processInfo.systemUptime-capturedAt < 0.14 { self?.encoded(data) }
                             }
-                        }
+                        } else { self.codecErrors += 1 }
                     }
                 }
             }
             tapInstalled = true
             try engine.start()
             startAttempts = 0
+            lastCapture = ProcessInfo.processInfo.systemUptime
             DispatchQueue.main.async { [weak self] in self?.onReady() }
             let timer = DispatchSource.makeTimerSource(queue:work)
             timer.schedule(deadline:.now()+0.04,repeating:0.02,leeway:.milliseconds(2))
@@ -138,6 +173,7 @@ final class HybridAudio {
     func receive(_ p: HybridPacket) {
         let arrival = ProcessInfo.processInfo.systemUptime
         work.async {
+            self.receivedCount += 1
             guard self.engine != nil, p.payload.count >= 8, p.payload.count <= 263,
                   p.payload.starts(with:[0x4f,0x50,0x56,0x31,1]),
                   Int(p.payload[5])*256+Int(p.payload[6]) == p.payload.count-7,
@@ -152,6 +188,18 @@ final class HybridAudio {
         }
     }
     private func playTick() {
+        if toneFrames > 0 && !muted, let encoder {
+            let samples = (0..<320).map { i in Float(0.08 * sin(2 * Double.pi * 440 * Double(tonePhase+i) / 16000)) }
+            tonePhase += 320; toneFrames -= 1
+            var packet = [UInt8](repeating:0,count:256)
+            let count = samples.withUnsafeBufferPointer { opus_encode_float(encoder,$0.baseAddress!,320,&packet,256) }
+            if count > 0 {
+                encodedCount += 1
+                var data = Data([0x4f,0x50,0x56,0x31,1,UInt8(count >> 8),UInt8(truncatingIfNeeded:count)])
+                data.append(contentsOf:packet.prefix(Int(count)))
+                DispatchQueue.main.async { [weak self] in self?.encoded(data) }
+            } else { codecErrors += 1 }
+        }
         let now = ProcessInfo.processInfo.systemUptime
         var mixed = [Float](repeating:0,count:320); var speakers = 0
         for source in Array(pending.keys) {
@@ -174,7 +222,8 @@ final class HybridAudio {
             if let frame { count = frame.withUnsafeBytes { opus_decode_float(decoder,$0.bindMemory(to:UInt8.self).baseAddress,Int32(frame.count),&output,320,0) }; losses[source] = 0 }
             else { count = opus_decode_float(decoder,nil,0,&output,320,0); losses[source,default:0] += 1 }
             expected[source] = seq &+ 1
-            if count == 320 { speakers += 1; for i in 0..<320 { mixed[i] += output[i] } }
+            if count == 320 { if frame != nil { decodedCount += 1 }; speakers += 1; for i in 0..<320 { mixed[i] += output[i] } }
+            else { codecErrors += 1 }
         }
         guard speakers > 0 else { return }
         let gain:Float = 1 / sqrt(Float(speakers))

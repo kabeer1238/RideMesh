@@ -42,6 +42,10 @@ class AudioEngine(
     private val focusPaused = AtomicBoolean(false)
     private val focusHeld = AtomicBoolean(false)
     private val userMuted = AtomicBoolean(false)
+    private val capturedFrames = java.util.concurrent.atomic.AtomicLong()
+    private val forwardedFrames = java.util.concurrent.atomic.AtomicLong()
+    @Volatile private var micLevel = 0
+    fun diagnostics() = "Mic running: ${capturing.get()} • capture buffers: ${capturedFrames.get()} • level: $micLevel\nMic frames forwarded: ${forwardedFrames.get()} • muted: ${userMuted.get()}"
 
     private data class IncomingFrame(
         val sequence: Int,
@@ -340,6 +344,7 @@ class AudioEngine(
 
                         val current = windFilter.process(frame.copyOf())
                         val rms = pcmRms(current)
+                        capturedFrames.incrementAndGet(); micLevel = rms.toInt()
 
                         val normalThreshold = max(VAD_MIN_RMS, noiseFloor * VAD_NOISE_MULTIPLIER)
                         val farEndAudioActive = System.currentTimeMillis() < playbackActiveUntilMs
@@ -377,6 +382,7 @@ class AudioEngine(
                                 while (preRoll.isNotEmpty()) onCapturedFrame(preRoll.removeFirst())
                             }
                             onCapturedFrame(current)
+                            forwardedFrames.incrementAndGet()
                         } else {
                             if (preRoll.size >= VAD_PREROLL_FRAMES) preRoll.removeFirst()
                             preRoll.addLast(current)

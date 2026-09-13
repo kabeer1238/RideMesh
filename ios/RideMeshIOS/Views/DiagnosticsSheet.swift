@@ -15,6 +15,10 @@ struct DiagnosticsSheet: View {
 
                     if model.hybridEnabled {
                         Text(model.hybrid.summary).font(.caption).foregroundStyle(RideMeshTheme.accent).padding()
+                        Button("SEND 2-SECOND TEST TONE") { model.hybrid.sendTestTone() }
+                            .disabled(!model.isRideActive || model.micMuted)
+                        Text("Listen on the other phone. Start with low volume.")
+                            .font(.caption).foregroundStyle(RideMeshTheme.muted)
                     }
                     statusHero
                         .padding(.top, 14)

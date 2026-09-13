@@ -39,7 +39,7 @@ jobs:
         run: gradle --no-daemon :app:assembleDebug
       - name: Verify debug APK signature
         run: |
-          APK='app/build/outputs/apk/debug/RideMesh-hybrid8-vc35-debug.apk'
+          APK='app/build/outputs/apk/debug/RideMesh-hybrid8-vc36-debug.apk'
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --verbose "$APK"
           "$ANDROID_SDK_ROOT/build-tools/36.0.0/aapt" dump badging "$APK" > /tmp/ridemesh-badging.txt
@@ -51,7 +51,7 @@ jobs:
           sha256sum "$APK" > app/build/outputs/apk/debug/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-vc35-Hybrid8-NoBilling-${{ github.run_number }}
+          name: RideMesh-vc36-Hybrid8-NoBilling-${{ github.run_number }}
           path: |
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/debug/SHA256SUMS.txt

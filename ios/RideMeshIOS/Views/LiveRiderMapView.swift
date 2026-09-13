@@ -106,6 +106,7 @@ struct LiveRiderMapView: View {
             Image("RideMeshLogoExact")
                 .resizable()
                 .scaledToFit()
+                .mask(alignment: .top) { Rectangle().scaleEffect(x: 1, y: 0.88, anchor: .top) }
                 .blendMode(.screen)
                 .frame(width: 150, height: 36)
                 .accessibilityLabel("RideMesh by Autopilot India")

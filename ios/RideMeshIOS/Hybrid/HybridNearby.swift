@@ -10,6 +10,8 @@ final class HybridNearby: NSObject, ConnectionManagerDelegate, AdvertiserDelegat
     private let node: UUID
     private let token: String
     private let name: String
+    private let bleOnly = UserDefaults.standard.bool(forKey:"ble_only_test")
+    private var discoveryMediums: Set<Medium> { bleOnly ? [.ble] : [.ble, .bluetooth, .wifiLAN, .wifiHotspot, .wifiDirect, .awdl] }
     private var info: Data { Data("RM34|0|\(token)|\(name)".utf8) }
     private var endpoints = Set<EndpointID>()
     private var identities: [EndpointID:UUID] = [:]
@@ -31,7 +33,7 @@ final class HybridNearby: NSObject, ConnectionManagerDelegate, AdvertiserDelegat
     private var attempts = 0
     private var lastEvent = "Ready"
     var diagnostics: String {
-        "Nearby RM34 • advertising: \(advertising) • discovery: \(discovery)"
+        "Nearby RM34 • \(bleOnly ? "BLE-only test" : "local mediums") • advertising: \(advertising) • discovery: \(discovery)"
         + "\nSeen: \(seen.count) • filtered: \(filtered.count) • matching: \(found.count) • pending: \(pending.count) • attempts: \(attempts) • transport links: \(endpoints.count)"
         + "\n\(lastEvent)"
         + (advertisingError.isEmpty ? "" : "\nAdvertising: " + advertisingError)
@@ -56,7 +58,7 @@ final class HybridNearby: NSObject, ConnectionManagerDelegate, AdvertiserDelegat
         let currentRun = run
         if advertising == "stopped" || advertising == "failed" {
             advertising = "starting"
-            advertiser.startAdvertising(using:info) { [weak self] error in
+            advertiser.startAdvertising(using:info,mediums:discoveryMediums) { [weak self] error in
                 DispatchQueue.main.async {
                     guard let self, self.active, self.run == currentRun else { return }
                     self.advertising = error == nil ? "on" : "failed"
@@ -67,7 +69,7 @@ final class HybridNearby: NSObject, ConnectionManagerDelegate, AdvertiserDelegat
         }
         if discovery == "stopped" || discovery == "failed" {
             discovery = "starting"
-            discoverer.startDiscovery() { [weak self] error in
+            discoverer.startDiscovery(mediums:discoveryMediums) { [weak self] error in
                 DispatchQueue.main.async {
                     guard let self, self.active, self.run == currentRun else { return }
                     self.discovery = error == nil ? "on" : "failed"
@@ -108,7 +110,14 @@ final class HybridNearby: NSObject, ConnectionManagerDelegate, AdvertiserDelegat
         for (endpoint,time) in pending where now-time > 12 { pending.removeValue(forKey:endpoint); manager.disconnect(from:endpoint) }
         for endpoint in found where !endpoints.contains(endpoint) && pending[endpoint] == nil && endpoints.count+pending.count < 7 {
             pending[endpoint] = now; attempts += 1; lastEvent = "Requesting connection"
-            discoverer.requestConnection(to:endpoint,using:info)
+            discoverer.requestConnection(to:endpoint,using:info) { [weak self] error in
+                guard let error else { return }
+                DispatchQueue.main.async {
+                    guard let self, self.active else { return }
+                    self.lastEvent = "Connection request: \(error.localizedDescription)"
+                    self.onChange()
+                }
+            }
         }
         for (endpoint,flight) in inFlight where now-flight.1 > 1.5 {
             flight.2.cancel(); inFlight.removeValue(forKey:endpoint); queue.removeValue(forKey:endpoint); manager.disconnect(from:endpoint)

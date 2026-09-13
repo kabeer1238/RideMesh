@@ -32,7 +32,7 @@ final class RideMeshViewModel: ObservableObject {
     let audio = AudioSessionManager()
     let voice = WebRTCVoiceService()
     lazy var hybrid = HybridSession(voice:voice)
-    @Published var hybridEnabled = UserDefaults.standard.object(forKey:"hybrid_enabled") as? Bool ?? true
+    @Published var hybridEnabled = UserDefaults.standard.object(forKey:"hybrid_enabled_v34") as? Bool ?? false
     let battery = RideBatteryMonitor()
     let location = RideLocationService()
 
@@ -471,7 +471,7 @@ final class RideMeshViewModel: ObservableObject {
     }
 
     func persist() {
-        defaults.set(hybridEnabled,forKey:"hybrid_enabled")
+        defaults.set(hybridEnabled,forKey:"hybrid_enabled_v34")
         defaults.set(riderName, forKey: "ridemesh_rider_name")
         defaults.set(normalizedRideCode, forKey: "ridemesh_ride_code")
         defaults.set(sanitizedPhoneNumber, forKey: "ridemesh_phone_number")

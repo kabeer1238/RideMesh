@@ -45,6 +45,7 @@ class NearbyClusterTransport(
     )
 
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context.applicationContext)
+    private val bleOnly = context.getSharedPreferences("ridemesh", Context.MODE_PRIVATE).getBoolean("ble_only_test", false)
     private var scheduler = Executors.newSingleThreadScheduledExecutor()
     private val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()
     private val pendingEndpoints = ConcurrentHashMap.newKeySet<String>()
@@ -228,7 +229,7 @@ class NearbyClusterTransport(
             localEndpointName,
             serviceId,
             lifecycleCallback,
-            AdvertisingOptions.Builder().setStrategy(strategy).build(),
+            AdvertisingOptions.Builder().setStrategy(strategy).setLowPower(bleOnly).build(),
         ).addOnSuccessListener {
             if (!started) return@addOnSuccessListener
             advertising = true
@@ -240,7 +241,7 @@ class NearbyClusterTransport(
         client.startDiscovery(
             serviceId,
             discoveryCallback,
-            DiscoveryOptions.Builder().setStrategy(strategy).build(),
+            DiscoveryOptions.Builder().setStrategy(strategy).setLowPower(bleOnly).build(),
         ).addOnSuccessListener {
             if (!started) return@addOnSuccessListener
             discovering = true
@@ -360,14 +361,14 @@ class NearbyClusterTransport(
         discovering = false
         if (!advertising) {
             client.startAdvertising(localEndpointName, serviceId, lifecycleCallback,
-                AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build())
+                AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).setLowPower(bleOnly).build())
                 .addOnSuccessListener { if (started) advertising = true }
                 .addOnFailureListener { if (started) status("ADVERTISING RETRY FAILED • ${shortError(it)}") }
         }
         client.startDiscovery(
             serviceId,
             discoveryCallback,
-            DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build(),
+            DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).setLowPower(bleOnly).build(),
         ).addOnSuccessListener {
             discovering = true
             status("DISCOVERY RESTARTED • searching same-code riders")

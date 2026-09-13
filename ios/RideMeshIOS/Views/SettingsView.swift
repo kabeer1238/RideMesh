@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject private var model: RideMeshViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var editedName = ""
+    @AppStorage("ble_only_test") private var bleOnly = false
     @FocusState private var nameFocused: Bool
 
     var body: some View {
@@ -22,6 +23,10 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(RideMeshTheme.muted)
                     profilePanel
                         .padding(.top, 14)
+                    Toggle("BLE-ONLY DISCOVERY TEST", isOn:$bleOnly)
+                        .disabled(model.isRideActive).padding()
+                    Text("For direct-discovery diagnosis only. Enable on both phones before starting a hybrid/offline test. Turn off for shared Wi-Fi tests.")
+                        .font(.caption).foregroundStyle(RideMeshTheme.muted)
 
                     sectionLabel("RIDE")
                         .padding(.top, 22)

@@ -150,7 +150,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private var lastMeshRefreshMs = 0L
     @Volatile private var micMuted = false
     private var betaExpiredDialogShown = false
-    private var transportMode = TransportMode.AUTO
+    private var transportMode = TransportMode.INTERNET_ONLY
     private var meshLabRole = MeshNode.LabRole.NORMAL
     private var setupMode = SetupMode.CREATE
 
@@ -978,8 +978,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         binding.rideCode.setText(prefs.getString("code", "RIDE01"))
         binding.batterySaver.isChecked = prefs.getBoolean("battery_smart", true)
         transportMode = runCatching {
-            TransportMode.valueOf(prefs.getString("transport_mode", "AUTO") ?: "AUTO")
-        }.getOrDefault(TransportMode.AUTO)
+            TransportMode.valueOf(prefs.getString("transport_mode_v36", "INTERNET_ONLY") ?: "INTERNET_ONLY")
+        }.getOrDefault(TransportMode.INTERNET_ONLY)
         meshLabRole = runCatching {
             MeshNode.LabRole.valueOf(prefs.getString("mesh_lab_role", "NORMAL") ?: "NORMAL")
         }.getOrDefault(MeshNode.LabRole.NORMAL)
@@ -1003,7 +1003,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             .putString("code", normalizedRideCode())
             .putString("audio_route", audioRoute)
             .putBoolean("battery_smart", binding.batterySaver.isChecked)
-            .putString("transport_mode", transportMode.name)
+            .putString("transport_mode_v36", transportMode.name)
             .putString("mesh_lab_role", meshLabRole.name)
             .apply()
     }
@@ -2787,6 +2787,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                 dialog.dismiss()
                 showOfflineDiagnosticsDialog()
             }
+            addPanelButton(body, "BLE-ONLY DISCOVERY TEST: ${if (prefs.getBoolean("ble_only_test", false)) "ON" else "OFF"}", primary = false) {
+                if (rideStarted) {
+                    Toast.makeText(this, "End the ride before changing discovery mode", Toast.LENGTH_SHORT).show()
+                } else {
+                    prefs.edit().putBoolean("ble_only_test", !prefs.getBoolean("ble_only_test", false)).apply()
+                    dialog.dismiss()
+                }
+            }
             addPanelButton(body, "EDIT RIDER NAME") {
                 dialog.dismiss()
                 showRiderNameEditor()
@@ -2858,8 +2866,12 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private fun showOfflineDiagnosticsDialog() {
         val d = meshNode.diagnostics()
-        AlertDialog.Builder(this).setTitle("Mesh diagnostics • ${appVersionLabel()} • ${normalizedRideCode()}")
-            .setMessage("Role: ${meshLabRole}\nDirect links: ${d.directPeers}\nReceived: ${d.receivedPackets}\nRelayed: ${d.relayedPackets}\nMaximum hops: ${d.maxObservedHops}\nAdvertising: ${d.advertisingActive}\nDiscovery: ${d.discoveryActive}\nSend failures: ${d.sendFailures}\nLast error: ${d.lastError}\n\nOpus 16 kHz / 20 ms / 32 kbps target.\nReachable riders: ${d.reachableRiders}\nAudio drops: ${d.droppedAudio}\n${meshNode.bridgeSummary()}\nInternet queue drops: ${internetNode.hybridDropCount()}")
+        AlertDialog.Builder(this).setTitle("Offline audio test • Build ${BuildConfig.VERSION_CODE}")
+            .setNeutralButton("SEND TEST TONE") { _, _ ->
+                if (rideStarted && !micMuted) meshNode.sendTestTone { rideStarted && !micMuted }
+                else Toast.makeText(this, "Start a ride and unmute first", Toast.LENGTH_SHORT).show()
+            }
+            .setMessage("Role: ${meshLabRole}\nDirect links: ${d.directPeers}\nReceived: ${d.receivedPackets}\nRelayed: ${d.relayedPackets}\nMaximum hops: ${d.maxObservedHops}\nAdvertising: ${d.advertisingActive}\nDiscovery: ${d.discoveryActive}\nSend failures: ${d.sendFailures}\nLast error: ${d.lastError}\n\n${audioEngine.diagnostics()}\n${meshNode.audioPipelineSummary()}\nBLE-only test: ${prefs.getBoolean("ble_only_test", false)}\n\nOpus 16 kHz / 20 ms / 32 kbps target.\nReachable riders: ${d.reachableRiders}\nAudio drops: ${d.droppedAudio}\n${meshNode.bridgeSummary()}\nInternet queue drops: ${internetNode.hybridDropCount()}")
             .setPositiveButton("OK", null).show()
     }
 
