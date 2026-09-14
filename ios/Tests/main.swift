@@ -50,3 +50,17 @@ speak(7); speak(4)
 online.removeAll(); edges = (0..<7).map { ($0,$0+1) }
 for source in 0..<8 { speak(source) }
 print("PASS: Android envelope, malformed packets, 5-online/3-offline all origins, dedup, gateway expiry, seven-hop chain")
+
+var recovery = HybridAudioRecovery()
+check(recovery.useVoiceProcessing, "new ride attempts echo cancellation")
+check(recovery.beginAttempt(), "first engine start allowed")
+recovery.failedOrStalled()
+check(!recovery.useVoiceProcessing, "failed voice I/O must use compatibility on retry")
+for _ in 0..<3 { check(recovery.beginAttempt(), "bounded retry allowed") }
+check(!recovery.beginAttempt(), "engine.start without microphone must not replenish budget")
+recovery.capturedAudio()
+check(recovery.beginAttempt(), "real capture restores route recovery budget")
+check(!recovery.useVoiceProcessing, "route recovery preserves successful compatibility mode")
+recovery = HybridAudioRecovery()
+check(recovery.useVoiceProcessing && recovery.attempts == 0, "new ride resets recovery")
+print("PASS: audio fallback, stalled microphone retry bound, recovery after real capture")

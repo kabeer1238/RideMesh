@@ -5,6 +5,9 @@ import AVFoundation
 final class HybridSession: ObservableObject {
     @Published private(set) var riders: [UUID:String] = [:]
     @Published private(set) var summary = "HYBRID READY"
+    @Published private(set) var audioRunning = false
+    @Published private(set) var microphoneRunning = false
+    @Published private(set) var audioStatus = "Stopped"
     private let voice: WebRTCVoiceService
     private let audio = HybridAudio()
     private var router: HybridRouter?
@@ -27,7 +30,7 @@ final class HybridSession: ObservableObject {
     }
     deinit { if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) } }
     func start(name: String, code: String) {
-        stop(); active = true; audioFailure = ""; self.name = name
+        stop(); active = true; audioFailure = ""; audioDiagnostics = "Audio starting"; audioStatus = "Starting audio"; self.name = name
         let router = HybridRouter(node:voice.localRiderID); self.router = router
         let nearby = HybridNearby(node:voice.localRiderID,rideCode:code,name:name); self.nearby = nearby
         router.localSend = { [weak nearby] in nearby?.send(excluding:$0,data:$1) }
@@ -51,6 +54,11 @@ final class HybridSession: ObservableObject {
             guard let self, self.active else { return }
             self.audioDiagnostics = text
         }
+        audio.onHealth = { [weak self] running,capturing in
+            guard let self, self.active else { return }
+            self.audioRunning = running; self.microphoneRunning = capturing
+            self.audioStatus = !running ? "Audio unavailable" : (capturing ? "Microphone running" : "Microphone starting")
+        }
         nearby.start(); audio.setMuted(false); audio.start(); heartbeat()
         timer = Timer.scheduledTimer(withTimeInterval:2,repeats:true) { [weak self] _ in
             Task { @MainActor in self?.heartbeat() }
@@ -59,11 +67,15 @@ final class HybridSession: ObservableObject {
     func stop() {
         active = false; timer?.invalidate(); timer = nil; audio.stop(); nearby?.stop(); nearby = nil
         voice.onHybridPacket = nil; router = nil; riders.removeAll(); lastSeen.removeAll(); summary = "HYBRID STOPPED"
+        audioRunning = false; microphoneRunning = false; audioStatus = "Stopped"
     }
     func mute(_ value: Bool) { audio.setMuted(value) }
     func sendTestTone() { guard active else { return }; audio.sendTestTone() }
     func interrupted(_ value: Bool) {
-        guard active else { return }; if value { audio.stop() } else { audio.start() }
+        guard active else { return }
+        if value {
+            audioRunning = false; microphoneRunning = false; audioStatus = "Interrupted"; audio.stop()
+        } else { audioStatus = "Restarting audio"; audio.start() }
     }
     private func receive(_ packet: HybridPacket) {
         if packet.kind == 2 { audio.receive(packet) }

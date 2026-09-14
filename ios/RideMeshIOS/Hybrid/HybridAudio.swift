@@ -15,7 +15,11 @@ final class HybridAudio {
     private var wantsAudio = false
     private var tapInstalled = false
     private var retry: DispatchWorkItem?
-    private var startAttempts = 0
+    private var recovery = HybridAudioRecovery()
+    private var startupStage = "Stopped"
+    private var readyReported = false
+    private var renderedSamples = 0
+    private var outputRate: Double = 0
     private var captureCount = 0
     private var encodedCount = 0
     private var receivedCount = 0
@@ -28,19 +32,26 @@ final class HybridAudio {
     private var toneFrames = 0
     private var tonePhase = 0
     var onDiagnostics: (String) -> Void = { _ in }
+    var onHealth: (Bool, Bool) -> Void = { _,_ in }
     func refreshDiagnostics() {
         work.async {
             let session = AVAudioSession.sharedInstance()
+            let running = self.engine?.isRunning == true
+            let capturing = running && self.readyReported && ProcessInfo.processInfo.systemUptime-self.lastCapture < 3
+            self.ringLock.lock(); let rendered = self.renderedSamples; self.ringLock.unlock()
             let text = "Audio engine: \(self.engine?.isRunning == true ? "on" : "off") • mic buffers: \(self.captureCount) • level: \(Int(self.microphoneLevel * 1000))"
                 + "\nEncoded: \(self.encodedCount) • received: \(self.receivedCount) • decoded: \(self.decodedCount) • codec errors: \(self.codecErrors) • conversion errors: \(self.conversionErrors)"
-                + "\nOutput: \(session.currentRoute.outputs.map { $0.portName }.joined(separator:", "))"
-            DispatchQueue.main.async { [weak self] in self?.onDiagnostics(text) }
+                + "\nOutput: \(session.currentRoute.outputs.map { $0.portName }.joined(separator:", ")) • \(Int(self.outputRate)) Hz • rendered samples: \(rendered)"
+                + "\nAudio mode: \(self.recovery.useVoiceProcessing ? "echo cancellation" : "compatibility") • \(self.startupStage)"
+            DispatchQueue.main.async { [weak self] in self?.onDiagnostics(text); self?.onHealth(running,capturing) }
             if self.wantsAudio && self.engine?.isRunning == true && self.toneFrames == 0 && ProcessInfo.processInfo.systemUptime-self.lastCapture > 3 && self.silentRestarts < 2 {
-                self.silentRestarts += 1; self.startOnQueue()
+                self.silentRestarts += 1; self.recovery.failedOrStalled(); self.startOnQueue()
+            } else if self.wantsAudio && !running && self.retry == nil && self.recovery.canRetry {
+                self.recovery.failedOrStalled(); self.startOnQueue()
             }
         }
     }
-    func sendTestTone() { work.async { if self.wantsAudio && !self.muted { self.toneFrames = 100; self.tonePhase = 0 } } }
+    func sendTestTone() { work.async { if self.wantsAudio && self.engine?.isRunning == true && !self.muted { self.pcm.removeAll(); self.toneFrames = 100; self.tonePhase = 0 } } }
     private var encoder: OpaquePointer?
     private var decoders: [UUID:OpaquePointer] = [:]
     private var pending: [UUID:[UInt32:(Data,TimeInterval)]] = [:]
@@ -57,35 +68,37 @@ final class HybridAudio {
     var onReady: () -> Void = {}
     func setMuted(_ value: Bool) { work.async { self.muted = value; self.pcm.removeAll(); if value { self.toneFrames = 0 } } }
     func start() { work.async {
-        self.wantsAudio = true; self.startAttempts = 0; self.silentRestarts = 0
+        self.wantsAudio = true; self.recovery = HybridAudioRecovery(); self.silentRestarts = 0
         self.captureCount = 0; self.encodedCount = 0; self.receivedCount = 0; self.decodedCount = 0
         self.codecErrors = 0; self.conversionErrors = 0; self.startOnQueue()
     } }
     func recoverStoppedRoute() {
         work.async {
             // Failed startup also leaves engine nil. Explicit stop must still win.
-            if self.wantsAudio && self.engine?.isRunning != true && self.retry == nil && self.startAttempts < 4 {
+            if self.wantsAudio && self.engine?.isRunning != true && self.retry == nil && self.recovery.canRetry {
+                self.recovery.failedOrStalled()
                 self.startOnQueue()
             }
         }
     }
-    func stop() { work.sync { wantsAudio = false; stopOnQueue() } }
+    func stop() { work.sync { wantsAudio = false; stopOnQueue(); startupStage = "Stopped" } }
     private func stopOnQueue() {
         generation = UUID(); timer?.cancel(); timer = nil
         retry?.cancel(); retry = nil
         toneFrames = 0
+        readyReported = false
         if tapInstalled { engine?.inputNode.removeTap(onBus:0) }; tapInstalled = false
         engine?.stop(); engine = nil
         if let encoder { opus_encoder_destroy(encoder) }; encoder = nil
         decoders.values.forEach { opus_decoder_destroy($0) }; decoders.removeAll()
         pending.removeAll(); expected.removeAll(); losses.removeAll(); lastSeen.removeAll(); pcm.removeAll()
-        ringLock.lock(); buffered = 0; readIndex = 0; writeIndex = 0; ringLock.unlock()
+        ringLock.lock(); buffered = 0; readIndex = 0; writeIndex = 0; renderedSamples = 0; ringLock.unlock()
     }
     private func startOnQueue() {
-        guard wantsAudio else { return }
+        guard wantsAudio, recovery.beginAttempt() else { return }
         stopOnQueue()
-        startAttempts += 1
         do {
+            startupStage = "Activating audio session"
             // Re-activate after WebRTC teardown or a transient headset route change.
             // AudioSessionManager retains ownership of category and route selection.
             try AVAudioSession.sharedInstance().setActive(true)
@@ -94,28 +107,41 @@ final class HybridAudio {
             self.encoder = encoder
             guard rm_configure_opus(UnsafeMutableRawPointer(encoder)) == 0 else { throw NSError(domain:"Opus configuration",code:1) }
             let engine = AVAudioEngine(); self.engine = engine
-            try engine.inputNode.setVoiceProcessingEnabled(true)
+            startupStage = "Configuring \(recovery.useVoiceProcessing ? "voice processing" : "standard input/output")"
+            if recovery.useVoiceProcessing { try engine.inputNode.setVoiceProcessingEnabled(true) }
             let input = engine.inputNode.outputFormat(forBus:0)
             guard input.sampleRate > 0, input.channelCount > 0,
                   let converter = AVAudioConverter(from:input,to:format) else {
                 throw NSError(domain:"Audio route",code:1,userInfo:[NSLocalizedDescriptionKey:
-                    "Microphone route unavailable (\(input.sampleRate) Hz, \(input.channelCount) channels), attempt \(startAttempts)/4"])
+                    "Microphone route unavailable (\(input.sampleRate) Hz, \(input.channelCount) channels), attempt \(recovery.attempts)/4"])
             }
+            // Convert the 16 kHz network audio in the mixer. Never implicitly ask
+            // the hardware output (especially VoiceProcessingIO) to run at 16 kHz.
+            let hardware = engine.outputNode.inputFormat(forBus:0)
+            guard hardware.sampleRate > 0, hardware.channelCount > 0 else {
+                throw NSError(domain:"Audio route",code:2,userInfo:[NSLocalizedDescriptionKey:"Speaker route unavailable"])
+            }
+            outputRate = hardware.sampleRate
             let run = generation
-            let source = AVAudioSourceNode(format:format) { [weak self] _,_,frames,list in
+            let source = AVAudioSourceNode(format:format) { [weak self] isSilence,_,frames,list in
                 guard let self else { return noErr }
                 self.ringLock.lock(); defer { self.ringLock.unlock() }
-                for buffer in UnsafeMutableAudioBufferListPointer(list) {
-                    guard let out = buffer.mData?.assumingMemoryBound(to:Float.self) else { continue }
-                    for i in 0..<Int(frames) {
-                        out[i] = self.buffered > 0 ? self.ring[self.readIndex] : 0
-                        if self.buffered > 0 { self.readIndex = (self.readIndex+1)%self.ring.count; self.buffered -= 1 }
+                isSilence.pointee = ObjCBool(self.buffered == 0)
+                for i in 0..<Int(frames) {
+                    let sample = self.buffered > 0 ? self.ring[self.readIndex] : 0
+                    if self.buffered > 0 {
+                        self.readIndex = (self.readIndex+1)%self.ring.count; self.buffered -= 1
+                        self.renderedSamples += 1
+                    }
+                    for buffer in UnsafeMutableAudioBufferListPointer(list) {
+                        guard let out = buffer.mData?.assumingMemoryBound(to:Float.self) else { continue }
+                        for channel in 0..<Int(buffer.mNumberChannels) { out[i*Int(buffer.mNumberChannels)+channel] = sample }
                     }
                 }
                 return noErr
             }
             engine.attach(source); engine.connect(source,to:engine.mainMixerNode,format:format)
-            engine.connect(engine.mainMixerNode,to:engine.outputNode,format:nil)
+            engine.connect(engine.mainMixerNode,to:engine.outputNode,format:hardware)
             engine.inputNode.installTap(onBus:0,bufferSize:960,format:input) { [weak self] buffer,_ in
                 guard let self, self.captureSlots.wait(timeout:.now()) == .success else { return }
                 let capacity = AVAudioFrameCount(Double(buffer.frameLength)*16000/input.sampleRate+32)
@@ -130,6 +156,10 @@ final class HybridAudio {
                     defer { self.captureSlots.signal() }
                     guard self.generation == run else { return }
                     self.captureCount += 1; self.lastCapture = capturedAt
+                    if !self.readyReported && self.engine?.isRunning == true {
+                        self.readyReported = true; self.recovery.capturedAudio(); self.startupStage = "Microphone running"
+                        DispatchQueue.main.async { [weak self] in self?.onReady() }
+                    }
                     if conversionError != nil || converted.frameLength == 0 { self.conversionErrors += 1; return }
                     guard !self.muted, self.toneFrames == 0,
                           ProcessInfo.processInfo.systemUptime-capturedAt < 0.14,
@@ -152,18 +182,23 @@ final class HybridAudio {
                 }
             }
             tapInstalled = true
+            startupStage = "Starting audio engine"
+            engine.prepare()
             try engine.start()
-            startAttempts = 0
+            startupStage = "Waiting for microphone"
             lastCapture = ProcessInfo.processInfo.systemUptime
-            DispatchQueue.main.async { [weak self] in self?.onReady() }
             let timer = DispatchSource.makeTimerSource(queue:work)
             timer.schedule(deadline:.now()+0.04,repeating:0.02,leeway:.milliseconds(2))
             timer.setEventHandler { [weak self] in self?.playTick() }; self.timer = timer; timer.resume()
         } catch {
+            let stage = startupStage
+            let nsError = error as NSError
             stopOnQueue()
-            let message = error.localizedDescription
+            recovery.failedOrStalled()
+            startupStage = recovery.canRetry ? "Retrying compatibility audio" : "Audio unavailable"
+            let message = "\(stage): \(nsError.localizedDescription) [\(nsError.domain) \(nsError.code)]"
             DispatchQueue.main.async { [weak self] in self?.onError(message) }
-            if wantsAudio && startAttempts < 4 {
+            if wantsAudio && recovery.canRetry {
                 let retry = DispatchWorkItem { [weak self] in self?.startOnQueue() }
                 self.retry = retry
                 work.asyncAfter(deadline:.now()+0.75,execute:retry)
@@ -174,7 +209,7 @@ final class HybridAudio {
         let arrival = ProcessInfo.processInfo.systemUptime
         work.async {
             self.receivedCount += 1
-            guard self.engine != nil, p.payload.count >= 8, p.payload.count <= 263,
+            guard self.engine?.isRunning == true, p.payload.count >= 8, p.payload.count <= 263,
                   p.payload.starts(with:[0x4f,0x50,0x56,0x31,1]),
                   Int(p.payload[5])*256+Int(p.payload[6]) == p.payload.count-7,
                   self.pending.count < 7 || self.pending[p.origin] != nil else { return }
@@ -188,6 +223,7 @@ final class HybridAudio {
         }
     }
     private func playTick() {
+        guard wantsAudio, engine?.isRunning == true else { return }
         if toneFrames > 0 && !muted, let encoder {
             let samples = (0..<320).map { i in Float(0.08 * sin(2 * Double.pi * 440 * Double(tonePhase+i) / 16000)) }
             tonePhase += 320; toneFrames -= 1

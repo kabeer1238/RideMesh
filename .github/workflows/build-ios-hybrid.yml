@@ -23,7 +23,7 @@ jobs:
       - name: Test hybrid routing
         working-directory: ios
         run: |
-          swiftc RideMeshIOS/Hybrid/HybridRouter.swift Tests/main.swift -o /tmp/hybrid-tests
+          swiftc RideMeshIOS/Hybrid/HybridRouter.swift RideMeshIOS/Hybrid/HybridAudioRecovery.swift Tests/main.swift -o /tmp/hybrid-tests
           /tmp/hybrid-tests
       - name: Generate Xcode project
         working-directory: ios
@@ -43,11 +43,11 @@ jobs:
       - name: Package unsigned build and source
         working-directory: ios
         run: |
-          ditto -c -k --keepParent build/Build/Products/Debug-iphoneos/RideMesh.app RideMesh-iOS-vc34-Hybrid8-UNSIGNED.zip
-          zip -r RideMesh-iOS-vc34-Hybrid8-source.zip RideMeshIOS project.yml Tests README-HYBRID.md README-DISCOVERY-TEST.md
+          ditto -c -k --keepParent build/Build/Products/Debug-iphoneos/RideMesh.app RideMesh-iOS-vc35-Hybrid8-UNSIGNED.zip
+          zip -r RideMesh-iOS-vc35-Hybrid8-source.zip RideMeshIOS project.yml Tests README-HYBRID.md README-DISCOVERY-TEST.md
       - uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-iOS-vc34-Hybrid8-${{ github.run_number }}
+          name: RideMesh-iOS-vc35-Hybrid8-${{ github.run_number }}
           path: ios/RideMesh-*.zip
       - uses: actions/upload-artifact@v4
         if: always()

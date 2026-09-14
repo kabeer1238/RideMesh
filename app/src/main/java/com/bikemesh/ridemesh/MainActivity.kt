@@ -2865,11 +2865,13 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     private fun expireActiveRide() = Unit
 
     private fun showOfflineDiagnosticsDialog() {
+        if (transportMode == TransportMode.INTERNET_ONLY) { showRideStatusDialog(); return }
         val d = meshNode.diagnostics()
         AlertDialog.Builder(this).setTitle("Offline audio test • Build ${BuildConfig.VERSION_CODE}")
             .setNeutralButton("SEND TEST TONE") { _, _ ->
-                if (rideStarted && !micMuted) meshNode.sendTestTone { rideStarted && !micMuted }
-                else Toast.makeText(this, "Start a ride and unmute first", Toast.LENGTH_SHORT).show()
+                if (rideStarted && audioEngine.canSendAudio() && (d.directPeers > 0 || internetNode.hybridPeerIds().isNotEmpty())) {
+                    meshNode.sendTestTone { rideStarted && audioEngine.canSendAudio() }
+                } else Toast.makeText(this, "Connect a rider and enable microphone audio first", Toast.LENGTH_SHORT).show()
             }
             .setMessage("Role: ${meshLabRole}\nDirect links: ${d.directPeers}\nReceived: ${d.receivedPackets}\nRelayed: ${d.relayedPackets}\nMaximum hops: ${d.maxObservedHops}\nAdvertising: ${d.advertisingActive}\nDiscovery: ${d.discoveryActive}\nSend failures: ${d.sendFailures}\nLast error: ${d.lastError}\n\n${audioEngine.diagnostics()}\n${meshNode.audioPipelineSummary()}\nBLE-only test: ${prefs.getBoolean("ble_only_test", false)}\n\nOpus 16 kHz / 20 ms / 32 kbps target.\nReachable riders: ${d.reachableRiders}\nAudio drops: ${d.droppedAudio}\n${meshNode.bridgeSummary()}\nInternet queue drops: ${internetNode.hybridDropCount()}")
             .setPositiveButton("OK", null).show()

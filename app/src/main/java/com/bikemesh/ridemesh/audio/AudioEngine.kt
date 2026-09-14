@@ -45,7 +45,17 @@ class AudioEngine(
     private val capturedFrames = java.util.concurrent.atomic.AtomicLong()
     private val forwardedFrames = java.util.concurrent.atomic.AtomicLong()
     @Volatile private var micLevel = 0
-    fun diagnostics() = "Mic running: ${capturing.get()} • capture buffers: ${capturedFrames.get()} • level: $micLevel\nMic frames forwarded: ${forwardedFrames.get()} • muted: ${userMuted.get()}"
+    private val playedBytes = java.util.concurrent.atomic.AtomicLong()
+    private val playbackErrors = java.util.concurrent.atomic.AtomicLong()
+    fun canSendAudio() = transmitDesired.get() && !focusPaused.get() && !userMuted.get()
+    fun voiceStatus() = when {
+        !transmitDesired.get() -> "Audio stopped"
+        focusPaused.get() -> "Audio interrupted"
+        !capturing.get() -> "Microphone unavailable"
+        userMuted.get() -> "Muted • listening"
+        else -> "Microphone running"
+    }
+    fun diagnostics() = "Voice: ${voiceStatus()}\nMic running: ${capturing.get()} • capture buffers: ${capturedFrames.get()} • level: $micLevel\nMic frames forwarded: ${forwardedFrames.get()} • muted: ${userMuted.get()}\nSpeaker PCM bytes written: ${playedBytes.get()} • playback errors: ${playbackErrors.get()}"
 
     private data class IncomingFrame(
         val sequence: Int,
@@ -276,6 +286,9 @@ class AudioEngine(
 
     @SuppressLint("MissingPermission")
     private fun startRecorder() {
+        // An old recorder may still be unwinding after a focus interruption.
+        // Never overwrite it with another recorder sharing the same capture flag.
+        if (audioRecord != null) return
         if (!capturing.compareAndSet(false, true)) return
 
         var recorder: AudioRecord? = null
@@ -399,8 +412,10 @@ class AudioEngine(
                     ns?.release()
                     agc?.release()
                     activeRecorder.release()
-                    if (audioRecord === activeRecorder) audioRecord = null
-                    if (!focusPaused.get()) selectCommunicationDevice()
+                    if (audioRecord === activeRecorder) {
+                        audioRecord = null
+                        capturing.set(false)
+                    }
                 }
             }, "RideMesh-Mic").start()
         } catch (t: Throwable) {
@@ -520,10 +535,22 @@ class AudioEngine(
                 val mixed = if (frames.isEmpty()) SILENCE_FRAME else mixFrames(frames)
                 val track = ensureTrack() ?: continue
                 playbackActiveUntilMs = nowMs + ECHO_GUARD_AFTER_PLAYBACK_MS
-                track.write(mixed, 0, mixed.size, AudioTrack.WRITE_BLOCKING)
+                if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
+                var offset = 0
+                while (offset < mixed.size && !focusPaused.get() && transmitDesired.get()) {
+                    val written = track.write(mixed, offset, mixed.size-offset, AudioTrack.WRITE_BLOCKING)
+                    if (written <= 0) throw IllegalStateException("AudioTrack write failed: $written")
+                    offset += written
+                    playedBytes.addAndGet(written.toLong())
+                }
             } catch (_: InterruptedException) {
                 break
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
+                playbackErrors.incrementAndGet()
+                onStatus("Speaker recovering: ${t.message ?: t.javaClass.simpleName}")
+                // A dead AudioTrack must be replaced, not reused on every tick.
+                val failed = audioTrack; audioTrack = null
+                runCatching { failed?.stop() }; runCatching { failed?.release() }
                 Thread.sleep(PLAYBACK_IDLE_SLEEP_MS)
                 nextTickNs = System.nanoTime() + FRAME_NS
             }
@@ -712,7 +739,9 @@ class AudioEngine(
                 audioTrack = track
                 track
             }
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            playbackErrors.incrementAndGet()
+            onStatus("Speaker unavailable: ${t.message ?: t.javaClass.simpleName}")
             null
         }
     }

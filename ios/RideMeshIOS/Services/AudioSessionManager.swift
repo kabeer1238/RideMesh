@@ -296,33 +296,47 @@ final class AudioSessionManager: ObservableObject {
     }
 
     private func applyRoute(_ route: RideAudioRoute, allowFallback: Bool) throws {
+        // setPreferredInput / overrideOutputAudioPort can themselves post a route
+        // notification. Do not turn that notification into another route mutation.
+        func phone() throws {
+            let builtIn = session.availableInputs?.first { $0.portType == .builtInMic }
+            if session.preferredInput?.uid != builtIn?.uid {
+                try session.setPreferredInput(builtIn)
+            }
+            if !session.currentRoute.outputs.contains(where: { $0.portType == .builtInSpeaker }) {
+                try session.overrideOutputAudioPort(.speaker)
+            }
+        }
+        func headset(_ input: AVAudioSessionPortDescription) throws {
+            if session.currentRoute.outputs.contains(where: { $0.portType == .builtInSpeaker }) {
+                try session.overrideOutputAudioPort(.none)
+            }
+            if session.preferredInput?.uid != input.uid {
+                try session.setPreferredInput(input)
+            }
+        }
         switch route {
         case .phone:
-            try session.setPreferredInput(nil)
-            try session.overrideOutputAudioPort(.speaker)
+            try phone()
 
         case .helmet:
             guard let input = session.availableInputs?.first(where: {
                 $0.portType == .bluetoothHFP || $0.portType == .headsetMic
             }) else {
                 if allowFallback {
-                    try session.setPreferredInput(nil)
-                    try session.overrideOutputAudioPort(.speaker)
+                    try phone()
                     routeText = "Helmet unavailable • phone audio restored"
                     return
                 }
                 throw AudioRouteError.helmetUnavailable
             }
-            try session.overrideOutputAudioPort(.none)
-            try session.setPreferredInput(input)
+            try headset(input)
 
         case .automatic:
-            if let helmet = session.availableInputs?.first(where: { $0.portType == .bluetoothHFP }) {
-                try session.overrideOutputAudioPort(.none)
-                try session.setPreferredInput(helmet)
+            if let helmet = session.availableInputs?.first(where: { $0.portType == .bluetoothHFP || $0.portType == .headsetMic }) {
+                try headset(helmet)
             } else {
-                try session.setPreferredInput(nil)
-                try session.overrideOutputAudioPort(.speaker)
+                try phone()
             }
         }
     }
@@ -344,7 +358,7 @@ final class AudioSessionManager: ObservableObject {
                         self.routeRecoveryTask?.cancel()
                         self.routeRecoveryTask = Task { @MainActor [weak self] in
                             try? await Task.sleep(for: .milliseconds(240))
-                            guard let self, self.rideConfigured, !self.isInterrupted else { return }
+                            guard !Task.isCancelled, let self, self.rideConfigured, !self.isInterrupted else { return }
                             try? self.applyRoute(self.selectedRoute, allowFallback: true)
                             self.refreshRouteState()
                         }

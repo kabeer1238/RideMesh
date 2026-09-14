@@ -12,11 +12,13 @@ struct DiagnosticsSheet: View {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 0) {
                     RMModalHeader(title: "RIDE STATUS") { dismiss() }
+                    Text("RideMesh iOS • Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?")")
+                        .font(.caption).foregroundStyle(RideMeshTheme.muted)
 
                     if model.hybridEnabled {
                         Text(model.hybrid.summary).font(.caption).foregroundStyle(RideMeshTheme.accent).padding()
                         Button("SEND 2-SECOND TEST TONE") { model.hybrid.sendTestTone() }
-                            .disabled(!model.isRideActive || model.micMuted)
+                            .disabled(!model.isRideActive || model.micMuted || !model.hybrid.audioRunning)
                         Text("Listen on the other phone. Start with low volume.")
                             .font(.caption).foregroundStyle(RideMeshTheme.muted)
                     }
@@ -66,6 +68,11 @@ struct DiagnosticsSheet: View {
     }
 
     private var voiceText: String {
+        if model.hybridEnabled {
+            if !model.hybrid.microphoneRunning { return model.hybrid.audioStatus }
+            if model.micMuted { return "Muted" }
+            return model.connectedVoicePeers > 0 ? "Microphone running" : "Waiting for riders"
+        }
         if model.micMuted { return "Muted" }
         if model.connectedVoicePeers > 0 { return "Ready" }
         return model.voice.diagnostics.signalingConnected ? "Ready" : "Connecting…"

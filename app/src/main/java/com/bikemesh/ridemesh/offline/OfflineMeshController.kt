@@ -126,6 +126,7 @@ class OfflineMeshController(
         onLog("OFFLINE OPUS • 16 kHz • 20 ms • 32 kbps target • eight-rider hybrid test")
     }
     fun stop() {
+        toneActive = false
         toneTask?.let(handler::removeCallbacks); toneTask = null; decodedFrames.set(0)
         handler.removeCallbacks(heartbeat)
         cluster?.stop(); cluster = null; router = null; localNodeId = null
@@ -143,17 +144,19 @@ class OfflineMeshController(
     fun diagnosticSummary() = status
     fun audioTxCount() = tx.get()
     private var toneTask: Runnable? = null
+    @Volatile private var toneActive = false
     private val decodedFrames = java.util.concurrent.atomic.AtomicLong()
     fun audioPipelineSummary() = "Encoded/sent: ${tx.get()} • audio received: ${rx.get()} • decoded: ${decodedFrames.get()}"
     fun sendTestTone(allowed: () -> Boolean) {
         toneTask?.let(handler::removeCallbacks)
+        toneActive = true
         var frame = 0
         val task = object : Runnable {
             override fun run() {
-                if (!isActive() || !allowed() || frame >= 100) { toneTask = null; return }
+                if (!isActive() || !allowed() || frame >= 100) { toneTask = null; toneActive = false; return }
                 val pcm = java.nio.ByteBuffer.allocate(640).order(java.nio.ByteOrder.LITTLE_ENDIAN)
                 for (i in 0 until 320) pcm.putShort((2600 * kotlin.math.sin(2 * Math.PI * 440 * (frame * 320 + i) / 16000)).toInt().toShort())
-                sendAudioFrame(pcm.array()); frame += 1
+                encodeAndSend(pcm.array()); frame += 1
                 handler.postDelayed(this, 20)
             }
         }
@@ -169,6 +172,13 @@ class OfflineMeshController(
     fun refreshDiscovery(reason: String) { cluster?.refreshDiscovery(reason) }
     fun sendDiagnosticEnvelope(text: String) = router?.originateDiagnostic(text) == true
     fun sendAudioFrame(audio: ByteArray): Boolean {
+        // A tone replaces microphone packets; mixing two independently paced
+        // encoders into one sequence overfills the receiver's 20 ms jitter clock.
+        if (toneActive) return false
+        return encodeAndSend(audio)
+    }
+    @Synchronized
+    private fun encodeAndSend(audio: ByteArray): Boolean {
         if (!isActive() || connectedPeerCount() == 0 && internetPeers().isEmpty()) return false
         val packet = opus.encode20ms(audio) ?: run { dropped.incrementAndGet(); return false }
         val sent = router?.originateAudio(packet) == true
