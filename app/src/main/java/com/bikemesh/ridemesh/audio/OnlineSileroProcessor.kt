@@ -33,6 +33,7 @@ internal class OnlineSileroProcessor(context: Context) : AutoCloseable {
     @Volatile private var suppressed = 0L
     @Volatile private var late = 0L
     private var captureEpoch = -1L
+    private var lastCaptureNs = 0L
     private var captureRate = 0
     private var endSample = 0L
     private var consecutiveLate = 0
@@ -62,6 +63,7 @@ internal class OnlineSileroProcessor(context: Context) : AutoCloseable {
         var detector: SileroSpeechDetector? = null
         var workerEpoch = epoch.get()
         var speechThrough = -1L
+        var hasObserved = false
         try {
             detector = SileroSpeechDetector(appContext)
             ready = true
@@ -69,17 +71,21 @@ internal class OnlineSileroProcessor(context: Context) : AutoCloseable {
                 val frame = queue.poll(100, TimeUnit.MILLISECONDS) ?: continue
                 if (frame.epoch != epoch.get() || !allowed) continue
                 if (workerEpoch != frame.epoch) {
-                    detector.close()
-                    detector = SileroSpeechDetector(appContext) // reset recurrent state too
+                    if (hasObserved) {
+                        detector?.close()
+                        detector = SileroSpeechDetector(appContext) // reset recurrent state too
+                    }
                     workerEpoch = frame.epoch
                     speechThrough = -1L
                 }
-                val speech = detector.observe(OnlineVadPolicy.analysisFrame(frame.pcm, frame.rate))
+                val activeDetector = requireNotNull(detector)
+                hasObserved = true
+                val speech = activeDetector.observe(OnlineVadPolicy.analysisFrame(frame.pcm, frame.rate))
                 if (speech == true) speechThrough = frame.end + OnlineVadPolicy.HANGOVER_SAMPLES
                 if (frame.epoch == epoch.get() && allowed && !closed) {
                     decision.set(Decision(frame.epoch, frame.end, speechThrough))
                 }
-                if (frame.end % 16_000L == 0L) modelStats = detector.diagnostics()
+                if (frame.end % 16_000L == 0L) modelStats = activeDetector.diagnostics()
             }
         } catch (_: InterruptedException) {
             if (!closed) failure = "worker interrupted"
@@ -95,6 +101,9 @@ internal class OnlineSileroProcessor(context: Context) : AutoCloseable {
     /** Called only by the ADM. Returns the capture timestamp matching the buffered PCM. */
     fun process(buffer: ByteBuffer, format: Int, channels: Int, rate: Int,
                 bytesRead: Int, timestamp: Long): Long {
+        val now = System.nanoTime()
+        if (lastCaptureNs != 0L && now - lastCaptureNs > 200_000_000L) epoch.incrementAndGet()
+        lastCaptureNs = now
         val token = epoch.get()
         try {
             if (captureEpoch != token || captureRate != rate) {
