@@ -1,0 +1,38 @@
+name: Inspect iOS WebRTC audio extension APIs
+on:
+  workflow_dispatch:
+  push:
+    branches: [offline-mesh-v1]
+    paths: ['.github/workflows/inspect-ios-audio-api.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect pinned stasel M152 headers without changing the app
+        run: |
+          python3 - <<'PY'
+          import hashlib, io, urllib.request, zipfile
+          url = "https://github.com/stasel/WebRTC/releases/download/152.0.0/WebRTC-M152.xcframework.zip"
+          data = urllib.request.urlopen(url, timeout=90).read()
+          assert hashlib.sha256(data).hexdigest() == "115cb9944248a3302c0c8af17462e2576a28ccc7adef9f6a1fe66ee75d9e1cc8"
+          archive = zipfile.ZipFile(io.BytesIO(data))
+          headers = [n for n in archive.namelist() if "/ios-arm64/" in n and "/Headers/" in n and n.endswith(".h")]
+          assert headers, "Device headers not found"
+          print("Verified pinned package checksum. iOS device public headers:", len(headers))
+          print("\n".join(n for n in headers if "Audio" in n or "Factory" in n))
+          for name in headers:
+              if name.rsplit("/", 1)[-1] in ("RTCPeerConnectionFactory.h", "RTCAudioSource.h", "RTCAudioDevice.h"):
+                  print("\nHEADER:", name)
+                  print(archive.read(name).decode())
+          print("\nPROCESSING API SEARCH")
+          for name in headers:
+              text = archive.read(name).decode()
+              lines = [l for l in text.splitlines() if any(k in l for k in (
+                  "ProcessingDelegate", "ProcessingModule", "audioProcessing", "AudioBuffer",
+                  "audioDevice", "AudioDevice", "recordedData", "RecordedData"))]
+              if lines:
+                  print(name, "\n" + "\n".join(lines))
+          PY
