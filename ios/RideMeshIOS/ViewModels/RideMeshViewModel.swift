@@ -31,8 +31,6 @@ final class RideMeshViewModel: ObservableObject {
     let network = RideNetworkMonitor()
     let audio = AudioSessionManager()
     let voice = WebRTCVoiceService()
-    lazy var hybrid = HybridSession(voice:voice)
-    @Published var hybridEnabled = UserDefaults.standard.object(forKey:"hybrid_enabled_v34") as? Bool ?? false
     let battery = RideBatteryMonitor()
     let location = RideLocationService()
 
@@ -62,7 +60,6 @@ final class RideMeshViewModel: ObservableObject {
             .removeDuplicates()
             .sink { [weak self] interrupted in
                 self?.voice.setSystemInterrupted(interrupted)
-                if self?.hybridEnabled == true { self?.hybrid.interrupted(interrupted) }
             }
             .store(in: &cancellables)
 
@@ -74,7 +71,7 @@ final class RideMeshViewModel: ObservableObject {
             .store(in: &cancellables)
 
         voice.$statusText
-            .sink { [weak self] in if self?.hybridEnabled == false { self?.statusMessage = $0 } }
+            .sink { [weak self] in self?.statusMessage = $0 }
             .store(in: &cancellables)
 
         Publishers.CombineLatest(network.$isOnline, network.$interfaceText)
@@ -90,11 +87,7 @@ final class RideMeshViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        hybrid.$summary.sink { [weak self] text in
-            if self?.hybridEnabled == true { self?.statusMessage = text }
-        }.store(in:&cancellables)
-
-        [hybrid.objectWillChange.eraseToAnyPublisher(), network.objectWillChange.eraseToAnyPublisher(),
+        [network.objectWillChange.eraseToAnyPublisher(),
          audio.objectWillChange.eraseToAnyPublisher(),
          voice.objectWillChange.eraseToAnyPublisher(),
          battery.objectWillChange.eraseToAnyPublisher(),
@@ -106,12 +99,8 @@ final class RideMeshViewModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    var peers: [RiderPeer] {
-        guard hybridEnabled else { return voice.peers }
-        return hybrid.riders.map { RiderPeer(id:$0.key,riderName:$0.value,deviceName:"Hybrid rider",lastSeen:Date(),connected:true,qualityBars:0) }
-            .sorted { $0.displayName < $1.displayName }
-    }
-    var connectedVoicePeers: Int { hybridEnabled ? hybrid.riders.count : voice.diagnostics.voicePeersConnected }
+    var peers: [RiderPeer] { voice.peers }
+    var connectedVoicePeers: Int { voice.diagnostics.voicePeersConnected }
     var totalConnectedRiders: Int { max(1, connectedVoicePeers + 1) }
 
     var groupRiderCount: Int { max(1, peers.count + 1) }
@@ -174,7 +163,6 @@ final class RideMeshViewModel: ObservableObject {
     }
 
     var connectionLabel: String {
-        if hybridEnabled && isRideActive { return connectedVoicePeers > 0 ? "HYBRID CONNECTED" : "FINDING RIDERS" }
         if !network.isOnline { return "WAITING FOR INTERNET" }
         if voice.diagnostics.signalingConnected { return "CONNECTED" }
         return isRideActive ? "RECONNECTING…" : "READY"
@@ -226,10 +214,6 @@ final class RideMeshViewModel: ObservableObject {
     func startRide() {
         guard !isRideActive else { return }
         let code = normalizedRideCode
-        guard !hybridEnabled || code.range(of:"^[A-Z0-9]{5,12}$",options:.regularExpression) != nil else {
-            errorMessage = "For hybrid rides use 5–12 letters and numbers, matching Android."
-            return
-        }
         guard code.count >= 5 else {
             errorMessage = "Ride code must be at least 5 characters."
             return
@@ -260,9 +244,8 @@ final class RideMeshViewModel: ObservableObject {
                 rideCode: rideCode,
                 riderName: riderName,
                 deviceName: UIDevice.current.model,
-                batterySmart: batterySaver, hybrid:hybridEnabled
+                batterySmart: batterySaver
             )
-            if hybridEnabled { hybrid.start(name:riderName,code:rideCode) }
             battery.startSession()
             isRideActive = true
             activeTab = .ride
@@ -278,7 +261,6 @@ final class RideMeshViewModel: ObservableObject {
 
     func stopRide() {
         // vc17 principle: an explicit END RIDE releases every active-ride resource.
-        hybrid.stop()
         voice.stop()
         audio.deactivate()
         battery.stopSession()
@@ -295,7 +277,6 @@ final class RideMeshViewModel: ObservableObject {
     func toggleMute() {
         micMuted.toggle()
         voice.setMuted(micMuted)
-        hybrid.mute(micMuted)
     }
 
     func handleAppBecameActive() {
@@ -471,7 +452,6 @@ final class RideMeshViewModel: ObservableObject {
     }
 
     func persist() {
-        defaults.set(hybridEnabled,forKey:"hybrid_enabled_v34")
         defaults.set(riderName, forKey: "ridemesh_rider_name")
         defaults.set(normalizedRideCode, forKey: "ridemesh_ride_code")
         defaults.set(sanitizedPhoneNumber, forKey: "ridemesh_phone_number")

@@ -45,7 +45,9 @@ class NearbyClusterTransport(
     )
 
     private val client: ConnectionsClient = Nearby.getConnectionsClient(context.applicationContext)
-    private val bleOnly = context.getSharedPreferences("ridemesh", Context.MODE_PRIVATE).getBoolean("ble_only_test", false)
+    // Use all Nearby media for the Android-only baseline. Old BLE test preferences
+    // must not silently constrain discovery on an upgraded installation.
+    private val bleOnly = false
     private var scheduler = Executors.newSingleThreadScheduledExecutor()
     private val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()
     private val pendingEndpoints = ConcurrentHashMap.newKeySet<String>()
@@ -76,7 +78,7 @@ class NearbyClusterTransport(
     fun refreshDiscovery(reason: String) { if (started) restartDiscovery() }
     private fun allowed(name: String): Boolean {
         val parts = name.split('|', limit = 4)
-        if (parts.size != 4 || parts[0] != "RM34" || parts[2] != rideToken) return false
+        if (parts.size != 4 || parts[0] != "RMA1" || parts[2] != rideToken) return false
         val remote = parts[1].toIntOrNull() ?: return false
         return com.bikemesh.ridemesh.mesh.MeshRelayPolicy.allows(labRole, remote)
     }
@@ -84,8 +86,8 @@ class NearbyClusterTransport(
 
     @Volatile private var started = false
 
-    private val serviceId = "in.autopilotindia.ridemesh.hybrid34"
-    private val localEndpointName = "RM34|$labRole|$rideToken|${sanitize(riderName.ifBlank { "Rider" }).take(24)}"
+    private val serviceId = "in.autopilotindia.ridemesh.android.offline1"
+    private val localEndpointName = "RMA1|$labRole|$rideToken|${sanitize(riderName.ifBlank { "Rider" }).take(24)}"
     private val localDeviceName = sanitize(deviceName.ifBlank { "Android device" }).take(48)
 
     private fun status(message: String) = listener.onStatus("NEARBY DIAG • $message")

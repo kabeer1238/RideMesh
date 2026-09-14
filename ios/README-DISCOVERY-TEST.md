@@ -1,59 +1,57 @@
-# Audio recovery test: Android 37 / iOS 35
+# Android 38 / iOS 36: original online voice and separate Android offline
 
-## Evidence from the previous device test
+The user's September 14 request replaces hybrid development with independent
+online and Android-to-Android offline modes. iPhone-to-iPhone remains ONLINE,
+as requested. Android-to-iPhone offline bridging is paused.
 
-On shared Wi-Fi, Android 36 captured and sent 11,162 audio packets. iOS 34
-received 11,698 and decoded 2,352 but reported audio engine off, zero microphone
-buffers, and AVFAudio error 2003329396. Neither user heard voice. Counts were
-recorded at different moments. This proves packet reception and decoding, not
-audible playback or router-free discovery.
+## Online source restored
 
-## Changes
+Android InternetNode.kt is restored byte-for-byte from the supplied vc31 Cyan UI
+source. iOS WebRTCVoiceService.swift, AudioSessionManager.swift,
+RideMeshSignalingService.swift and RideMeshViewModel.swift are restored byte-for-byte
+from the supplied pre-hybrid RideMeshIOS-v1.3-WiFiAware-No-Subscription source.
+The iOS WebRTC dependency is restored to that source's 151.0.0 version.
 
-- iOS route recovery changes input/output selection only when needed. Cancelled
-  route tasks exit, preventing repeated route mutations after notifications.
-- The iOS mixer converts the 16 kHz network stream to the hardware output format.
-- Failed or stalled voice processing switches to standard input/output for the
-  rest of the ride. This compatibility mode lacks the engine's echo cancellation;
-  use headphones when assessing full-duplex quality. The output route is preserved.
-- Retry budget resets only after actual microphone callbacks. Failed-start errors
-  include stage, domain and code. Engine, capture and rendered sample counts
-  distinguish decoding from output activity; they do not prove audibility.
-- iOS Voice status no longer claims Ready from a network connection. Test tone is
-  disabled while the engine is stopped. Readiness requires capture callbacks.
-- Android microphone status clears after stream failure. Speaker writes handle
-  partial writes and rebuild a failed AudioTrack; diagnostics expose playback
-  errors and PCM bytes written. A tone replaces microphone packets for two seconds
-  instead of overloading a single audio sequence with both streams.
-- Android Internet-only mode opens Internet status, avoiding misleading stopped
-  mesh diagnostics. Existing transport preferences and wire formats are retained.
+tools/online-baseline.sha256 pins these files. Both CI builds verify the hashes.
+This does not assert phone performance: the original online call still needs a
+device regression test. Production-vc25-billing8 is not modified.
 
-## Install
+## Modes
 
-Android: extract the artifact and install RideMesh-hybrid8-vc37-debug.apk. This is
-the separate no-billing test app, not the production Play Store package.
+- Android defaults to Internet Voice on upgrade. Online voice uses native WebRTC.
+- Android Settings > Voice Connection > Android-to-Android offline starts only the
+  Nearby P2P_CLUSTER / Opus audio path. No internet voice engine or gateway starts.
+- Android offline advertises on its own service, using all normal Nearby media.
+  Old BLE-only preferences are ignored. Both Android devices need build 38.
+- Offline lab role defaults to NORMAL on upgrade. Leave it there for two-phone
+  testing; chain roles are only for later controlled relay tests.
+- iOS starts only the restored online voice service. Hybrid code is excluded from
+  the app target and Nearby/Opus hybrid dependencies are removed. The older
+  experimental sources remain in the repository for reference, not in the app.
+- Existing logo rendering cleanup and billing-free testing remain.
 
-iOS: extract the artifact, then extract RideMesh-iOS-vc35-Hybrid8-source.zip. In
-the directory containing project.yml run `xcodegen generate`, then
-`open RideMeshIOS.xcodeproj`. Select your signing team and iPhone and Run. The
-UNSIGNED archive cannot be installed directly.
+## Install and test
 
-## First device check
+Android: install RideMesh-android-vc38-debug.apk on BOTH Android phones.
+iOS: extract the source ZIP inside the artifact. In the folder with project.yml,
+run `xcodegen generate`, open RideMeshIOS.xcodeproj, select your signing team and
+iPhone, then Run. The unsigned app archive cannot install directly.
 
-1. End the ride on both phones. Select Hybrid on both and BLE-only test OFF.
-2. Keep Wi-Fi and Bluetooth on; use the same Wi-Fi and same ride code.
-3. Confirm 2 riders and 1 local link. Check iOS engine ON and growing mic buffers.
-4. Send the tone from Android, listen on iPhone; then reverse the direction.
-5. Speak in both directions. Reopen Android Status and photograph both statuses.
-6. Test original Internet voice separately with Hybrid off / Internet-only on both.
+1. Test Internet Voice first using the same ride code and working internet on
+   both phones. Test Android/Android and iPhone/iPhone where two phones are
+   available. The restored online protocol also remains shared across platforms.
+2. End rides on both Android phones, select Android-to-Android offline, then use
+   the same ride code. Keep Bluetooth and Wi-Fi ON; disable mobile data. Start
+   nearby with both apps in the foreground. Grant requested Nearby permissions.
+3. Check for 2 riders / 1 direct link. Speak each direction and send the test tone.
+   Reopen Status on both to capture fresh microphone, received, decoded, and
+   speaker-write counts.
+4. Record whether phones share a Wi-Fi router. Shared-Wi-Fi success does not prove
+   router-free discovery. Test without a shared access point after voice works.
+5. Expand to three phones / one relay only after two-phone bidirectional voice
+   passes, then expand to six and eight riders.
 
-After shared-Wi-Fi voice passes, test with the router's internet uplink removed
-while keeping its Wi-Fi active, then test without a shared router. These are
-different tests. BLE-only remains an experimental discovery isolation option.
-
-## Validation boundary
-
-CI compiles both apps, runs Android codec/routing tests and iOS routing/recovery
-policy tests. Physical microphones, speakers, headsets, direct offline discovery,
-range and eight-rider voice still require device validation. The previous logo
-margin masks remain in place. Production branch is not changed.
+No physical voice, router-free discovery, range, or multihop result is claimed
+from CI. CI verifies compilation, the original online file hashes, and Android
+codec/routing tests. Retained Swift protocol tests concern the offline library;
+they are not tests of the online iPhone app's microphone or speakers.

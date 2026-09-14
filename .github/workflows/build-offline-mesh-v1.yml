@@ -1,4 +1,4 @@
-name: RideMesh Cyan Hybrid Eight Rider Test
+name: RideMesh Android Online and Offline Test
 on:
   workflow_dispatch:
   push:
@@ -23,6 +23,8 @@ jobs:
       MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
     steps:
       - uses: actions/checkout@v4
+      - name: Verify original online source is unchanged
+        run: shasum -a 256 -c tools/online-baseline.sha256
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -39,7 +41,7 @@ jobs:
         run: gradle --no-daemon :app:assembleDebug
       - name: Verify debug APK signature
         run: |
-          APK='app/build/outputs/apk/debug/RideMesh-hybrid8-vc37-debug.apk'
+          APK='app/build/outputs/apk/debug/RideMesh-android-vc38-debug.apk'
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --verbose "$APK"
           "$ANDROID_SDK_ROOT/build-tools/36.0.0/aapt" dump badging "$APK" > /tmp/ridemesh-badging.txt
@@ -51,7 +53,7 @@ jobs:
           sha256sum "$APK" > app/build/outputs/apk/debug/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-vc37-Hybrid8-NoBilling-${{ github.run_number }}
+          name: RideMesh-Android-vc38-Online-Offline-NoBilling-${{ github.run_number }}
           path: |
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/debug/SHA256SUMS.txt

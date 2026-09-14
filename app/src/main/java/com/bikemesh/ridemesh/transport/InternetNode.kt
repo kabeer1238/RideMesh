@@ -61,7 +61,6 @@ class InternetNode(
     private val context: Context? = null,
 ) {
     interface Listener {
-        fun onHybridPacket(peerId: String, bytes: ByteArray) = Unit
         fun onInternetState(connected: Boolean, message: String)
         fun onInternetAudio(sourceId: String, sequence: Int, timestampMs: Long, audio: ByteArray)
         fun onInternetPeerCount(count: Int)
@@ -133,7 +132,7 @@ class InternetNode(
     private val appContext: Context?
         get() = context?.applicationContext
 
-    private val persistentNodeId: UUID by lazy {
+    private val nodeId: UUID by lazy {
         val ctx = appContext
         if (ctx == null) {
             UUID.randomUUID()
@@ -148,11 +147,6 @@ class InternetNode(
         }
     }
 
-    @Volatile private var hybridIdentity: UUID? = null
-    private val nodeId: UUID get() = hybridIdentity ?: persistentNodeId
-    private val hybridChannels = ConcurrentHashMap<UUID, com.bikemesh.ridemesh.offline.ChannelLease<DataChannel>>()
-    private val hybridDrops = java.util.concurrent.atomic.AtomicLong()
-    private val hybridMode: Boolean get() = hybridIdentity != null
     private val running = AtomicBoolean(false)
     private val signalingConnected = AtomicBoolean(false)
     private val reportedPeerCount = AtomicInteger(-1)
@@ -218,19 +212,17 @@ class InternetNode(
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
-    fun start(rideCode: String, riderName: String, deviceName: String, hybrid: Boolean = false) {
+    fun start(rideCode: String, riderName: String, deviceName: String) {
         val ctx = appContext ?: throw IllegalStateException("Android context required for WebRTC voice")
         stop()
 
-        hybridIdentity = if (hybrid) UUID.randomUUID() else null
-        hybridDrops.set(0)
         this.riderName = sanitizeIdentity(riderName, "Rider", MAX_RIDER_NAME_BYTES)
         this.deviceName = sanitizeIdentity(deviceName, "Android device", MAX_DEVICE_NAME_BYTES)
         val safeRide = rideCode.trim().uppercase().ifBlank { "RIDE01" }
             .replace(Regex("[^A-Z0-9_-]"), "_")
             .take(32)
 
-        baseTopic = if (hybridMode) "ridemesh/test/hybrid33/$safeRide" else "ridemesh/test/v3/$safeRide"
+        baseTopic = "ridemesh/test/v3/$safeRide"
         presenceTopic = "$baseTopic/presence"
         signalTopic = "$baseTopic/signal"
         locationTopic = "$baseTopic/location"
@@ -245,13 +237,11 @@ class InternetNode(
 
         initializeWebRtc(ctx)
         running.set(true)
-        if (!hybridMode) {
-            requestAudioFocus()
-            selectAudioRoute()
-            applyVoiceEnabled()
-            registerRecoveryCallbacks(ctx)
-            startSmartDucking()
-        }
+        requestAudioFocus()
+        selectAudioRoute()
+        applyVoiceEnabled()
+        registerRecoveryCallbacks(ctx)
+        startSmartDucking()
         startConnectionHealthMonitor()
 
         listener.onInternetState(false, "WEBRTC SIGNALING CONNECTING • OPUS VOICE")
@@ -290,14 +280,14 @@ class InternetNode(
         unregisterRecoveryCallbacks()
         stopSmartDucking(restoreVolume = true)
         abandonAudioFocus()
-        if (!hybridMode) clearCommunicationRoute()
+        clearCommunicationRoute()
     }
 
     fun isConnected(): Boolean = signalingConnected.get() || voicePeerCount() > 0
 
     fun remotePeerCount(): Int = peers.size
 
-    fun voicePeerCount(): Int = if (hybridMode) hybridPeerIds().size else sessions.values.count { it.connected }
+    fun voicePeerCount(): Int = sessions.values.count { it.connected }
 
     fun remotePeers(): List<RiderPeer> = peers.values
         .map { peer ->
@@ -314,47 +304,6 @@ class InternetNode(
      */
     fun sendLocalAudio(audio: ByteArray): Boolean = false
 
-    fun hybridPeerIds(): Set<String> = hybridChannels.entries.filter { (_, channel) ->
-        channel.use { runCatching { it.state() == DataChannel.State.OPEN }.getOrDefault(false) } == true
-    }.map { it.key.toString() }.toSet()
-
-    fun hybridDropCount(): Long = hybridDrops.get()
-
-    fun sendHybridPacket(peerId: String, bytes: ByteArray): Boolean {
-        if (!running.get() || !hybridMode || bytes.size !in 73..2048) return false
-        val id = runCatching { UUID.fromString(peerId) }.getOrNull() ?: return false
-        val lease = hybridChannels[id] ?: return false
-        return lease.use { channel ->
-            // Never hold Java locks across WebRTC calls: native callbacks can re-enter.
-            // No application backlog and no retransmission of old voice frames.
-            val sent = runCatching {
-                channel.state() == DataChannel.State.OPEN && channel.bufferedAmount() + bytes.size <= 4096 &&
-                    channel.send(DataChannel.Buffer(ByteBuffer.wrap(bytes), true))
-            }.getOrDefault(false)
-            if (!sent) hybridDrops.incrementAndGet()
-            sent
-        } ?: false
-    }
-
-    private fun registerHybridChannel(peer: UUID, channel: DataChannel) {
-        if (channel.label() != "ridemesh-hybrid33") { channel.close(); channel.dispose(); return }
-        val lease = com.bikemesh.ridemesh.offline.ChannelLease(channel) {
-            runCatching { it.unregisterObserver(); it.close(); it.dispose() }
-            Unit
-        }
-        if (hybridChannels.putIfAbsent(peer, lease) != null) { lease.close(); return }
-        lease.use { it.registerObserver(object : DataChannel.Observer {
-            override fun onBufferedAmountChange(previousAmount: Long) = Unit
-            override fun onStateChange() { notifyPeerCount(force = true) }
-            override fun onMessage(buffer: DataChannel.Buffer) {
-                if (!running.get() || !hybridMode || !buffer.binary || buffer.data.remaining() !in 73..2048) return
-                val bytes = ByteArray(buffer.data.remaining())
-                buffer.data.get(bytes)
-                listener.onHybridPacket(peer.toString(), bytes)
-            }
-        }) }
-    }
-
     fun setMuted(muted: Boolean) {
         userMuted = muted
         applyVoiceEnabled()
@@ -370,7 +319,6 @@ class InternetNode(
 
     fun setAudioRoute(route: String): String {
         audioRoute = route.uppercase()
-        if (hybridMode) return "HYBRID OPUS • AUDIO ENGINE ROUTE"
         val result = selectAudioRoute()
         listener.onInternetAudioStatus(result)
         return result
@@ -472,7 +420,6 @@ class InternetNode(
             mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
         }
-        if (hybridMode) return // Data-only PeerConnections; AudioEngine owns capture and playout.
         audioSource = factory?.createAudioSource(constraints)
         localAudioTrack = audioSource?.let { source ->
             factory?.createAudioTrack(LOCAL_AUDIO_TRACK_ID, source)
@@ -489,8 +436,7 @@ class InternetNode(
         }
 
         val factory = factory ?: return null
-        val localTrack = localAudioTrack
-        if (!hybridMode && localTrack == null) return null
+        val localTrack = localAudioTrack ?: return null
         val initiator = nodeId.toString() < peerId.toString()
 
         val config = PeerConnection.RTCConfiguration(
@@ -583,10 +529,7 @@ class InternetNode(
             override fun onIceCandidatesRemoved(candidates: Array<IceCandidate>) = Unit
             override fun onAddStream(stream: MediaStream) = Unit
             override fun onRemoveStream(stream: MediaStream) = Unit
-            override fun onDataChannel(dataChannel: DataChannel) {
-                if (hybridMode) registerHybridChannel(peerId, dataChannel)
-                else dataChannel.close()
-            }
+            override fun onDataChannel(dataChannel: DataChannel) = Unit
 
             override fun onRenegotiationNeeded() {
                 sessions[peerId]?.let { session ->
@@ -595,7 +538,7 @@ class InternetNode(
             }
 
             override fun onAddTrack(receiver: RtpReceiver, mediaStreams: Array<MediaStream>) {
-                receiver.track()?.setEnabled(!hybridMode)
+                receiver.track()?.setEnabled(true)
             }
         }
 
@@ -607,12 +550,7 @@ class InternetNode(
 
         val session = PeerSession(peerId, pc, initiator)
         sessions[peerId] = session
-        if (hybridMode) {
-            if (initiator) {
-                val init = DataChannel.Init().apply { ordered = false; maxRetransmits = 0 }
-                pc.createDataChannel("ridemesh-hybrid33", init)?.let { registerHybridChannel(peerId, it) }
-            }
-        } else if (localTrack != null) pc.addTrack(localTrack, listOf(MEDIA_STREAM_ID))
+        pc.addTrack(localTrack, listOf(MEDIA_STREAM_ID))
         runCatching { pc.setBitrate(28_000, 42_000, 60_000) }
         updatePeerState(peerId, if (initiator) "READY TO OFFER" else "WAITING OFFER")
 
@@ -638,7 +576,7 @@ class InternetNode(
         }
 
         val constraints = MediaConstraints().apply {
-            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", (!hybridMode).toString()))
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
             if (force) mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
         }
@@ -680,7 +618,7 @@ class InternetNode(
                 session.remoteDescriptionSet = true
                 flushPendingCandidates(session)
                 val constraints = MediaConstraints().apply {
-                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", (!hybridMode).toString()))
+                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
                 }
                 session.pc.createAnswer(object : SimpleSdpObserver() {
@@ -818,7 +756,6 @@ class InternetNode(
         if (sendBye && signalingConnected.get()) {
             publishSignal(SignalPacket(nodeId, peerId, SignalType.BYE))
         }
-        hybridChannels.remove(peerId)?.close()
         runCatching { session.pc.close() }
         runCatching { session.pc.dispose() }
         notifyPeerCount(force = true)

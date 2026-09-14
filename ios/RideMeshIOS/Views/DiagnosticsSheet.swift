@@ -15,13 +15,6 @@ struct DiagnosticsSheet: View {
                     Text("RideMesh iOS • Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?")")
                         .font(.caption).foregroundStyle(RideMeshTheme.muted)
 
-                    if model.hybridEnabled {
-                        Text(model.hybrid.summary).font(.caption).foregroundStyle(RideMeshTheme.accent).padding()
-                        Button("SEND 2-SECOND TEST TONE") { model.hybrid.sendTestTone() }
-                            .disabled(!model.isRideActive || model.micMuted || !model.hybrid.audioRunning)
-                        Text("Listen on the other phone. Start with low volume.")
-                            .font(.caption).foregroundStyle(RideMeshTheme.muted)
-                    }
                     statusHero
                         .padding(.top, 14)
 
@@ -60,7 +53,6 @@ struct DiagnosticsSheet: View {
     }
 
     private var connectionText: String {
-        if model.hybridEnabled { return model.connectedVoicePeers > 0 ? "Hybrid connected" : "Finding riders" }
         if !model.network.isOnline { return "Waiting for internet" }
         if model.peers.contains(where: { $0.connectionQuality == .reconnecting }) { return "Reconnecting…" }
         if model.peers.contains(where: { $0.connectionQuality == .poor }) { return "Poor" }
@@ -68,11 +60,6 @@ struct DiagnosticsSheet: View {
     }
 
     private var voiceText: String {
-        if model.hybridEnabled {
-            if !model.hybrid.microphoneRunning { return model.hybrid.audioStatus }
-            if model.micMuted { return "Muted" }
-            return model.connectedVoicePeers > 0 ? "Microphone running" : "Waiting for riders"
-        }
         if model.micMuted { return "Muted" }
         if model.connectedVoicePeers > 0 { return "Ready" }
         return model.voice.diagnostics.signalingConnected ? "Ready" : "Connecting…"
@@ -83,7 +70,6 @@ struct DiagnosticsSheet: View {
     }
 
     private var audioQualityText: String {
-        if model.hybridEnabled { return "Device test required" }
         if !model.network.isOnline { return "Waiting" }
         if model.peers.contains(where: { $0.connectionQuality == .poor }) { return "Poor" }
         if !model.peers.isEmpty && model.peers.allSatisfy({ $0.connectionQuality == .excellent }) { return "Excellent" }

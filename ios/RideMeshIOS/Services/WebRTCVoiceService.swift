@@ -131,19 +131,6 @@ final class WebRTCVoiceService: NSObject, ObservableObject {
         }
     }
 
-    private(set) var hybridMode = false
-    private var hybridChannels: [UUID:RTCDataChannel] = [:]
-    var onHybridPacket: ((UUID,Data) -> Void)?
-    var hybridPeerIDs: Set<UUID> { Set(hybridChannels.filter { $0.value.readyState == .open }.keys) }
-    func sendHybrid(_ peer: UUID, _ data: Data) {
-        guard let channel = hybridChannels[peer], channel.readyState == .open,
-              data.count <= 2048, channel.bufferedAmount + UInt64(data.count) <= 4096 else { return }
-        _ = channel.sendData(RTCDataBuffer(data:data,isBinary:true))
-    }
-    private func registerHybrid(_ channel: RTCDataChannel, peer: UUID) {
-        guard hybridMode, channel.label == "ridemesh-hybrid33", hybridChannels[peer] == nil else { channel.close(); return }
-        hybridChannels[peer] = channel; channel.delegate = self
-    }
     private let signaling = RideMeshSignalingService()
     private var sessions: [UUID: PeerSession] = [:]
     private var audioSource: RTCAudioSource?
@@ -201,29 +188,27 @@ final class WebRTCVoiceService: NSObject, ObservableObject {
         }
     }
 
-    func start(rideCode: String, riderName: String, deviceName: String, batterySmart: Bool = true, hybrid: Bool = false) {
+    func start(rideCode: String, riderName: String, deviceName: String, batterySmart: Bool = true) {
         stop()
         running = true
-        hybridMode = hybrid
         self.batterySmart = batterySmart
 
         // Manual WebRTC audio is critical on iOS when another foreground app briefly
         // takes the microphone. RideMesh keeps the peer/session alive and explicitly
         // restarts WebRTC's voice-processing I/O after the interruption ends.
         rtcAudioSession.useManualAudio = true
-        rtcAudioSession.isAudioEnabled = !hybridMode
-        if !hybridMode { setupLocalAudioTrack() }
+        rtcAudioSession.isAudioEnabled = true
+        setupLocalAudioTrack()
 
-        signaling.start(rideCode: rideCode, riderName: riderName, deviceName: deviceName, batterySmart: batterySmart, hybrid:hybridMode)
+        signaling.start(rideCode: rideCode, riderName: riderName, deviceName: deviceName, batterySmart: batterySmart)
         statusText = "CONNECTING…"
         startOfferRetryTimer()
-        if !hybridMode { startSpeechStatsTimer() }
+        startSpeechStatsTimer()
         startQualityStatsTimer()
     }
 
     func stop() {
         running = false
-        hybridChannels.values.forEach { $0.delegate = nil; $0.close() }; hybridChannels.removeAll()
         audioRestartTask?.cancel()
         audioRestartTask = nil
         rtcAudioSession.isAudioEnabled = false
@@ -333,7 +318,6 @@ final class WebRTCVoiceService: NSObject, ObservableObject {
     }
 
     private func restartWebRTCAudioUnit() {
-        guard !hybridMode else { return }
         guard running else { return }
         audioRestartTask?.cancel()
         rtcAudioSession.useManualAudio = true
@@ -434,10 +418,6 @@ final class WebRTCVoiceService: NSObject, ObservableObject {
         let initiator = signaling.nodeID.uuidString.lowercased() < peerID.uuidString.lowercased()
         let session = PeerSession(id: peerID, pc: pc, initiator: initiator)
         sessions[peerID] = session
-        if hybridMode && initiator {
-            let config = RTCDataChannelConfiguration(); config.isOrdered = false; config.maxRetransmits = 0
-            if let channel = pc.dataChannel(forLabel:"ridemesh-hybrid33",configuration:config) { registerHybrid(channel,peer:peerID) }
-        }
         speechStateByPeer[peerID] = false
         if allowOffer, initiator { maybeCreateOffer(session) }
         return session
@@ -602,7 +582,6 @@ final class WebRTCVoiceService: NSObject, ObservableObject {
     }
 
     private func replacePeerForIncomingOffer(_ id: UUID) {
-        if let channel = hybridChannels.removeValue(forKey:id) { channel.delegate = nil; channel.close() }
         if let old = sessions.removeValue(forKey: id) {
             old.disconnectTask?.cancel()
             old.pc.close()
@@ -612,7 +591,6 @@ final class WebRTCVoiceService: NSObject, ObservableObject {
     }
 
     private func closePeer(_ id: UUID) {
-        if let channel = hybridChannels.removeValue(forKey:id) { channel.delegate = nil; channel.close() }
         if let session = sessions.removeValue(forKey: id) {
             session.disconnectTask?.cancel()
             session.pc.close()
@@ -1133,7 +1111,7 @@ final class WebRTCVoiceService: NSObject, ObservableObject {
     private func refreshDiagnostics() {
         diagnostics.signalingConnected = signaling.connected
         diagnostics.knownRiders = signaling.peers.count
-        diagnostics.voicePeersConnected = hybridMode ? hybridPeerIDs.count : sessions.values.filter(\.connected).count
+        diagnostics.voicePeersConnected = sessions.values.filter(\.connected).count
         diagnostics.reconnects = signaling.reconnects
         diagnostics.remoteSpeechActive = remoteSpeechActive
         diagnostics.localSpeechActive = localSpeechActive
@@ -1232,28 +1210,5 @@ extension WebRTCVoiceService: RTCPeerConnectionDelegate {
     }
 
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {}
-    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {
-        Task { @MainActor [weak self] in
-            guard let self, let peer = self.peerID(for:peerConnection) else { dataChannel.close(); return }
-            self.registerHybrid(dataChannel,peer:peer)
-        }
-    }
-}
-
-
-extension WebRTCVoiceService: RTCDataChannelDelegate {
-    nonisolated func dataChannelDidChangeState(_ dataChannel: RTCDataChannel) {
-        Task { @MainActor [weak self] in self?.refreshDiagnostics() }
-    }
-    nonisolated func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
-        guard buffer.isBinary, buffer.data.count <= 2048 else { return }
-        let data = buffer.data
-        let arrived = ProcessInfo.processInfo.systemUptime
-        Task { @MainActor [weak self] in
-            guard let self, self.running, self.hybridMode,
-                  ProcessInfo.processInfo.systemUptime-arrived < 0.14,
-                  let peer = self.hybridChannels.first(where:{ $0.value === dataChannel })?.key else { return }
-            self.onHybridPacket?(peer,data)
-        }
-    }
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {}
 }

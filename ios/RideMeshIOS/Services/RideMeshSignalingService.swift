@@ -29,7 +29,7 @@ final class RideMeshSignalingService: ObservableObject {
     private var batterySmart = true
     private var lastPresenceReply = Date.distantPast
 
-    var nodeID: UUID
+    let nodeID: UUID
 
     init() {
         if let saved = defaults.string(forKey: "beta4_webrtc_node_id"), let uuid = UUID(uuidString: saved) {
@@ -48,15 +48,14 @@ final class RideMeshSignalingService: ObservableObject {
         }
     }
 
-    func start(rideCode: String, riderName: String, deviceName: String? = nil, batterySmart: Bool = true, hybrid: Bool = false) {
+    func start(rideCode: String, riderName: String, deviceName: String? = nil, batterySmart: Bool = true) {
         stop()
-        if hybrid { nodeID = UUID() }
         let safeRide = Self.sanitizeRideCode(rideCode)
         self.riderName = Self.sanitizeIdentity(riderName, fallback: "Rider", maxBytes: 48)
         self.deviceName = Self.sanitizeIdentity(deviceName ?? UIDevice.current.model, fallback: "iPhone", maxBytes: 64)
         self.batterySmart = batterySmart
 
-        let base = hybrid ? "ridemesh/test/hybrid33/\(safeRide)" : "ridemesh/test/v3/\(safeRide)"
+        let base = "ridemesh/test/v3/\(safeRide)"
         presenceTopic = "\(base)/presence"
         signalTopic = "\(base)/signal"
         locationTopic = "\(base)/location"

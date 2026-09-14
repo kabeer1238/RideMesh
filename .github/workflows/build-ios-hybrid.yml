@@ -1,4 +1,4 @@
-name: RideMesh iOS Hybrid Eight Rider Test
+name: RideMesh iOS Original Online Voice
 on:
   workflow_dispatch:
   push:
@@ -15,12 +15,14 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Verify original online source is unchanged
+        run: shasum -a 256 -c tools/online-baseline.sha256
       - uses: actions/cache/restore@v4
         with:
           path: ios/build
           key: ios-native-v1-${{ runner.arch }}-${{ hashFiles('ios/project.yml') }}-${{ github.run_id }}
           restore-keys: ios-native-v1-${{ runner.arch }}-${{ hashFiles('ios/project.yml') }}-
-      - name: Test hybrid routing
+      - name: Test retained offline protocol library (not enabled in iOS app)
         working-directory: ios
         run: |
           swiftc RideMeshIOS/Hybrid/HybridRouter.swift RideMeshIOS/Hybrid/HybridAudioRecovery.swift Tests/main.swift -o /tmp/hybrid-tests
@@ -43,11 +45,11 @@ jobs:
       - name: Package unsigned build and source
         working-directory: ios
         run: |
-          ditto -c -k --keepParent build/Build/Products/Debug-iphoneos/RideMesh.app RideMesh-iOS-vc35-Hybrid8-UNSIGNED.zip
-          zip -r RideMesh-iOS-vc35-Hybrid8-source.zip RideMeshIOS project.yml Tests README-HYBRID.md README-DISCOVERY-TEST.md
+          ditto -c -k --keepParent build/Build/Products/Debug-iphoneos/RideMesh.app RideMesh-iOS-vc36-Online-UNSIGNED.zip
+          zip -r RideMesh-iOS-vc36-Online-source.zip RideMeshIOS project.yml Tests README-HYBRID.md README-DISCOVERY-TEST.md
       - uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-iOS-vc35-Hybrid8-${{ github.run_number }}
+          name: RideMesh-iOS-vc36-Online-${{ github.run_number }}
           path: ios/RideMesh-*.zip
       - uses: actions/upload-artifact@v4
         if: always()
