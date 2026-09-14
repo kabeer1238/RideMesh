@@ -325,6 +325,7 @@ class InternetNode(
     }
 
     fun currentAudioStatus(): String = audioStatus
+    fun isAudioInterrupted(): Boolean = focusPaused
 
     fun localRiderId(): UUID = nodeId
 

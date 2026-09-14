@@ -36,6 +36,18 @@ class AudioEngine(
     private val onStatus: (String) -> Unit,
 ) {
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val musicDucker = OfflineMusicDucker(audioManager)
+    private val routeHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var routeCallbackRegistered = false
+    private val deviceCallback = object : android.media.AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(devices: Array<out AudioDeviceInfo>) = recoverRoute()
+        override fun onAudioDevicesRemoved(devices: Array<out AudioDeviceInfo>) = recoverRoute()
+    }
+    private fun recoverRoute() {
+        routeHandler.postDelayed({
+            if (transmitDesired.get() && !focusPaused.get()) selectCommunicationDevice()
+        }, 350L)
+    }
     private val capturing = AtomicBoolean(false)
     private val playbackRunning = AtomicBoolean(true)
     private val transmitDesired = AtomicBoolean(false)
@@ -46,7 +58,11 @@ class AudioEngine(
     private val forwardedFrames = java.util.concurrent.atomic.AtomicLong()
     @Volatile private var micLevel = 0
     private val playedBytes = java.util.concurrent.atomic.AtomicLong()
+    private val rebufferCount = java.util.concurrent.atomic.AtomicLong()
+    private val playbackLock = Any()
     private val playbackErrors = java.util.concurrent.atomic.AtomicLong()
+    fun isCaptureReleased() = audioRecord == null && !capturing.get()
+    fun isAudioInterrupted() = focusPaused.get()
     fun canSendAudio() = transmitDesired.get() && !focusPaused.get() && !userMuted.get()
     fun voiceStatus() = when {
         !transmitDesired.get() -> "Audio stopped"
@@ -55,7 +71,7 @@ class AudioEngine(
         userMuted.get() -> "Muted • listening"
         else -> "Microphone running"
     }
-    fun diagnostics() = "Voice: ${voiceStatus()}\nMic running: ${capturing.get()} • capture buffers: ${capturedFrames.get()} • level: $micLevel\nMic frames forwarded: ${forwardedFrames.get()} • muted: ${userMuted.get()}\nSpeaker PCM bytes written: ${playedBytes.get()} • playback errors: ${playbackErrors.get()}"
+    fun diagnostics() = "Voice: ${voiceStatus()}\nMic running: ${capturing.get()} • capture buffers: ${capturedFrames.get()} • level: $micLevel\nMic frames forwarded: ${forwardedFrames.get()} • muted: ${userMuted.get()}\nSpeaker PCM bytes written: ${playedBytes.get()} • playback errors: ${playbackErrors.get()} • rebuffers: ${rebufferCount.get()}"
 
     private data class IncomingFrame(
         val sequence: Int,
@@ -79,7 +95,7 @@ class AudioEngine(
 
     /**
      * Beta3 keeps an ordered adaptive jitter buffer for each rider. Good links stay at
-     * about 40 ms of prebuffer; unstable links can expand toward 120 ms temporarily.
+     * 60 ms of prebuffer; unstable links can expand toward 120 ms temporarily.
      */
     @Volatile var packetDecoder: ((String, ByteArray?) -> ByteArray?)? = null
     private val sourceStates = ConcurrentHashMap<String, SourceState>()
@@ -102,17 +118,28 @@ class AudioEngine(
     private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
         when (change) {
             AudioManager.AUDIOFOCUS_GAIN -> resumeAfterAudioFocus()
-            AudioManager.AUDIOFOCUS_LOSS,
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> pauseForAudioFocus()
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pauseForAudioFocus()
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> Unit
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                // Close capture first. Reacquire only for active ordinary media with no
+                // system communication mode; transient call interruptions never take this path.
+                pauseForAudioFocus()
+                routeHandler.postDelayed({
+                    if (transmitDesired.get() && focusPaused.get() && audioManager.isMusicActive &&
+                        audioManager.mode == AudioManager.MODE_NORMAL) {
+                        focusHeld.set(false)
+                        if (ensureAudioFocus()) startRecorder()
+                    }
+                }, 650L)
+            }
         }
     }
 
     private val audioFocusRequest: AudioFocusRequest by lazy {
-        AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+        AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
             .setAudioAttributes(voiceAttributes)
             .setAcceptsDelayedFocusGain(true)
-            .setWillPauseWhenDucked(true)
+            .setWillPauseWhenDucked(false)
             .setOnAudioFocusChangeListener(audioFocusListener)
             .build()
     }
@@ -124,6 +151,7 @@ class AudioEngine(
             AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
                 focusHeld.set(true)
                 focusPaused.set(false)
+                musicDucker.setEnabled(true)
                 true
             }
             AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
@@ -142,7 +170,9 @@ class AudioEngine(
     }
 
     private fun pauseForAudioFocus() {
+        if (!transmitDesired.get()) return
         if (!focusPaused.compareAndSet(false, true)) return
+        musicDucker.setEnabled(false)
         capturing.set(false)
         // Stop the recorder immediately so RideMesh cannot leak a phone/WhatsApp call
         // into the ride while another communication app owns audio focus.
@@ -157,11 +187,13 @@ class AudioEngine(
     }
 
     private fun resumeAfterAudioFocus() {
+        if (!transmitDesired.get()) return
         focusHeld.set(true)
         if (!focusPaused.compareAndSet(true, false)) return
         Thread({
             try { Thread.sleep(CALL_RESUME_SETTLE_MS) } catch (_: InterruptedException) { return@Thread }
-            if (focusPaused.get()) return@Thread
+            if (focusPaused.get() || !transmitDesired.get()) return@Thread
+            musicDucker.setEnabled(true)
             selectCommunicationDevice()
             audioTrack?.let {
                 try { it.play() } catch (_: Throwable) {}
@@ -203,6 +235,7 @@ class AudioEngine(
 
     fun setRoute(newRoute: AudioRoute) {
         route = newRoute
+        if (transmitDesired.get() && !focusPaused.get()) selectCommunicationDevice()
     }
 
     fun setUserMuted(muted: Boolean) {
@@ -227,7 +260,7 @@ class AudioEngine(
                 val speaker = available.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
 
                 val chosen = when (route) {
-                    AudioRoute.HELMET -> helmet
+                    AudioRoute.HELMET -> helmet ?: speaker
                     AudioRoute.PHONE -> speaker
                     AudioRoute.AUTO -> helmet ?: speaker
                 }
@@ -252,7 +285,7 @@ class AudioEngine(
                     .any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
 
                 val useBluetooth = when (route) {
-                    AudioRoute.HELMET -> true
+                    AudioRoute.HELMET -> hasBluetoothSco
                     AudioRoute.PHONE -> false
                     AudioRoute.AUTO -> hasBluetoothSco
                 }
@@ -281,6 +314,10 @@ class AudioEngine(
     fun startTransmit() {
         transmitDesired.set(true)
         if (!ensureAudioFocus() || focusPaused.get()) return
+        if (!routeCallbackRegistered) {
+            audioManager.registerAudioDeviceCallback(deviceCallback, routeHandler)
+            routeCallbackRegistered = true
+        }
         startRecorder()
     }
 
@@ -333,7 +370,6 @@ class AudioEngine(
                 val preRoll = ArrayDeque<ByteArray>(VAD_PREROLL_FRAMES)
                 val windFilter = WindRumbleFilter(SAMPLE_RATE, WIND_FILTER_CUTOFF_HZ)
                 var hangover = 0
-                var wasSending = false
                 var noiseFloor = VAD_INITIAL_NOISE_FLOOR
 
                 try {
@@ -354,13 +390,19 @@ class AudioEngine(
                             filled += read
                         }
                         if (filled != frame.size) continue
+                        if (!canSendAudio() || (Build.VERSION.SDK_INT >= 29 &&
+                            activeRecorder.activeRecordingConfiguration?.isClientSilenced == true)) {
+                            preRoll.clear()
+                            hangover = 0
+                            continue
+                        }
 
                         val current = windFilter.process(frame.copyOf())
                         val rms = pcmRms(current)
                         capturedFrames.incrementAndGet(); micLevel = rms.toInt()
 
                         val normalThreshold = max(VAD_MIN_RMS, noiseFloor * VAD_NOISE_MULTIPLIER)
-                        val farEndAudioActive = System.currentTimeMillis() < playbackActiveUntilMs
+                        val farEndAudioActive = android.os.SystemClock.elapsedRealtime() < playbackActiveUntilMs
                         val echoThreshold = if (aec != null) {
                             max(VAD_ECHO_MIN_RMS_AEC, normalThreshold * VAD_ECHO_MULTIPLIER_AEC)
                         } else {
@@ -368,13 +410,13 @@ class AudioEngine(
                         }
                         val speechThreshold = if (farEndAudioActive) echoThreshold else normalThreshold
                         val speech = rms >= speechThreshold
+                        if (speech) musicDucker.speech()
 
                         // A manual mute keeps the recorder alive for instant recovery but sends no frames.
                         // Clear pre-roll/hangover so speech recorded while muted can never leak after unmuting.
                         if (userMuted.get()) {
                             preRoll.clear()
                             hangover = 0
-                            wasSending = false
                             if (!farEndAudioActive) {
                                 noiseFloor = (noiseFloor * 0.985) + (rms * 0.015)
                             }
@@ -389,18 +431,16 @@ class AudioEngine(
                         if (speech) hangover = VAD_HANGOVER_FRAMES
                         else if (hangover > 0) hangover--
 
-                        val sending = speech || hangover > 0
-                        if (sending) {
-                            if (!wasSending) {
-                                while (preRoll.isNotEmpty()) onCapturedFrame(preRoll.removeFirst())
+                        // Constant 20 ms cadence, including speech onset. Keep 40 ms of
+                        // look-behind so VAD cannot clip the first consonant or burst three packets.
+                        preRoll.addLast(current)
+                        if (preRoll.size > VAD_PREROLL_FRAMES) {
+                            val delayed = preRoll.removeFirst()
+                            if (speech || hangover > 0) {
+                                onCapturedFrame(delayed)
+                                forwardedFrames.incrementAndGet()
                             }
-                            onCapturedFrame(current)
-                            forwardedFrames.incrementAndGet()
-                        } else {
-                            if (preRoll.size >= VAD_PREROLL_FRAMES) preRoll.removeFirst()
-                            preRoll.addLast(current)
                         }
-                        wasSending = sending
                     }
                 } catch (t: Throwable) {
                     if (!focusPaused.get()) {
@@ -428,9 +468,22 @@ class AudioEngine(
 
     fun stopTransmit() {
         transmitDesired.set(false)
+        musicDucker.setEnabled(false)
+        routeHandler.removeCallbacksAndMessages(null)
+        if (routeCallbackRegistered) {
+            runCatching { audioManager.unregisterAudioDeviceCallback(deviceCallback) }
+            routeCallbackRegistered = false
+        }
         capturing.set(false)
         try { audioRecord?.stop() } catch (_: Throwable) {}
         clearRemoteAudio()
+        synchronized(playbackLock) {
+            val track = audioTrack
+            audioTrack = null
+            runCatching { track?.pause() }
+            runCatching { track?.flush() }
+            runCatching { track?.release() }
+        }
         releaseCommunicationRouteForExternalCall()
         if (focusHeld.getAndSet(false)) {
             runCatching { audioManager.abandonAudioFocusRequest(audioFocusRequest) }
@@ -449,7 +502,7 @@ class AudioEngine(
             audio.size > FRAME_BYTES -> audio.copyOf(FRAME_BYTES)
             else -> audio.copyOf(FRAME_BYTES)
         }
-        val now = System.currentTimeMillis()
+        val now = android.os.SystemClock.elapsedRealtime()
         val state = sourceStates.computeIfAbsent(key) { SourceState() }
 
         synchronized(state) {
@@ -496,7 +549,7 @@ class AudioEngine(
 
         while (playbackRunning.get()) {
             try {
-                if (focusPaused.get()) {
+                if (focusPaused.get() || !transmitDesired.get()) {
                     Thread.sleep(PLAYBACK_IDLE_SLEEP_MS)
                     nextTickNs = System.nanoTime()
                     continue
@@ -511,7 +564,7 @@ class AudioEngine(
                 }
                 nextTickNs += FRAME_NS
 
-                val nowMs = System.currentTimeMillis()
+                val nowMs = android.os.SystemClock.elapsedRealtime()
                 val frames = ArrayList<ByteArray>(sourceStates.size)
                 var activeSource = false
 
@@ -533,15 +586,22 @@ class AudioEngine(
 
                 // Keep the AudioTrack clock moving at a fixed 20 ms cadence between voice packets.
                 val mixed = if (frames.isEmpty()) SILENCE_FRAME else mixFrames(frames)
-                val track = ensureTrack() ?: continue
-                playbackActiveUntilMs = nowMs + ECHO_GUARD_AFTER_PLAYBACK_MS
-                if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
-                var offset = 0
-                while (offset < mixed.size && !focusPaused.get() && transmitDesired.get()) {
-                    val written = track.write(mixed, offset, mixed.size-offset, AudioTrack.WRITE_BLOCKING)
-                    if (written <= 0) throw IllegalStateException("AudioTrack write failed: $written")
-                    offset += written
-                    playedBytes.addAndGet(written.toLong())
+                if (frames.isNotEmpty() && pcmRms(mixed) >= VAD_MIN_RMS) musicDucker.speech()
+                synchronized(playbackLock) {
+                    if (transmitDesired.get() && !focusPaused.get()) {
+                        val track = ensureTrack()
+                        if (track != null) {
+                            if (frames.isNotEmpty()) playbackActiveUntilMs = nowMs + ECHO_GUARD_AFTER_PLAYBACK_MS
+                            if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
+                            var offset = 0
+                            while (offset < mixed.size && !focusPaused.get() && transmitDesired.get()) {
+                                val written = track.write(mixed, offset, mixed.size-offset, AudioTrack.WRITE_BLOCKING)
+                                if (written <= 0) throw IllegalStateException("AudioTrack write failed: $written")
+                                offset += written
+                                playedBytes.addAndGet(written.toLong())
+                            }
+                        }
+                    }
                 }
             } catch (_: InterruptedException) {
                 break
@@ -558,7 +618,7 @@ class AudioEngine(
     }
 
     private fun pullPlayoutFrame(sourceId: String, state: SourceState, nowMs: Long): ByteArray? {
-        while (state.frames.isNotEmpty() && nowMs - state.frames.firstEntry().value.arrivalMs > 140L) {
+        while (state.frames.isNotEmpty() && nowMs - state.frames.firstEntry().value.arrivalMs > 240L) {
             state.frames.pollFirstEntry()
             state.primed = false
             state.expectedSequence = null
@@ -569,7 +629,9 @@ class AudioEngine(
         }
 
         if (!state.primed) {
-            if (state.frames.size < state.targetPrimeFrames) return null
+            if (state.frames.isEmpty()) return null
+            val waited = nowMs - state.frames.firstEntry().value.arrivalMs
+            if (state.frames.size < state.targetPrimeFrames && waited < state.targetPrimeFrames * FRAME_MS) return null
             state.expectedSequence = state.frames.firstKey()
             state.primed = true
         }
@@ -614,6 +676,12 @@ class AudioEngine(
             state.consecutivePlc++
             return if (packetDecoder != null) decodeFrame(sourceId, null) else concealFrame(state.lastGoodFrame, state.consecutivePlc)
         }
+        // A starvation must rebuild headroom. Staying primed after an underrun
+        // consumes every late packet immediately and perpetuates choppy playback.
+        state.primed = false
+        state.expectedSequence = null
+        state.consecutivePlc = 0
+        rebufferCount.incrementAndGet()
         return null
     }
 
@@ -640,9 +708,9 @@ class AudioEngine(
     }
 
     private fun targetPrimeFrames(jitterMs: Double): Int = when {
-        jitterMs < 7.0 -> 2
-        jitterMs < 15.0 -> 3
-        jitterMs < 28.0 -> 4
+        jitterMs < 7.0 -> 3
+        jitterMs < 15.0 -> 4
+        jitterMs < 28.0 -> 5
         jitterMs < 45.0 -> 5
         else -> 6
     }
@@ -847,9 +915,9 @@ class AudioEngine(
         private const val SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_MS / 1000
         internal const val FRAME_BYTES = SAMPLES_PER_FRAME * 2
 
-        private const val MIN_PRIME_FRAMES = 2          // 40 ms on a clean link
-        private const val MAX_SOURCE_QUEUE_FRAMES = 6   // hard cap: 120 ms
-        private const val LATENCY_CATCHUP_MARGIN = 2
+        private const val MIN_PRIME_FRAMES = 3          // 60 ms initial headroom
+        private const val MAX_SOURCE_QUEUE_FRAMES = 10  // hard cap: 200 ms
+        private const val LATENCY_CATCHUP_MARGIN = 4
         private const val MAX_PLC_GAP_FRAMES = 2        // conceal at most 40 ms
         private const val OLD_PACKET_TOLERANCE = 32
         private const val SOURCE_EXPIRE_MS = 2_000L
@@ -862,7 +930,7 @@ class AudioEngine(
         private val SILENCE_FRAME = ByteArray(FRAME_BYTES)
 
         private const val VAD_PREROLL_FRAMES = 2
-        private const val VAD_HANGOVER_FRAMES = 5 // 100 ms: fast close without clipping word endings
+        private const val VAD_HANGOVER_FRAMES = 20 // 400 ms: retain quiet syllables and natural pauses
         private const val VAD_INITIAL_NOISE_FLOOR = 250.0
         private const val VAD_MIN_RMS = 480.0
         private const val VAD_NOISE_MULTIPLIER = 2.05

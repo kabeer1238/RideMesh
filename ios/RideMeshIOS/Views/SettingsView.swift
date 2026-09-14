@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject private var model: RideMeshViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var editedName = ""
+    @State private var showSettingsAudio = false
     @FocusState private var nameFocused: Bool
 
     var body: some View {
@@ -25,7 +26,7 @@ struct SettingsView: View {
                     VStack(spacing: 0) {
                         RMSettingRow(title: "AUDIO ROUTE", detail: model.audioRoute.dialogTitle, symbol: "headphones")
                             .contentShape(Rectangle())
-                            .onTapGesture { dismiss(); model.showAudioRoutes = true }
+                            .onTapGesture { showSettingsAudio = true }
 
                         Rectangle().fill(RideMeshTheme.border).frame(height: 1)
 
@@ -89,6 +90,7 @@ struct SettingsView: View {
             }
         }
         .onAppear { editedName = model.riderName }
+        .sheet(isPresented: $showSettingsAudio) { AudioRouteSheet().environmentObject(model) }
     }
 
     private var profilePanel: some View {
@@ -135,10 +137,9 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
 
                 Button {
-                    dismiss()
-                    DispatchQueue.main.async { model.editRiderProfile() }
+                    nameFocused = true
                 } label: {
-                    Text("RIDER SETUP")
+                    Text("EDIT NAME")
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(RideMeshTheme.white)
                         .frame(maxWidth: .infinity, minHeight: 48)

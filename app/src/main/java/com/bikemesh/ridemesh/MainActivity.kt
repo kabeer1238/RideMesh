@@ -18,6 +18,10 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.SystemClock
+import com.bikemesh.ridemesh.transport.AutoTransportPolicy
 import android.net.Uri
 import android.location.Location
 import android.net.wifi.WifiManager
@@ -151,6 +155,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     @Volatile private var micMuted = false
     private var betaExpiredDialogShown = false
     private var transportMode = TransportMode.INTERNET_ONLY
+    private var automaticTransport = true
+    private val automaticPolicy = AutoTransportPolicy()
+    @Volatile private var switchingTransport = false
+    private var handoverGeneration = 0
+    private var handoverRetryAfterMs = 0L
+    private var handoverMessage = ""
+    private var settingsPanel: Dialog? = null
+    private var emailFromSettings = false
     private var meshLabRole = MeshNode.LabRole.NORMAL
     private var setupMode = SetupMode.CREATE
 
@@ -195,6 +207,15 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                 return
             }
 
+            if (automaticTransport && !switchingTransport && SystemClock.elapsedRealtime() >= handoverRetryAfterMs) {
+                val online = automaticPolicy.update(hasValidatedInternet(), SystemClock.elapsedRealtime())
+                val target = if (online) TransportMode.INTERNET_ONLY else TransportMode.LOCAL_ONLY
+                if (target != transportMode) switchVoiceTransport(target)
+            }
+            if (switchingTransport) {
+                mainHandler.postDelayed(this, WATCHDOG_INTERVAL_MS)
+                return
+            }
             val now = System.currentTimeMillis()
             when (transportMode) {
                 TransportMode.LOCAL_ONLY -> {
@@ -265,7 +286,9 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         audioEngine = AudioEngine(
             context = applicationContext,
             onCapturedFrame = ::sendOfflineAudio,
-            onStatus = { text -> runOnUiThread { updateAudioUi(text) } },
+            onStatus = { text -> runOnUiThread {
+                if (!switchingTransport && transportMode == TransportMode.LOCAL_ONLY) updateAudioUi(text)
+            } },
         )
 
         applySelectedAudioRoute()
@@ -386,6 +409,12 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (emailFromSettings) {
+                    emailFromSettings = false
+                    binding.screenEmail.visibility = View.GONE
+                    settingsPanel?.show()
+                    return
+                }
                 // Rider requirement: Back never tears down an active voice session or exits the app.
                 // The task moves to background; reopening returns to the same activity/ride state.
                 moveTaskToBack(true)
@@ -451,6 +480,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
         editor.apply()
         binding.screenEmail.visibility = View.GONE
+        if (emailFromSettings) {
+            emailFromSettings = false
+            settingsPanel?.show()
+            refreshSettingsPanel()
+        }
     }
 
     private fun showScreen(screen: Screen) {
@@ -674,6 +708,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             return
         }
 
+        if (automaticTransport) {
+            transportMode = if (automaticPolicy.reset(hasValidatedInternet(), SystemClock.elapsedRealtime()))
+                TransportMode.INTERNET_ONLY else TransportMode.LOCAL_ONLY
+        }
+        switchingTransport = false
+        handoverGeneration++
+        handoverRetryAfterMs = 0L
+        handoverMessage = ""
         if (transportMode != TransportMode.INTERNET_ONLY && !radiosReady()) {
             AlertDialog.Builder(this).setMessage("Turn on Wi-Fi and Bluetooth. Mobile data can stay off for offline mesh.")
                 .setPositiveButton("OK", null).show()
@@ -730,8 +772,93 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
     }
 
+    private fun hasValidatedInternet(): Boolean = runCatching {
+        val manager = getSystemService(ConnectivityManager::class.java)
+        val caps = manager.getNetworkCapabilities(manager.activeNetwork)
+        caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }.getOrDefault(false)
+
+    /** Exactly one voice engine owns capture/playout. End or a newer switch cancels this handover. */
+    private fun switchVoiceTransport(target: TransportMode) {
+        if (!rideStarted || switchingTransport || target == transportMode) return
+        // The current audio owner handles call recovery. Never stop it during an interruption.
+        if ((transportMode == TransportMode.INTERNET_ONLY && internetNode.isAudioInterrupted()) ||
+            (transportMode == TransportMode.LOCAL_ONLY && audioEngine.isAudioInterrupted())) return
+        if (target == TransportMode.LOCAL_ONLY && (!radiosReady() || !hasRequiredPermissions())) {
+            handoverMessage = "Offline unavailable • turn on Wi-Fi / Bluetooth and allow Nearby"
+            updateAudioUi(handoverMessage)
+            return
+        }
+        val previous = transportMode
+        switchingTransport = true
+        val generation = ++handoverGeneration
+        handoverMessage = "Switching to " + if (target == TransportMode.LOCAL_ONLY) "Android offline" else "Internet voice"
+        updateAudioUi(handoverMessage)
+        log(handoverMessage)
+        // Stop synchronously before requesting focus for the other engine.
+        if (previous == TransportMode.INTERNET_ONLY) internetNode.stop()
+        else audioEngine.stopTransmit()
+        val deadline = SystemClock.elapsedRealtime() + 2500L
+        fun complete() {
+            if (!rideStarted || generation != handoverGeneration || isDestroyed) return
+            val mode = getSystemService(android.media.AudioManager::class.java).mode
+            if (mode == android.media.AudioManager.MODE_IN_CALL || mode == android.media.AudioManager.MODE_IN_COMMUNICATION) {
+                handoverMessage = "Call has priority • transport change waiting"
+                updateAudioUi(handoverMessage)
+                mainHandler.postDelayed({ complete() }, 500L)
+                return
+            }
+            if (!audioEngine.isCaptureReleased()) {
+                if (SystemClock.elapsedRealtime() < deadline) {
+                    mainHandler.postDelayed({ complete() }, 50L)
+                    return
+                }
+                switchingTransport = false
+                handoverRetryAfterMs = SystemClock.elapsedRealtime() + 10_000L
+                handoverMessage = "Audio handover delayed • microphone is releasing"
+                updateCapturePolicy()
+                return
+            }
+            try {
+                transportMode = target
+                if (target == TransportMode.INTERNET_ONLY) {
+                    sleepLocalMesh("automatic Internet return")
+                    audioEngine.packetDecoder = null
+                    internetNode.start(normalizedRideCode(), binding.riderName.text.toString(), deviceLabel())
+                    internetNode.setMuted(micMuted)
+                } else {
+                    internetPeerCount = 0
+                    meshNode.internetPeers = { emptySet() }
+                    meshNode.internetSend = { _, _ -> false }
+                    audioEngine.packetDecoder = meshNode::decodeForPlayout
+                    ensureLocalMeshRunning("automatic outage fallback")
+                }
+                applySelectedAudioRoute()
+                handoverMessage = "Automatic handover complete"
+                switchingTransport = false
+                updateTransportStatus()
+                updateCapturePolicy()
+            } catch (error: Throwable) {
+                // A failed start must release the failed engine before restoring the prior one.
+                runCatching { internetNode.stop() }
+                runCatching { audioEngine.stopTransmit() }
+                transportMode = TransportMode.LOCAL_ONLY
+                audioEngine.packetDecoder = meshNode::decodeForPlayout
+                switchingTransport = false
+                handoverRetryAfterMs = SystemClock.elapsedRealtime() + 30_000L
+                ensureLocalMeshRunning("handover recovery")
+                updateCapturePolicy()
+                handoverMessage = "Handover retry pending: ${error.javaClass.simpleName}"
+                log(handoverMessage)
+            }
+        }
+        mainHandler.postDelayed({ complete() }, 150L)
+    }
+
     private fun sendOfflineAudio(audio: ByteArray) {
-        if (rideStarted && transportMode != TransportMode.INTERNET_ONLY && !micMuted) meshNode.sendLocalAudio(audio)
+        if (rideStarted && !switchingTransport && transportMode != TransportMode.INTERNET_ONLY &&
+            !micMuted && audioEngine.canSendAudio()) meshNode.sendLocalAudio(audio)
     }
 
     private fun ensureLocalMeshRunning(reason: String) {
@@ -804,7 +931,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun updateCapturePolicy() {
-        if (!rideStarted) return
+        if (!rideStarted || switchingTransport) return
         if (transportMode != TransportMode.INTERNET_ONLY) {
             audioEngine.setUserMuted(micMuted)
             audioEngine.startTransmit()
@@ -829,6 +956,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun recoverFromStartFailure(t: Throwable) {
+        handoverGeneration++
+        switchingTransport = true
         mainHandler.removeCallbacks(rideWatchdog)
         runCatching { audioEngine.stopTransmit() }
         runCatching { endLiveMapSession() }
@@ -884,6 +1013,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun stopRide() {
+        handoverGeneration++
+        switchingTransport = true
         mainHandler.removeCallbacks(rideWatchdog)
         stopLobbyDiscovery()
         audioEngine.stopTransmit()
@@ -972,6 +1103,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         transportMode = runCatching {
             TransportMode.valueOf(prefs.getString("transport_mode_v38", "INTERNET_ONLY") ?: "INTERNET_ONLY")
         }.getOrDefault(TransportMode.INTERNET_ONLY)
+        automaticTransport = prefs.getBoolean("automatic_transport_v39", true)
         meshLabRole = runCatching {
             MeshNode.LabRole.valueOf(prefs.getString("mesh_lab_role_v38", "NORMAL") ?: "NORMAL")
         }.getOrDefault(MeshNode.LabRole.NORMAL)
@@ -995,6 +1127,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             .putString("code", normalizedRideCode())
             .putString("audio_route", audioRoute)
             .putBoolean("battery_smart", binding.batterySaver.isChecked)
+            .putBoolean("automatic_transport_v39", automaticTransport)
             .putString("transport_mode_v38", transportMode.name)
             .putString("mesh_lab_role_v38", meshLabRole.name)
             .apply()
@@ -1038,7 +1171,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     private fun requiredPermissions(): List<String> = buildList {
         add(Manifest.permission.RECORD_AUDIO)
-        if (transportMode != TransportMode.INTERNET_ONLY) {
+        if (automaticTransport || transportMode != TransportMode.INTERNET_ONLY) {
             add(Manifest.permission.ACCESS_FINE_LOCATION)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 add(Manifest.permission.BLUETOOTH_SCAN)
@@ -1065,7 +1198,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     override fun onAudioPacket(sourceId: String, sequence: Int, timestampMs: Long, audio: ByteArray) {
-        if (!rideStarted) return
+        if (!rideStarted || switchingTransport || transportMode == TransportMode.INTERNET_ONLY) return
         val tileKey = meshNode.endpointIdForSource(sourceId) ?: sourceId
         markRiderSpeaking(tileKey)
         audioEngine.playIncoming(sourceId, sequence, timestampMs, audio)
@@ -1094,7 +1227,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
     override fun onInternetAudioStatus(message: String) {
         runOnUiThread {
-            if (rideStarted) updateAudioUi(message)
+            if (rideStarted && !switchingTransport && transportMode == TransportMode.INTERNET_ONLY) updateAudioUi(message)
         }
     }
 
@@ -1115,7 +1248,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         if (!rideStarted) return
         if (transportMode != TransportMode.INTERNET_ONLY) {
             val mesh = meshNode.diagnostics()
-            binding.networkTile.text = "ANDROID OFFLINE"
+            binding.networkTile.text = if (automaticTransport) "AUTO • OFFLINE" else "ANDROID OFFLINE"
             binding.riderCount.text = "8-RIDER TEST"
             binding.meshStatus.text = "●  ${mesh.reachableRiders} RIDERS • ${mesh.directPeers} DIRECT • MAX ${mesh.maxObservedHops} HOPS"
             binding.homeNetworkStatus.text = "Android\nOffline"
@@ -1125,7 +1258,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
         val diag = internetNode.diagnostics()
 
-        binding.networkTile.text = when {
+        binding.networkTile.text = (if (automaticTransport) "AUTO • " else "") + when {
             diag.voicePeersConnected > 0 -> "CONNECTED"
             diag.signalingConnected -> "READY"
             else -> "CONNECTING"
@@ -1567,6 +1700,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     private fun shutdownRideRuntimeFromTaskRemoval() {
+        switchingTransport = true
+        handoverGeneration++
         if (!rideStarted) {
             RideShutdownCoordinator.clear()
             return
@@ -2375,6 +2510,11 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         buildContent: (LinearLayout, Dialog) -> Unit,
     ) {
         val dialog = Dialog(this)
+        dialog.setOnDismissListener {
+            if (title == "SETTINGS") {
+                if (settingsPanel === dialog) settingsPanel = null
+            } else refreshSettingsPanel()
+        }
         val accent = ContextCompat.getColor(this, R.color.accent)
         val white = ContextCompat.getColor(this, R.color.white)
         val muted = ContextCompat.getColor(this, R.color.muted)
@@ -2550,10 +2690,12 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             addPanelButton(body, "SAVE PHONE") {
                 val phone = normalizeRiderPhone(input.text?.toString().orEmpty())
                 prefs.edit().putString(RIDER_PHONE_KEY, phone).apply()
+                binding.riderPhone.setText(phone)
                 dialog.dismiss()
             }
             addPanelButton(body, "REMOVE PHONE", primary = false) {
                 prefs.edit().remove(RIDER_PHONE_KEY).apply()
+                binding.riderPhone.setText("")
                 dialog.dismiss()
             }
         }
@@ -2673,7 +2815,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
     }
 
-    private fun transportModeLabel(): String = when (transportMode) {
+    private fun transportModeLabel(): String = if (automaticTransport) {
+        if (!rideStarted) "AUTOMATIC • ONLINE / ANDROID OFFLINE"
+        else "AUTO • " + if (transportMode == TransportMode.INTERNET_ONLY) "INTERNET VOICE" else "ANDROID OFFLINE"
+    } else when (transportMode) {
         TransportMode.LOCAL_ONLY -> "ANDROID OFFLINE"
         TransportMode.INTERNET_ONLY -> "INTERNET VOICE"
     }
@@ -2685,13 +2830,14 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             return
         }
         AlertDialog.Builder(this).setTitle("Voice connection")
-            .setSingleChoiceItems(arrayOf("Internet voice", "Android-to-Android offline"),
-                transportMode.ordinal) { dialog, which ->
-                transportMode = TransportMode.values()[which]
+            .setSingleChoiceItems(arrayOf("Automatic online / Android offline", "Internet voice only", "Android offline only"),
+                if (automaticTransport) 0 else transportMode.ordinal + 1) { dialog, which ->
+                automaticTransport = which == 0
+                if (!automaticTransport) transportMode = TransportMode.values()[which - 1]
                 saveSettings()
                 applySelectedAudioRoute()
                 dialog.dismiss()
-            }.setNegativeButton("CANCEL", null).show()
+            }.setNegativeButton("CANCEL", null).setOnDismissListener { refreshSettingsPanel() }.show()
     }
 
     private fun showMeshLabRoleDialog() {
@@ -2711,7 +2857,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                     restartLocalMeshForRoleOrMode("test role ${meshLabRole.name}")
                 }
                 dialog.dismiss()
-            }.setNegativeButton("CANCEL", null).show()
+            }.setNegativeButton("CANCEL", null).setOnDismissListener { refreshSettingsPanel() }.show()
     }
 
     private fun ensurePremiumAccess(): Boolean {
@@ -2750,10 +2896,19 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         }
     }
 
+    private fun refreshSettingsPanel() {
+        val panel = settingsPanel ?: return
+        if (!panel.isShowing) return
+        settingsPanel = null
+        panel.dismiss()
+        if (!isFinishing && !isDestroyed) showSettingsAndHelpDialog()
+    }
+
     private fun showSettingsAndHelpDialog() {
         val email = savedUserEmail().ifBlank { "Not set" }
         val rider = binding.riderName.text?.toString().orEmpty().ifBlank { riderNameFromEmail(email) }
         showRideMeshPanel("SETTINGS", "RideMesh profile, support and ride preferences.") { body, dialog ->
+            settingsPanel = dialog
             addPanelSection(body, "Rider profile")
             addPanelInfo(body, "Rider name", rider, highlight = true)
             addPanelInfo(body, "Email", email)
@@ -2763,39 +2918,33 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             addPanelInfo(body, "Version", appVersionLabel(), highlight = true)
             addPanelInfo(body, "Connection", transportModeLabel())
             addPanelButton(body, "VOICE CONNECTION", primary = false) {
-                dialog.dismiss()
                 showTransportModeDialog()
             }
             addPanelButton(body, "OFFLINE TEST ROLE: ${meshLabRole.name}", primary = false) {
-                dialog.dismiss()
                 showMeshLabRoleDialog()
             }
             addPanelButton(body, "OFFLINE DIAGNOSTICS", primary = false) {
-                dialog.dismiss()
                 showOfflineDiagnosticsDialog()
             }
             addPanelButton(body, "EDIT RIDER NAME") {
-                dialog.dismiss()
                 showRiderNameEditor()
             }
             addPanelButton(body, "EDIT PHONE NUMBER", primary = false) {
-                dialog.dismiss()
                 showRiderPhoneEditor()
             }
             addPanelButton(body, "CHANGE EMAIL", primary = false) {
-                dialog.dismiss()
+                emailFromSettings = true
+                dialog.hide()
                 showEmailProfileScreen()
             }
 
             addPanelSection(body, "Support")
             addPanelButton(body, "EMAIL SUPPORT") {
-                dialog.dismiss()
                 openEmailSupport()
             }
             if (rideStarted) {
                 addPanelButton(body, "RIDE STATUS", primary = false) {
-                    dialog.dismiss()
-                    showRideStatusDialog()
+                        showRideStatusDialog()
                 }
             }
         }
@@ -2852,7 +3001,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
                     meshNode.sendTestTone { rideStarted && audioEngine.canSendAudio() }
                 } else Toast.makeText(this, "Connect a rider and enable microphone audio first", Toast.LENGTH_SHORT).show()
             }
-            .setMessage("Role: ${meshLabRole}\nDirect links: ${d.directPeers}\nReceived: ${d.receivedPackets}\nRelayed: ${d.relayedPackets}\nMaximum hops: ${d.maxObservedHops}\nAdvertising: ${d.advertisingActive}\nDiscovery: ${d.discoveryActive}\nSend failures: ${d.sendFailures}\nLast error: ${d.lastError}\n\n${audioEngine.diagnostics()}\n${meshNode.audioPipelineSummary()}\nDiscovery: Android Nearby\n\nOpus 16 kHz / 20 ms / 32 kbps target.\nReachable riders: ${d.reachableRiders}\nAudio drops: ${d.droppedAudio}")
+            .setMessage("Connection: ${transportModeLabel()}\n${handoverMessage}\nRole: ${meshLabRole}\nDirect links: ${d.directPeers}\nReceived: ${d.receivedPackets}\nRelayed: ${d.relayedPackets}\nMaximum hops: ${d.maxObservedHops}\nAdvertising: ${d.advertisingActive}\nDiscovery: ${d.discoveryActive}\nSend failures: ${d.sendFailures}\nLast error: ${d.lastError}\n\n${audioEngine.diagnostics()}\n${meshNode.audioPipelineSummary()}\nDiscovery: Android Nearby\n\nOpus 16 kHz / 20 ms / 32 kbps target.\nReachable riders: ${d.reachableRiders}\nAudio drops: ${d.droppedAudio}")
             .setPositiveButton("OK", null).show()
     }
 
@@ -2980,6 +3129,8 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
     }
 
     override fun onDestroy() {
+        switchingTransport = true
+        handoverGeneration++
         if (::billingManager.isInitialized) billingManager.endConnection()
         saveSettings()
         mainHandler.removeCallbacks(stopLobbyScan)
@@ -3023,7 +3174,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
         private const val MAX_VISIBLE_RIDER_TILES = 8
         private const val SPEAKING_HOLD_MS = 560L
         private const val LOBBY_SCAN_WINDOW_MS = 20_000L
-        private const val WATCHDOG_INTERVAL_MS = 5_000L
+        private const val WATCHDOG_INTERVAL_MS = 1_000L
         private const val INTERNET_STABLE_BEFORE_MESH_SLEEP_MS = 15_000L
         private const val LOCAL_MESH_REFRESH_MS = 8_000L
         private const val LOCAL_MESH_RESTART_SETTLE_MS = 700L

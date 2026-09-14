@@ -57,11 +57,9 @@ class NearbyClusterTransport(
     private val retryAfterMs = ConcurrentHashMap<String, Long>()
     private val helloAttempts = ConcurrentHashMap<String, Int>()
 
-    // Realtime voice rule: never allow an unbounded Nearby BYTES backlog.
-    // One audio payload may be in flight per peer. While it is transferring we
-    // retain only the newest frame; older pending frames are discarded. For an
-    // intercom, a missing 20 ms frame is far better than hearing speech seconds late.
-    private val audioInFlightPayload = ConcurrentHashMap<String, Long>()
+    // A bounded four-packet window tolerates transfer acknowledgements slower than 20 ms.
+    // Pending speech is FIFO, age-limited, and fair between speakers.
+    private val audioInFlightPayload = ConcurrentHashMap<String, MutableMap<Long, Long>>()
     private val audioLatestPending = ConcurrentHashMap<String, FreshAudioQueue>()
     private val audioSentAt = ConcurrentHashMap<String, Long>()
     private val foundEndpoints = ConcurrentHashMap<String, DiscoveredEndpointInfo>()
@@ -102,9 +100,10 @@ class NearbyClusterTransport(
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
             if (!started || update.status == PayloadTransferUpdate.Status.IN_PROGRESS) return
             synchronized(audioInFlightPayload) {
-                if (audioInFlightPayload[endpointId] != update.payloadId) return
-                audioInFlightPayload.remove(endpointId)
-                audioSentAt.remove(endpointId)
+                val flights = audioInFlightPayload[endpointId] ?: return
+                if (flights.remove(update.payloadId) == null) return
+                if (flights.isEmpty()) audioSentAt.remove(endpointId)
+                else audioSentAt[endpointId] = flights.values.minOrNull()!!
                 if (update.status != PayloadTransferUpdate.Status.SUCCESS) sendFailures.incrementAndGet()
                 drainAudio(endpointId)
             }
@@ -262,7 +261,9 @@ class NearbyClusterTransport(
             }
             audioSentAt.entries.filter { now - it.value > 1500 }.forEach {
                 audioSentAt.remove(it.key)
-                audioInFlightPayload.remove(it.key)?.let(client::cancelPayload)
+                synchronized(audioInFlightPayload) {
+                    audioInFlightPayload.remove(it.key)?.keys?.forEach { id -> client.cancelPayload(id) }
+                }
                 client.disconnectFromEndpoint(it.key)
                 sendFailures.incrementAndGet()
             }
@@ -340,18 +341,23 @@ class NearbyClusterTransport(
         return true
     }
 
+    // Caller holds audioInFlightPayload's monitor.
     private fun drainAudio(endpoint: String) {
-        if (!started || endpoint !in connectedEndpoints || audioInFlightPayload.containsKey(endpoint)) return
-        val bytes = audioLatestPending[endpoint]?.poll(SystemClock.elapsedRealtime()) ?: return
-        val payload = Payload.fromBytes(bytes)
-        audioInFlightPayload[endpoint] = payload.id
-        audioSentAt[endpoint] = SystemClock.elapsedRealtime()
-        client.sendPayload(endpoint, payload).addOnFailureListener {
-            synchronized(audioInFlightPayload) {
-                if (audioInFlightPayload[endpoint] == payload.id) {
-                    audioInFlightPayload.remove(endpoint); audioSentAt.remove(endpoint)
-                    sendFailures.incrementAndGet()
-                    // The periodic tick or next capture retries; do not recurse on immediate failures.
+        if (!started || endpoint !in connectedEndpoints) return
+        val flights = audioInFlightPayload.computeIfAbsent(endpoint) { linkedMapOf() }
+        while (flights.size < 4) {
+            val bytes = audioLatestPending[endpoint]?.poll(SystemClock.elapsedRealtime()) ?: return
+            val payload = Payload.fromBytes(bytes)
+            flights[payload.id] = SystemClock.elapsedRealtime()
+            audioSentAt[endpoint] = flights.values.minOrNull()!!
+            client.sendPayload(endpoint, payload).addOnFailureListener {
+                synchronized(audioInFlightPayload) {
+                    val current = audioInFlightPayload[endpoint]
+                    if (current?.remove(payload.id) != null) {
+                        if (current.isEmpty()) audioSentAt.remove(endpoint)
+                        else audioSentAt[endpoint] = current.values.minOrNull()!!
+                        sendFailures.incrementAndGet()
+                    }
                 }
             }
         }

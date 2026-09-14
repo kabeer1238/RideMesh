@@ -28,8 +28,8 @@ public class OfflinePolicyCheck {
         for (int n=1;n<=6;n++) check(!MeshRelayPolicy.allows(0,n)&&!MeshRelayPolicy.allows(n,0),"lab isolation");
         FreshAudioQueue q=new FreshAudioQueue();
         q.offer("A",new byte[]{1},0); q.offer("B",new byte[]{2},1); q.offer("A",new byte[]{3},2);
-        check(q.size()==2&&q.droppedCount()==1,"latest per speaker");
-        check(q.poll(10)[0]==3&&q.poll(10)[0]==2,"speaker fairness");
+        check(q.size()==3&&q.droppedCount()==0,"short speech FIFO");
+        check(q.poll(10)[0]==1&&q.poll(10)[0]==2&&q.poll(10)[0]==3,"speaker fairness");
         q.offer("A",new byte[]{4},0); check(q.poll(141)==null,"stale frame rejection");
         for(int n=0;n<100;n++)q.offer("source"+n,new byte[]{1},200);
         check(q.size()==8,"bounded source queue");
