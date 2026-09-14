@@ -6,7 +6,7 @@ options:
 packages:
   WebRTC:
     url: https://github.com/stasel/WebRTC.git
-    exactVersion: 151.0.0
+    exactVersion: 152.0.0
 targets:
   RideMeshIOS:
     type: application

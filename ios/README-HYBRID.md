@@ -10,7 +10,9 @@ Android InternetNode.kt is restored byte-for-byte from the supplied vc31 Cyan UI
 source. iOS WebRTCVoiceService.swift, AudioSessionManager.swift,
 RideMeshSignalingService.swift and RideMeshViewModel.swift are restored byte-for-byte
 from the supplied pre-hybrid RideMeshIOS-v1.3-WiFiAware-No-Subscription source.
-The iOS WebRTC dependency is restored to that source's 151.0.0 version.
+The source originally references WebRTC 151.0.0, but its binary download returns
+HTTP 404. This build uses 152.0.0 (as the preceding test builds did) while retaining
+the restored application source unchanged. Device regression testing is required.
 
 tools/online-baseline.sha256 pins these files. Both CI builds verify the hashes.
 This does not assert phone performance: the original online call still needs a
