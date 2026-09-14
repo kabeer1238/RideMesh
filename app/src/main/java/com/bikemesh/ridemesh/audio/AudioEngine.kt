@@ -722,30 +722,8 @@ class AudioEngine(
         Thread.sleep(millis, extraNanos)
     }
 
-    internal fun mixFrames(frames: List<ByteArray>): ByteArray {
-        if (frames.isEmpty()) return ByteArray(FRAME_BYTES)
-        if (frames.size == 1) return frames[0].copyOf()
-
-        val out = ByteArray(FRAME_BYTES)
-        var i = 0
-        while (i + 1 < FRAME_BYTES) {
-            var sum = 0
-            var contributors = 0
-            for (frame in frames) {
-                if (i + 1 >= frame.size) continue
-                val lo = frame[i].toInt() and 0xff
-                val hi = frame[i + 1].toInt()
-                sum += ((hi shl 8) or lo).toShort().toInt()
-                contributors++
-            }
-            val mixed = if (contributors == 0) 0 else (sum / contributors)
-                .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-            out[i] = (mixed and 0xff).toByte()
-            out[i + 1] = ((mixed shr 8) and 0xff).toByte()
-            i += 2
-        }
-        return out
-    }
+    internal fun mixFrames(frames: List<ByteArray>): ByteArray =
+        PcmMixer.mix(frames, FRAME_BYTES)
 
     fun release() {
         stopTransmit()

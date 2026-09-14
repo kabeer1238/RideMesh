@@ -76,64 +76,63 @@ struct ActiveRideView: View {
     }
 
     private var livePanel: some View {
-        HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(model.micMuted ? "MUTED" : "LIVE")
-                    .font(RideMeshTheme.condensed(19, weight: .bold))
-                    .tracking(1.33)
-                    .foregroundStyle(model.micMuted ? RideMeshTheme.amber : RideMeshTheme.accent)
-
-                Text("HANDS-FREE INTERCOM")
-                    .font(.system(size: 8.5, weight: .bold))
-                    .foregroundStyle(RideMeshTheme.white)
-
-                Text(model.micMuted ? "LISTENING ONLY" : "VOICE-ACTIVATED • NOISE GUARD")
-                    .font(.system(size: 7.5))
-                    .foregroundStyle(RideMeshTheme.muted)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.65)
-                    .padding(.top, 2)
+        VStack(spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 27, weight: .semibold))
+                    .foregroundStyle(RideMeshTheme.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.micMuted ? "MUTED" : "LIVE")
+                        .font(RideMeshTheme.condensed(25, weight: .bold))
+                        .foregroundStyle(model.micMuted ? RideMeshTheme.amber : RideMeshTheme.accent)
+                    Text("HANDS-FREE INTERCOM")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(RideMeshTheme.white)
+                    Text(model.micMuted ? "LISTENING ONLY" : "ONLINE INTERCOM")
+                        .font(.system(size: 9))
+                        .foregroundStyle(RideMeshTheme.muted)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Rectangle()
+                    .fill(RideMeshTheme.borderStrong)
+                    .frame(width: 1, height: 48)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("RIDE CODE")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(RideMeshTheme.muted)
+                    Text(model.normalizedRideCode)
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(RideMeshTheme.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
             }
-            .frame(maxWidth: .infinity, minHeight: 82, alignment: .leading)
-
-            Button { model.toggleMute() } label: {
-                Text(model.micMuted ? "UNMUTE" : "MUTE MIC")
-                    .font(.system(size: 8.5, weight: .bold))
-                    .foregroundStyle(RideMeshTheme.white)
-                    .frame(width: 68, height: 52)
-                    .rmPanel(radius: 13, fill: RideMeshTheme.panel2, border: RideMeshTheme.accent.opacity(0.75), glassTint: RideMeshTheme.accent.opacity(0.08), interactive: true)
+            HStack(spacing: 12) {
+                Button { model.toggleMute() } label: {
+                    Label(model.micMuted ? "UNMUTE" : "MUTE MIC",
+                          systemImage: model.micMuted ? "mic.slash.fill" : "mic.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(RideMeshTheme.white)
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                        .background(RideMeshTheme.panel2, in: RoundedRectangle(cornerRadius: 16))
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(RideMeshTheme.accent, lineWidth: 1.5))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(model.micMuted ? "Unmute microphone" : "Mute microphone")
+                Button { model.requestEndRide() } label: {
+                    Label("END", systemImage: "phone.down.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                        .background(Color(red: 0.67, green: 0.10, blue: 0.16), in: RoundedRectangle(cornerRadius: 16))
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(RideMeshTheme.endRed, lineWidth: 1.5))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("End ride")
             }
-            .buttonStyle(.plain)
-
-            Rectangle()
-                .fill(RideMeshTheme.borderStrong)
-                .frame(width: 1, height: 46)
-                .padding(.horizontal, 4)
-
-            Text(model.normalizedRideCode)
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(RideMeshTheme.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .frame(width: 62, height: 82)
-
-            Rectangle()
-                .fill(RideMeshTheme.borderStrong)
-                .frame(width: 1, height: 46)
-                .padding(.horizontal, 3)
-
-            Button { model.requestEndRide() } label: {
-                Text("END")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(RideMeshTheme.endRed)
-                    .frame(width: 52, height: 54)
-            }
-            .buttonStyle(.plain)
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 6)
-        .frame(height: 82)
-        .rmPanel(radius: 18, fill: RideMeshTheme.livePanel, border: RideMeshTheme.accent.opacity(0.70), glassTint: RideMeshTheme.accent.opacity(0.08))
+        .padding(16)
+        .rmPanel(radius: 20, fill: RideMeshTheme.livePanel, border: RideMeshTheme.accent.opacity(0.70), glassTint: RideMeshTheme.accent.opacity(0.08))
     }
 
     private var riderGrid: some View {

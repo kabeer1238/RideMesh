@@ -66,16 +66,16 @@ struct ActiveSettingsTabView: View {
                     .padding(16)
                     .rmPanel(radius: 15)
 
-                    Link(destination: URL(string: "https://chat.whatsapp.com/CGToJCBDG6XFGUpeTp7uKW")!) {
+                    Link(destination: URL(string: "mailto:salesautopilotindia@gmail.com?subject=RideMesh%20Support")!) {
                         HStack(spacing: 12) {
-                            Image(systemName: "message.fill")
+                            Image(systemName: "envelope.fill")
                                 .foregroundStyle(RideMeshTheme.accent)
                                 .frame(width: 28)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text("RIDEMESH COMMUNITY")
+                                Text("EMAIL SUPPORT")
                                     .font(.system(size: 11, weight: .bold))
                                     .foregroundStyle(RideMeshTheme.white)
-                                Text("Support, feedback and rider discussion")
+                                Text("salesautopilotindia@gmail.com")
                                     .font(.system(size: 10))
                                     .foregroundStyle(RideMeshTheme.muted)
                             }

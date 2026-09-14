@@ -30,8 +30,8 @@ struct SettingsView: View {
 
                         Rectangle().fill(RideMeshTheme.border).frame(height: 1)
 
-                        Link(destination: URL(string: "https://chat.whatsapp.com/CGToJCBDG6XFGUpeTp7uKW")!) {
-                            RMSettingRow(title: "RIDEMESH COMMUNITY", detail: "Support, feedback and rider discussion", symbol: "message.fill")
+                        Link(destination: URL(string: "mailto:salesautopilotindia@gmail.com?subject=RideMesh%20Support")!) {
+                            RMSettingRow(title: "EMAIL SUPPORT", detail: "salesautopilotindia@gmail.com", symbol: "envelope.fill")
                         }
                     }
                     .rmPanel(radius: 18)

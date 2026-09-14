@@ -45,11 +45,11 @@ jobs:
       - name: Package unsigned build and source
         working-directory: ios
         run: |
-          ditto -c -k --keepParent build/Build/Products/Debug-iphoneos/RideMesh.app RideMesh-iOS-vc37-Online-Settings-UNSIGNED.zip
-          zip -r RideMesh-iOS-vc37-Online-Settings-source.zip RideMeshIOS project.yml Tests README-HYBRID.md README-DISCOVERY-TEST.md
+          ditto -c -k --keepParent build/Build/Products/Debug-iphoneos/RideMesh.app RideMesh-iOS-vc38-Online-Controls-UNSIGNED.zip
+          zip -r RideMesh-iOS-vc38-Online-Controls-source.zip RideMeshIOS project.yml Tests README-HYBRID.md README-DISCOVERY-TEST.md
       - uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-iOS-vc37-Online-Settings-${{ github.run_number }}
+          name: RideMesh-iOS-vc38-Online-Controls-${{ github.run_number }}
           path: ios/RideMesh-*.zip
       - uses: actions/upload-artifact@v4
         if: always()
