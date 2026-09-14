@@ -289,6 +289,7 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             onStatus = { text -> runOnUiThread {
                 if (!switchingTransport && transportMode == TransportMode.LOCAL_ONLY) updateAudioUi(text)
             } },
+            neuralVadInitiallyEnabled = prefs.getBoolean("silero_vad_experimental_v41", false),
         )
 
         applySelectedAudioRoute()
@@ -2925,6 +2926,24 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             }
             addPanelButton(body, "OFFLINE DIAGNOSTICS", primary = false) {
                 showOfflineDiagnosticsDialog()
+            }
+            val sileroEnabled = prefs.getBoolean("silero_vad_experimental_v41", false)
+            addPanelInfo(
+                body,
+                "AI speech filter",
+                if (sileroEnabled) "Silero ON • applies at next offline audio start" else "Silero OFF • proven detector active",
+                highlight = sileroEnabled,
+            )
+            addPanelButton(body, "SILERO AI VAD: " + if (sileroEnabled) "ON" else "OFF", primary = false) {
+                val enabled = !sileroEnabled
+                prefs.edit().putBoolean("silero_vad_experimental_v41", enabled).apply()
+                if (::audioEngine.isInitialized) audioEngine.setNeuralVadEnabled(enabled)
+                Toast.makeText(
+                    this,
+                    if (enabled) "Silero enabled for the next offline audio start." else "Silero disabled; original detector will be used.",
+                    Toast.LENGTH_LONG,
+                ).show()
+                refreshSettingsPanel()
             }
             addPanelButton(body, "EDIT RIDER NAME") {
                 showRiderNameEditor()

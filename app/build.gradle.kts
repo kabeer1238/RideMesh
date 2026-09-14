@@ -14,8 +14,8 @@ android {
         applicationId = "in.autopilotindia.ridemesh"
         minSdk = 26
         targetSdk = 36
-        versionCode = 40
-        versionName = "1.0.11-offline-mixer"
+        versionCode = 41
+        versionName = "1.0.12-silero-vad-test"
         manifestPlaceholders["MAPS_API_KEY"] =
             (project.findProperty("MAPS_API_KEY") as String?)
                 ?: System.getenv("MAPS_API_KEY")
@@ -60,6 +60,7 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
     implementation("com.plasmoverse:concentus:1.0.0")
+    implementation("com.github.gkonovalov.android-vad:silero:2.0.10")
 
     implementation("com.google.android.gms:play-services-nearby:19.4.0")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
@@ -75,6 +76,6 @@ dependencies {
 android.applicationVariants.all {
     outputs.all {
         (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
-            "RideMesh-android-vc40-${buildType.name}.apk"
+            "RideMesh-android-vc41-${buildType.name}.apk"
     }
 }

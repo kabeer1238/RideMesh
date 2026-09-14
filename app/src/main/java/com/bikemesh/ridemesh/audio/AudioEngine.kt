@@ -34,7 +34,9 @@ class AudioEngine(
     context: Context,
     private val onCapturedFrame: (ByteArray) -> Unit,
     private val onStatus: (String) -> Unit,
+    neuralVadInitiallyEnabled: Boolean = false,
 ) {
+    private val appContext = context.applicationContext
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val musicDucker = OfflineMusicDucker(audioManager)
     private val routeHandler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -61,6 +63,12 @@ class AudioEngine(
     private val rebufferCount = java.util.concurrent.atomic.AtomicLong()
     private val playbackLock = Any()
     private val playbackErrors = java.util.concurrent.atomic.AtomicLong()
+    private val neuralVadEnabled = AtomicBoolean(neuralVadInitiallyEnabled)
+    @Volatile private var neuralVadStatus = if (neuralVadInitiallyEnabled) "Silero pending next offline start" else "Silero off"
+    fun setNeuralVadEnabled(enabled: Boolean) {
+        neuralVadEnabled.set(enabled)
+        neuralVadStatus = if (enabled) "Silero pending next offline start" else "Silero off"
+    }
     fun isCaptureReleased() = audioRecord == null && !capturing.get()
     fun isAudioInterrupted() = focusPaused.get()
     fun canSendAudio() = transmitDesired.get() && !focusPaused.get() && !userMuted.get()
@@ -71,7 +79,7 @@ class AudioEngine(
         userMuted.get() -> "Muted • listening"
         else -> "Microphone running"
     }
-    fun diagnostics() = "Voice: ${voiceStatus()}\nMic running: ${capturing.get()} • capture buffers: ${capturedFrames.get()} • level: $micLevel\nMic frames forwarded: ${forwardedFrames.get()} • muted: ${userMuted.get()}\nSpeaker PCM bytes written: ${playedBytes.get()} • playback errors: ${playbackErrors.get()} • rebuffers: ${rebufferCount.get()}"
+    fun diagnostics() = "Voice: ${voiceStatus()}\nMic running: ${capturing.get()} • capture buffers: ${capturedFrames.get()} • level: $micLevel\nMic frames forwarded: ${forwardedFrames.get()} • muted: ${userMuted.get()}\nSpeaker PCM bytes written: ${playedBytes.get()} • playback errors: ${playbackErrors.get()} • rebuffers: ${rebufferCount.get()}\nNeural VAD: $neuralVadStatus"
 
     private data class IncomingFrame(
         val sequence: Int,
@@ -371,6 +379,13 @@ class AudioEngine(
                 val windFilter = WindRumbleFilter(SAMPLE_RATE, WIND_FILTER_CUTOFF_HZ)
                 var hangover = 0
                 var noiseFloor = VAD_INITIAL_NOISE_FLOOR
+                val neuralDetector = if (neuralVadEnabled.get()) {
+                    runCatching { SileroSpeechDetector(appContext) }
+                        .onFailure { neuralVadStatus = "Silero fallback: ${it.javaClass.simpleName}" }
+                        .getOrNull()
+                } else null
+                var neuralFailed = false
+                if (neuralDetector != null) neuralVadStatus = neuralDetector.diagnostics()
 
                 try {
                     while (capturing.get()) {
@@ -393,6 +408,7 @@ class AudioEngine(
                         if (!canSendAudio() || (Build.VERSION.SDK_INT >= 29 &&
                             activeRecorder.activeRecordingConfiguration?.isClientSilenced == true)) {
                             preRoll.clear()
+                            neuralDetector?.clearPending()
                             hangover = 0
                             continue
                         }
@@ -409,7 +425,22 @@ class AudioEngine(
                             max(VAD_ECHO_MIN_RMS_NO_AEC, normalThreshold * VAD_ECHO_MULTIPLIER_NO_AEC)
                         }
                         val speechThreshold = if (farEndAudioActive) echoThreshold else normalThreshold
-                        val speech = rms >= speechThreshold
+                        val neuralSpeech = if (neuralFailed) null else {
+                            runCatching { neuralDetector?.observe(current) }
+                                .onFailure {
+                                    neuralFailed = true
+                                    neuralVadStatus = "Silero fallback: ${it.javaClass.simpleName}"
+                                }
+                                .getOrNull()
+                        }
+                        val speech = when {
+                            neuralSpeech == null -> rms >= speechThreshold
+                            farEndAudioActive -> neuralSpeech && rms >= speechThreshold
+                            else -> neuralSpeech
+                        }
+                        if (capturedFrames.get() % 50L == 0L && neuralDetector != null && !neuralFailed) {
+                            neuralVadStatus = neuralDetector.diagnostics()
+                        }
                         if (speech) musicDucker.speech()
 
                         // A manual mute keeps the recorder alive for instant recovery but sends no frames.
@@ -447,6 +478,8 @@ class AudioEngine(
                         onStatus("Microphone stream error: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
                     }
                 } finally {
+                    neuralDetector?.close()
+                    neuralVadStatus = if (neuralVadEnabled.get()) "Silero stopped" else "Silero off"
                     try { activeRecorder.stop() } catch (_: Throwable) {}
                     aec?.release()
                     ns?.release()
