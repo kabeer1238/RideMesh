@@ -2927,6 +2927,25 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             addPanelButton(body, "OFFLINE DIAGNOSTICS", primary = false) {
                 showOfflineDiagnosticsDialog()
             }
+            val onlineSileroEnabled = prefs.getBoolean("silero_online_experimental_v42", false)
+            addPanelInfo(body, "ONLINE AI speech filter (experimental)",
+                "Adds 100 ms lookahead. May reject quiet speech; helmet test required.",
+                highlight = onlineSileroEnabled)
+            addPanelButton(body, "ONLINE SILERO: " + if (onlineSileroEnabled) "ON" else "OFF", primary = false) {
+                val enabled = !onlineSileroEnabled
+                prefs.edit().putBoolean("silero_online_experimental_v42", enabled).apply()
+                if (!enabled && ::internetNode.isInitialized) internetNode.disableOnlineVad()
+                Toast.makeText(this,
+                    if (enabled) "End and rejoin the ride to start ONLINE Silero."
+                    else "Online Silero bypassed. Rejoin to remove its capture hook.",
+                    Toast.LENGTH_LONG).show()
+                refreshSettingsPanel()
+            }
+            addPanelButton(body, "ONLINE SILERO DIAGNOSTICS", primary = false) {
+                AlertDialog.Builder(this).setTitle("Online audio • Build 42")
+                    .setMessage(if (::internetNode.isInitialized) internetNode.onlineVadDiagnostics() else "No online session")
+                    .setPositiveButton("OK", null).show()
+            }
             val sileroEnabled = prefs.getBoolean("silero_vad_experimental_v41", false)
             addPanelInfo(
                 body,

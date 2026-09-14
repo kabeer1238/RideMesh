@@ -23,7 +23,7 @@ jobs:
       MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
     steps:
       - uses: actions/checkout@v4
-      - name: Verify original online source is unchanged
+      - name: Verify online baseline plus explicit opt-in capture hook
         run: python3 tools/verify-online-baseline.py
       - uses: actions/setup-java@v4
         with:
@@ -41,7 +41,7 @@ jobs:
         run: gradle --no-daemon :app:assembleDebug
       - name: Verify debug APK signature
         run: |
-          APK='app/build/outputs/apk/debug/RideMesh-android-vc41-debug.apk'
+          APK='app/build/outputs/apk/debug/RideMesh-android-vc42-debug.apk'
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --verbose "$APK"
           "$ANDROID_SDK_ROOT/build-tools/36.0.0/aapt" dump badging "$APK" > /tmp/ridemesh-badging.txt
@@ -53,7 +53,7 @@ jobs:
           sha256sum "$APK" > app/build/outputs/apk/debug/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: RideMesh-Android-vc41-Silero-VAD-NoBilling-${{ github.run_number }}
+          name: RideMesh-Android-vc42-Online-Silero-NoBilling-${{ github.run_number }}
           path: |
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/debug/SHA256SUMS.txt

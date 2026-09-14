@@ -1,6 +1,7 @@
 package com.bikemesh.ridemesh.transport
 
 import android.annotation.SuppressLint
+import com.bikemesh.ridemesh.audio.OnlineSileroProcessor
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
@@ -201,6 +202,10 @@ class InternetNode(
     @Volatile private var noiseCalibrationUntilMs = 0L
     @Volatile private var smartDuckMusicWasActive = false
 
+    @Volatile private var onlineSilero: OnlineSileroProcessor? = null
+    fun onlineVadDiagnostics(): String = onlineSilero?.diagnostics() ?: "Online Silero: OFF • normal WebRTC"
+    fun disableOnlineVad() { onlineSilero?.bypass() }
+
     private var factory: PeerConnectionFactory? = null
     private var audioSource: AudioSource? = null
     private var localAudioTrack: AudioTrack? = null
@@ -253,6 +258,8 @@ class InternetNode(
 
     fun stop() {
         val wasRunning = running.getAndSet(false)
+        onlineSilero?.close()
+        onlineSilero = null
         if (wasRunning && signalingConnected.get()) {
             runCatching { publishSignal(SignalPacket(nodeId, BROADCAST_ID, SignalType.BYE)) }
         }
@@ -397,7 +404,10 @@ class InternetNode(
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
 
-        val adm = JavaAudioDeviceModule.builder(ctx)
+        val onlineFilter = if (ctx.getSharedPreferences("ridemesh", Context.MODE_PRIVATE)
+                .getBoolean("silero_online_experimental_v42", false)) OnlineSileroProcessor(ctx) else null
+        onlineSilero = onlineFilter
+        val admBuilder = JavaAudioDeviceModule.builder(ctx)
             .setUseHardwareAcousticEchoCanceler(
                 JavaAudioDeviceModule.isBuiltInAcousticEchoCancelerSupported()
             )
@@ -408,7 +418,12 @@ class InternetNode(
             .setUseStereoOutput(false)
             .setUseLowLatency(true)
             .setAudioAttributes(voiceAttributes)
-            .createAudioDeviceModule()
+        if (onlineFilter != null) {
+            admBuilder.setAudioBufferCallback { buffer, format, channels, rate, bytes, timestamp ->
+                onlineFilter.process(buffer, format, channels, rate, bytes, timestamp)
+            }
+        }
+        val adm = admBuilder.createAudioDeviceModule()
 
         audioDeviceModule = adm
         factory = PeerConnectionFactory.builder()
@@ -1807,6 +1822,7 @@ class InternetNode(
     }
 
     private fun applyVoiceEnabled() {
+        onlineSilero?.setAllowed(running.get() && !userMuted && !focusPaused)
         localAudioTrack?.setEnabled(running.get() && !userMuted && !focusPaused)
     }
 

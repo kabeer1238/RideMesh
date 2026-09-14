@@ -14,8 +14,8 @@ android {
         applicationId = "in.autopilotindia.ridemesh"
         minSdk = 26
         targetSdk = 36
-        versionCode = 41
-        versionName = "1.0.12-silero-vad-test"
+        versionCode = 42
+        versionName = "1.0.13-online-silero-test"
         manifestPlaceholders["MAPS_API_KEY"] =
             (project.findProperty("MAPS_API_KEY") as String?)
                 ?: System.getenv("MAPS_API_KEY")
@@ -76,6 +76,6 @@ dependencies {
 android.applicationVariants.all {
     outputs.all {
         (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
-            "RideMesh-android-vc41-${buildType.name}.apk"
+            "RideMesh-android-vc42-${buildType.name}.apk"
     }
 }

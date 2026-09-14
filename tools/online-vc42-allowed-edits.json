@@ -1,0 +1,26 @@
+[
+  [
+    "import android.annotation.SuppressLint\n",
+    "import android.annotation.SuppressLint\nimport com.bikemesh.ridemesh.audio.OnlineSileroProcessor\n"
+  ],
+  [
+    "    private var factory: PeerConnectionFactory? = null\n",
+    "    @Volatile private var onlineSilero: OnlineSileroProcessor? = null\n    fun onlineVadDiagnostics(): String = onlineSilero?.diagnostics() ?: \"Online Silero: OFF • normal WebRTC\"\n    fun disableOnlineVad() { onlineSilero?.bypass() }\n\n    private var factory: PeerConnectionFactory? = null\n"
+  ],
+  [
+    "        val wasRunning = running.getAndSet(false)\n",
+    "        val wasRunning = running.getAndSet(false)\n        onlineSilero?.close()\n        onlineSilero = null\n"
+  ],
+  [
+    "        val adm = JavaAudioDeviceModule.builder(ctx)\n",
+    "        val onlineFilter = if (ctx.getSharedPreferences(\"ridemesh\", Context.MODE_PRIVATE)\n                .getBoolean(\"silero_online_experimental_v42\", false)) OnlineSileroProcessor(ctx) else null\n        onlineSilero = onlineFilter\n        val admBuilder = JavaAudioDeviceModule.builder(ctx)\n"
+  ],
+  [
+    "            .setAudioAttributes(voiceAttributes)\n            .createAudioDeviceModule()\n",
+    "            .setAudioAttributes(voiceAttributes)\n        if (onlineFilter != null) {\n            admBuilder.setAudioBufferCallback { buffer, format, channels, rate, bytes, timestamp ->\n                onlineFilter.process(buffer, format, channels, rate, bytes, timestamp)\n            }\n        }\n        val adm = admBuilder.createAudioDeviceModule()\n"
+  ],
+  [
+    "    private fun applyVoiceEnabled() {\n",
+    "    private fun applyVoiceEnabled() {\n        onlineSilero?.setAllowed(running.get() && !userMuted && !focusPaused)\n"
+  ]
+]
