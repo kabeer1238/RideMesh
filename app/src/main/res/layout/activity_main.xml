@@ -120,6 +120,35 @@
                 app:cornerRadius="14dp"
                 app:strokeColor="@color/border" />
 
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="RIDER + PILLION"
+                android:textColor="@color/faint"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/riderPillion"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="match_parent"
+                android:layout_height="58dp"
+                android:layout_marginTop="8dp"
+                android:text="RIDER + PILLION  •  OFFLINE"
+                android:textColor="@color/accent"
+                android:textStyle="bold"
+                app:cornerRadius="14dp"
+                app:strokeColor="@color/accent" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="7dp"
+                android:text="Private direct intercom for rider and passenger • Internet not required"
+                android:textColor="@color/faint"
+                android:textSize="11sp" />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
