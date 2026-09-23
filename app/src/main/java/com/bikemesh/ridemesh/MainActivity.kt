@@ -159,6 +159,10 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
             binding.rideCode.requestFocus()
         }
 
+        binding.riderPillion.setOnClickListener {
+            showRiderPillionModeDialog()
+        }
+
         binding.backHome.setOnClickListener {
             stopLobbyDiscovery()
             showScreen(Screen.HOME)
@@ -191,6 +195,34 @@ class MainActivity : AppCompatActivity(), MeshNode.Listener, LobbyNode.Listener,
 
         binding.showQr.setOnClickListener { showRideQr() }
         binding.scanQr.setOnClickListener { scanRideQr() }
+    }
+
+    private fun showRiderPillionModeDialog() {
+        val choices = arrayOf(
+            "RIDER — Start intercom",
+            "PILLION — Join rider",
+        )
+        AlertDialog.Builder(this)
+            .setTitle("RIDER + PILLION • OFFLINE")
+            .setMessage("Private nearby intercom. Internet is not required. Keep Wi-Fi and Bluetooth on.")
+            .setItems(choices) { _, which ->
+                when (which) {
+                    0 -> {
+                        binding.setupTitle.text = "RIDER • START INTERCOM"
+                        binding.rideCode.setText(generateRideCode())
+                        showScreen(Screen.SETUP)
+                        log("Rider/Pillion mode • Rider initiator")
+                    }
+                    1 -> {
+                        binding.setupTitle.text = "PILLION • JOIN RIDER"
+                        showScreen(Screen.SETUP)
+                        binding.rideCode.requestFocus()
+                        log("Rider/Pillion mode • Pillion joiner")
+                    }
+                }
+            }
+            .setNegativeButton("CANCEL", null)
+            .show()
     }
 
     private fun showScreen(screen: Screen) {
