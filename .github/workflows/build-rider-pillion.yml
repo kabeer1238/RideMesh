@@ -24,8 +24,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p app/src/main/res/drawable-nodpi
-          if [ -f branding/ridemesh_logo.png.b64 ]; then base64 -d branding/ridemesh_logo.png.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo.png; fi
-          if [ -f branding/ridemesh_icon.png.b64 ]; then base64 -d branding/ridemesh_icon.png.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon.png; fi
+          if [ -f branding/ridemesh_logo.jpg.b64 ]; then base64 -d branding/ridemesh_logo.jpg.b64 > app/src/main/res/drawable-nodpi/ridemesh_logo.jpg; fi
+          if [ -f branding/ridemesh_icon.jpg.b64 ]; then base64 -d branding/ridemesh_icon.jpg.b64 > app/src/main/res/drawable-nodpi/ridemesh_icon.jpg; fi
       - name: Build APK
         run: gradle --no-daemon assembleDebug
       - name: Package APK
